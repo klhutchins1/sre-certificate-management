@@ -2,305 +2,365 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload
 from ..models import (
     Certificate, Host, HostIP, CertificateBinding,
     HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
     ENV_INTERNAL
 )
 from ..constants import platform_options  # Import platform options from app
+from ..db import SessionManager  # Import SessionManager for database sessions
 
 def render_certificate_list(engine):
     """Render the certificate list view"""
     st.title("Certificates")
-        # Use full width for the main content
-    st.markdown("""
-        <style>
-            .block-container {
-                padding-top: 1rem;
-                padding-right: 1rem;
-                padding-left: 1rem;
-                padding-bottom: 1rem;
-            }
-        </style>
-    """, unsafe_allow_html=True)
     
-    # Add button for manual certificate entry
-    if st.button("➕ Add Manual Certificate", type="primary"):
-        st.session_state.show_manual_entry = True
+    # Create tabs for different views
+    list_tab, detail_tab = st.tabs(["Certificate List", "Certificate Details"])
     
-    # Show manual entry form if button was clicked
-    if st.session_state.get('show_manual_entry', False):
-        with st.form("manual_certificate_entry"):
-            st.subheader("Manual Certificate Entry")
+    with list_tab:
+        # Add button for manual certificate entry
+        if st.button("➕ Add Manual Certificate", type="primary"):
+            st.session_state.show_manual_entry = True
+        
+        # Show manual entry form if button was clicked
+        if st.session_state.get('show_manual_entry', False):
+            with SessionManager(engine) as session:
+                render_manual_entry_form(session)
+        
+        st.divider()
+        
+        # Create a placeholder for the table
+        table_placeholder = st.empty()
+        
+        with st.spinner("Loading certificates..."):
+            with SessionManager(engine) as session:
+                if not session:
+                    st.error("Database connection failed")
+                    return
+                
+                # Fetch certificates for the table view
+                certs_data = []
+                for cert in session.query(Certificate).all():
+                    certs_data.append({
+                        "Common Name": cert.common_name,
+                        "Serial Number": cert.serial_number,
+                        "Valid From": cert.valid_from.strftime("%Y-%m-%d"),
+                        "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
+                        "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
+                        "Bindings": len(cert.certificate_bindings),
+                        "ID": cert.id  # Hidden column for reference
+                    })
+                
+                if certs_data:
+                    df = pd.DataFrame(certs_data)
+                    
+                    # Add styling
+                    def color_status(val):
+                        return 'color: red' if val == 'Expired' else 'color: green'
+                    
+                    # Style the dataframe
+                    styled_df = df.style.applymap(color_status, subset=['Status'])
+                    
+                    # Display the table
+                    st.dataframe(
+                        styled_df,
+                        column_config={
+                            "Common Name": st.column_config.TextColumn("Common Name", width="large"),
+                            "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
+                            "Valid From": st.column_config.DateColumn("Valid From"),
+                            "Valid Until": st.column_config.DateColumn("Valid Until"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
+                            "Bindings": st.column_config.NumberColumn("Bindings", width="small"),
+                            "ID": st.column_config.Column("ID", disabled=True)
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                else:
+                    st.warning("No certificates found in database")
+    
+    with detail_tab:
+        # Show loading state
+        with st.spinner("Loading certificates..."):
+            with SessionManager(engine) as session:
+                if not session:
+                    st.error("Database connection failed")
+                    return
+                
+                # Fetch all certificates once with relationships eagerly loaded
+                certificates = (
+                    session.query(Certificate)
+                    .options(
+                        joinedload(Certificate.certificate_bindings)
+                        .joinedload(CertificateBinding.host)
+                        .joinedload(Host.ip_addresses),
+                        joinedload(Certificate.certificate_bindings)
+                        .joinedload(CertificateBinding.host_ip)
+                    )
+                    .all()
+                )
+                
+                if not certificates:
+                    st.warning("No certificates found in database")
+                    return
+                
+                # Display all certificates with their details
+                for cert in certificates:
+                    render_certificate_card(cert, session)
+
+def render_certificate_card(cert, session):
+    """Render a single certificate card with details"""
+    with st.expander(
+        f"📜 {cert.common_name}"
+    ):
+        tab1, tab2, tab3 = st.tabs(["Overview", "Bindings", "Details"])
+        
+        with tab1:
+            render_certificate_overview(cert)
+        
+        with tab2:
+            render_certificate_bindings(cert, session)
             
-            col1, col2 = st.columns(2)
-            with col1:
-                cert_type = st.selectbox(
-                    "Certificate Type",
-                    ["SSL/TLS", "JWT", "Client"],
-                    help="Select the type of certificate you're adding"
-                )
-                common_name = st.text_input(
-                    "Common Name",
-                    help="The main domain name or identifier for this certificate"
-                )
-                serial_number = st.text_input(
-                    "Serial Number",
-                    help="The certificate's serial number"
-                )
-                thumbprint = st.text_input(
-                    "Thumbprint/Fingerprint",
-                    help="SHA1 or SHA256 fingerprint of the certificate"
-                )
+        with tab3:
+            render_certificate_details(cert)
+
+def render_certificate_overview(cert):
+    """Render the certificate overview tab"""
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"""
+            **Common Name:** {cert.common_name}  
+            **Valid From:** {cert.valid_from.strftime('%Y-%m-%d')}  
+            **Valid Until:** {cert.valid_until.strftime('%Y-%m-%d')}  
+            **Status:** {"Valid" if cert.valid_until > datetime.now() else "Expired"}
+        """)
+    with col2:
+        # Safely get bindings data
+        bindings = getattr(cert, 'certificate_bindings', []) or []
+        platforms = [b.platform for b in bindings if b.platform]
+        st.markdown(f"""
+            **Total Bindings:** {len(bindings)}  
+            **Platforms:** {", ".join(set(platforms)) or "None"}  
+            **SANs:** {len(eval(cert.san)) if cert.san else 0} names
+        """)
+
+def render_certificate_bindings(cert, session):
+    """Render the certificate bindings tab"""
+    # Show current bindings first
+    if cert.certificate_bindings:
+        st.markdown("### Current Bindings")
+        for binding in cert.certificate_bindings:
+            # Safely get binding information
+            host_name = binding.host.name if binding.host else "Unknown Host"
+            host_ip = getattr(binding, 'host_ip', None)
+            ip_address = host_ip.ip_address if host_ip else "No IP"
+            port = binding.port if binding.port else "N/A"
             
-            with col2:
-                valid_from = st.date_input(
-                    "Valid From",
-                    help="Certificate validity start date"
-                )
-                valid_until = st.date_input(
-                    "Valid Until",
-                    help="Certificate expiration date"
-                )
-                platform = st.selectbox(
+            # Create a container for each binding
+            binding_container = st.container()
+            with binding_container:
+                st.markdown(f"#### 🔗 {host_name}")
+                if binding.binding_type == BINDING_TYPE_IP:
+                    st.caption(f"IP: {ip_address}, Port: {port}")
+                else:
+                    st.caption(f"Type: {binding.binding_type}")
+                
+                current_platform = binding.platform
+                new_platform = st.selectbox(
                     "Platform",
-                    [''] + list(platform_options.keys()),
-                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform'
+                    options=[''] + list(platform_options.keys()),
+                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
+                    key=f"platform_select_{cert.id}_{binding.id}",
+                    index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0
                 )
-            
-            # Additional fields based on certificate type
-            if cert_type in ["JWT", "Client"]:
-                issuer = st.text_input(
-                    "Issuer",
-                    help="Who issued this certificate"
-                )
-                subject = st.text_input(
-                    "Subject",
-                    help="The subject of this certificate"
-                )
-                key_usage = st.text_input(
-                    "Key Usage",
-                    help="How this certificate can be used"
-                )
-            
-            submitted = st.form_submit_button("Save Certificate")
-            
-            if submitted:
-                with Session(engine) as session:
-                    try:
-                        # Create certificate
-                        cert = Certificate(
-                            serial_number=serial_number,
-                            thumbprint=thumbprint,
-                            common_name=common_name,
-                            valid_from=datetime.combine(valid_from, datetime.min.time()),
-                            valid_until=datetime.combine(valid_until, datetime.max.time()),
-                            issuer=str({'CN': issuer}) if cert_type in ["JWT", "Client"] else None,
-                            subject=str({'CN': subject}) if cert_type in ["JWT", "Client"] else None,
-                            key_usage=key_usage if cert_type in ["JWT", "Client"] else None,
-                            signature_algorithm=None
-                        )
-                        session.add(cert)
-                        
-                        # Create a host entry for non-SSL certificates
-                        if cert_type in ["JWT", "Client"]:
-                            host = Host(
-                                name=common_name,
-                                host_type=HOST_TYPE_VIRTUAL,
-                                environment=ENV_INTERNAL,
-                                description=f"Manual {cert_type} certificate entry"
-                            )
-                            session.add(host)
-                            
-                            # Create binding without IP
-                            binding = CertificateBinding(
-                                host_id=host.id,
-                                certificate_id=cert.id,
-                                binding_type=cert_type.upper(),
-                                platform=platform
-                            )
-                            session.add(binding)
-                        
+                
+                # Show current binding details
+                if binding.binding_type == BINDING_TYPE_IP:
+                    details = f"""
+                        **Current Platform:** {platform_options.get(current_platform, 'Not Set')}
+                        **Port:** {binding.port}
+                        **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
+                    """
+                else:
+                    details = f"""
+                        **Current Platform:** {platform_options.get(current_platform, 'Not Set')}
+                        **Binding Type:** {binding.binding_type}
+                        **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
+                    """
+                st.markdown(details)
+                
+                if new_platform != current_platform:
+                    if st.button("Update Platform", key=f"update_platform_{cert.id}_{binding.id}"):
+                        binding.platform = new_platform
                         session.commit()
-                        st.success("Certificate added successfully!")
-                        st.session_state.show_manual_entry = False
+                        st.success("Platform updated!")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Error saving certificate: {str(e)}")
-                        session.rollback()
+                
+                st.divider()  # Add a visual separator between bindings
     
-    st.divider()
-    
-    with Session(engine) as session:
-        certs = session.query(Certificate).all()
-        
-        if not certs:
-            st.warning("No certificates found in database")
-            return
-        
-        # Display total count
-        st.caption(f"Total Certificates: {len(certs)}")
-        
-        # Convert to DataFrame for display
-        cert_data = []
-        for cert in certs:
-            # Convert string representation of SAN back to list
-            san_list = eval(cert.san) if cert.san else []
-            # Get unique hostnames from bindings
-            hostnames = set(binding.host.name for binding in cert.bindings)
-            # Get unique platforms from bindings
-            platforms = set(binding.platform for binding in cert.bindings if binding.platform)
-            
-            cert_data.append({
-                'Common Name': cert.common_name,
-                'Serial Number': cert.serial_number,
-                'Expiration': cert.valid_until,
-                'Hosts': len(hostnames),
-                'SANs': len(san_list),
-                'Platforms': len(platforms),
-                'Status': 'Valid' if cert.valid_until > datetime.now() else 'Expired'
-            })
-        
-        df = pd.DataFrame(cert_data)
-        st.dataframe(
-            df,
-            column_config={
-                'Common Name': st.column_config.TextColumn('Common Name'),
-                'SANs': st.column_config.NumberColumn(
-                    'SANs',
-                    help='Number of Subject Alternative Names'
-                ),
-                'Platforms': st.column_config.NumberColumn(
-                    'Platforms',
-                    help='Number of deployment platforms'
-                ),
-                'Status': st.column_config.TextColumn(
-                    'Status',
-                    help='Certificate validity status'
-                ),
-                'Expiration': st.column_config.DatetimeColumn(
-                    'Expiration Date',
-                    format='DD/MM/YYYY'
-                )
-            },
-            use_container_width=True,
-            height=400,
-            hide_index=True
+    # Add new binding section
+    st.markdown("### Add New Binding")
+    # Add host management section
+    col1, col2 = st.columns(2)
+    with col1:
+        new_hostname = st.text_input("Hostname", key=f"hostname_{cert.id}")
+        new_ip = st.text_input("IP Address (optional)", key=f"ip_{cert.id}")
+        new_port = st.number_input(
+            "Port (optional)", 
+            min_value=1, 
+            max_value=65535, 
+            value=443, 
+            key=f"port_{cert.id}"
         )
+    with col2:
+        new_platform = st.selectbox(
+            "Platform",
+            options=[''] + list(platform_options.keys()),
+            format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
+            key=f"new_platform_{cert.id}"
+        )
+        binding_type = st.selectbox(
+            "Binding Type",
+            [BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT],
+            help="Type of certificate binding",
+            key=f"binding_type_{cert.id}"
+        )
+    
+    if st.button("Add Host", key=f"add_host_{cert.id}"):
+        add_host_to_certificate(cert, new_hostname, new_ip, new_port, new_platform, binding_type, session)
+
+def render_certificate_details(cert):
+    """Render the certificate details tab"""
+    st.json({
+        "Serial Number": cert.serial_number,
+        "Thumbprint": cert.thumbprint,
+        "Issuer": eval(cert.issuer) if cert.issuer else {},
+        "Subject": eval(cert.subject) if cert.subject else {},
+        "Key Usage": cert.key_usage,
+        "Signature Algorithm": cert.signature_algorithm
+    })
+
+def render_manual_entry_form(session):
+    """Render the manual certificate entry form"""
+    with st.form("manual_certificate_entry"):
+        st.subheader("Manual Certificate Entry")
         
-        # Add a selectbox for certificate selection
-        cert_names = [f"{cert.common_name} ({cert.serial_number})" for cert in certs]
-        selected_cert = st.selectbox("Select a certificate to view details", cert_names)
+        col1, col2 = st.columns(2)
+        with col1:
+            cert_type = st.selectbox(
+                "Certificate Type",
+                ["SSL/TLS", "JWT", "Client"],
+                help="Select the type of certificate you're adding",
+                key="manual_cert_type"
+            )
+            common_name = st.text_input(
+                "Common Name",
+                help="The main domain name or identifier for this certificate",
+                key="manual_common_name"
+            )
+            serial_number = st.text_input(
+                "Serial Number",
+                help="The certificate's serial number",
+                key="manual_serial_number"
+            )
+            thumbprint = st.text_input(
+                "Thumbprint/Fingerprint",
+                help="SHA1 or SHA256 fingerprint of the certificate",
+                key="manual_thumbprint"
+            )
         
-        # Show details if a row is selected
-        if selected_cert:
-            # Extract serial number from the selection
-            selected_serial = selected_cert.split('(')[1].rstrip(')')
-            cert = session.query(Certificate).filter_by(
-                serial_number=selected_serial
+        with col2:
+            valid_from = st.date_input(
+                "Valid From",
+                help="Certificate validity start date",
+                key="manual_valid_from"
+            )
+            valid_until = st.date_input(
+                "Valid Until",
+                help="Certificate expiration date",
+                key="manual_valid_until"
+            )
+            platform = st.selectbox(
+                "Platform",
+                [''] + list(platform_options.keys()),
+                format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
+                key="manual_platform"
+            )
+        
+        submitted = st.form_submit_button("Save Certificate")
+        if submitted:
+            save_manual_certificate(cert_type, common_name, serial_number, thumbprint, 
+                                 valid_from, valid_until, platform, session)
+
+def add_host_to_certificate(cert, hostname, ip, port, platform, binding_type, session):
+    """Add a new host binding to a certificate"""
+    try:
+        # Create or get host
+        host = session.query(Host).filter_by(name=hostname).first()
+        if not host:
+            host = Host(
+                name=hostname,
+                host_type=HOST_TYPE_VIRTUAL if binding_type != BINDING_TYPE_IP else HOST_TYPE_SERVER,
+                environment=ENV_INTERNAL,
+                last_seen=datetime.now()
+            )
+            session.add(host)
+            session.flush()
+        
+        # Create HostIP if provided
+        host_ip = None
+        if ip:
+            host_ip = session.query(HostIP).filter_by(
+                host_id=host.id,
+                ip_address=ip
             ).first()
             
-            st.divider()
-            st.subheader(f"Certificate Details: {cert.common_name}")
-            
-            # Create three columns for basic info
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Status", 'Valid' if cert.valid_until > datetime.now() else 'Expired')
-            with col2:
-                st.metric("Valid From", cert.valid_from.strftime('%Y-%m-%d'))
-            with col3:
-                st.metric("Valid Until", cert.valid_until.strftime('%Y-%m-%d'))
-            
-            # Create tabs for different sections
-            tab1, tab2, tab3 = st.tabs(["Subject Alternative Names", "Associated Hosts", "Certificate Info"])
-            
-            with tab1:
-                st.subheader("Subject Alternative Names (SANs)")
-                san_list = eval(cert.san) if cert.san else []
-                if san_list:
-                    for san in san_list:
-                        st.text(san)
-                else:
-                    st.info("No SANs found")
-            
-            with tab2:
-                st.subheader("Associated Hostnames")
-                # Group bindings by hostname
-                hostname_bindings = {}
-                for binding in cert.bindings:
-                    if binding.host.name not in hostname_bindings:
-                        hostname_bindings[binding.host.name] = []
-                    hostname_bindings[binding.host.name].append(binding)
-                
-                if hostname_bindings:
-                    for hostname, bindings in hostname_bindings.items():
-                        # Get all IP:Port combinations for this hostname
-                        ip_ports = [f"{b.host_ip.ip_address}:{b.port}" for b in bindings if b.host_ip]
-                        st.markdown(
-                            f"**{hostname}** "
-                            f"<span style='color:gray; font-size:0.9em'>"
-                            f"(🌐 {', '.join(ip_ports)} • "
-                            f"🕒 {max(b.last_seen for b in bindings).strftime('%Y-%m-%d %H:%M')})</span>",
-                            unsafe_allow_html=True
-                        )
-                else:
-                    st.info("No hostnames associated")
-            
-            with tab3:
-                st.subheader("Certificate Information")
-                st.markdown("### Deployment Platforms")
-                
-                # Show current platforms and allow adding/removing
-                for binding in cert.bindings:
-                    # Create a descriptive title based on binding type
-                    if binding.binding_type == BINDING_TYPE_IP:
-                        title = f"🔗 {binding.host.name} ({binding.host_ip.ip_address if binding.host_ip else 'No IP'}:{binding.port})"
-                    else:
-                        title = f"🔗 {binding.host.name} ({binding.binding_type})"
-                    
-                    with st.expander(title):
-                        current_platform = binding.platform
-                        new_platform = st.selectbox(
-                            "Select Platform",
-                            options=[''] + list(platform_options.keys()),
-                            format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                            key=f"platform_select_{cert.id}_{binding.id}",
-                            index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0
-                        )
-                        
-                        # Show current binding details
-                        if binding.binding_type == BINDING_TYPE_IP:
-                            details = f"""
-                                **Current Platform:** {platform_options.get(current_platform, 'Not Set')}
-                                **Port:** {binding.port}
-                                **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
-                            """
-                        else:
-                            details = f"""
-                                **Current Platform:** {platform_options.get(current_platform, 'Not Set')}
-                                **Binding Type:** {binding.binding_type}
-                                **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
-                            """
-                        st.caption(details)
-                        
-                        if new_platform != current_platform:
-                            if st.button("Update Platform", key=f"update_platform_{cert.id}_{binding.id}"):
-                                with Session(engine) as session:
-                                    binding_update = session.query(CertificateBinding).filter_by(id=binding.id).first()
-                                    binding_update.platform = new_platform
-                                    session.commit()
-                                    st.success("Platform updated!")
-                                    st.rerun()
-                
-                st.divider()
-                st.json({
-                    "Serial Number": cert.serial_number,
-                    "Thumbprint": cert.thumbprint,
-                    "Issuer": eval(cert.issuer) if cert.issuer else {},
-                    "Subject": eval(cert.subject) if cert.subject else {},
-                    "Key Usage": cert.key_usage,
-                    "Signature Algorithm": cert.signature_algorithm
-                })
+            if not host_ip:
+                host_ip = HostIP(
+                    host_id=host.id,
+                    ip_address=ip,
+                    last_seen=datetime.now()
+                )
+                session.add(host_ip)
+                session.flush()
+        
+        # Create binding
+        binding = CertificateBinding(
+            host_id=host.id,
+            host_ip_id=host_ip.id if host_ip else None,
+            certificate_id=cert.id,
+            port=port if binding_type == BINDING_TYPE_IP else None,
+            binding_type=binding_type,
+            platform=platform,
+            last_seen=datetime.now()
+        )
+        session.add(binding)
+        session.commit()
+        st.success("Host added successfully!")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error adding host: {str(e)}")
+        session.rollback()
+
+def save_manual_certificate(cert_type, common_name, serial_number, thumbprint, 
+                          valid_from, valid_until, platform, session):
+    """Save a manually entered certificate"""
+    try:
+        # Create certificate
+        cert = Certificate(
+            serial_number=serial_number,
+            thumbprint=thumbprint,
+            common_name=common_name,
+            valid_from=datetime.combine(valid_from, datetime.min.time()),
+            valid_until=datetime.combine(valid_until, datetime.max.time())
+        )
+        session.add(cert)
+        session.commit()
+        st.success("Certificate added successfully!")
+        st.session_state.show_manual_entry = False
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error saving certificate: {str(e)}")
+        session.rollback()
 

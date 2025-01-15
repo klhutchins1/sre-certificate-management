@@ -71,7 +71,7 @@ class Host(Base):
     
     # Relationships
     ip_addresses = relationship("HostIP", back_populates="host")
-    certificates = relationship("CertificateBinding", back_populates="host")
+    certificate_bindings = relationship("CertificateBinding", back_populates="host")
 
 class HostIP(Base):
     """Represents IP addresses assigned to a host"""
@@ -88,7 +88,7 @@ class HostIP(Base):
     
     # Relationships
     host = relationship("Host", back_populates="ip_addresses")
-    bindings = relationship("CertificateBinding", back_populates="host_ip")
+    certificate_bindings = relationship("CertificateBinding", back_populates="host_ip")
 
 class CertificateBinding(Base):
     """Represents where a certificate is deployed/used"""
@@ -107,9 +107,9 @@ class CertificateBinding(Base):
     service_name = Column(String, nullable=True)  # e.g., "Default Web Site", "API Service"
     last_seen = Column(DateTime)
     
-    host = relationship("Host", back_populates="certificates")
-    host_ip = relationship("HostIP", back_populates="bindings")
-    certificate = relationship("Certificate", back_populates="bindings")
+    host = relationship("Host", back_populates="certificate_bindings")
+    host_ip = relationship("HostIP", back_populates="certificate_bindings")
+    certificate = relationship("Certificate", back_populates="certificate_bindings")
 
 class Certificate(Base):
     __tablename__ = 'certificates'
@@ -125,7 +125,7 @@ class Certificate(Base):
     san = Column(String)
     key_usage = Column(String)
     signature_algorithm = Column(String)
-    bindings = relationship("CertificateBinding", back_populates="certificate")
+    certificate_bindings = relationship("CertificateBinding", back_populates="certificate")
     scans = relationship("CertificateScan", back_populates="certificate")
 
 class CertificateScan(Base):

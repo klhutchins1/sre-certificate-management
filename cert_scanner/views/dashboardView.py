@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from ..models import Certificate, Host
 import plotly.express as px
+from ..db import SessionManager
 
 def render_dashboard(engine):
     """Render the main dashboard"""
@@ -12,7 +13,11 @@ def render_dashboard(engine):
     # Create three columns for metrics
     col1, col2, col3 = st.columns([1, 1, 1])
     
-    with Session(engine) as session:
+    with SessionManager(engine) as session:
+        if not session:
+            st.error("Database connection failed")
+            return
+        
         total_certs = session.query(Certificate).count()
         expiring_soon = session.query(Certificate).filter(
             Certificate.valid_until <= datetime.now() + timedelta(days=30)

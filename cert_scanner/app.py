@@ -115,7 +115,7 @@ def render_certificate_list():
         cert_data = []
         for cert in certs:
             # Convert string representation of SAN back to list
-            san_list = eval(cert.subject) if cert.subject else []
+            san_list = eval(cert.san) if cert.san else []
             hostnames_list = [h.name for h in cert.hostnames]
             cert_data.append({
                 'Common Name': cert.common_name,
@@ -178,7 +178,7 @@ def render_certificate_list():
             
             with tab1:
                 st.subheader("Subject Alternative Names (SANs)")
-                san_list = eval(cert.subject) if cert.subject else []
+                san_list = eval(cert.san) if cert.san else []
                 if san_list:
                     for san in san_list:
                         st.text(san)
@@ -249,6 +249,7 @@ def render_scan_interface():
                                             valid_until=cert_info.expiration_date,
                                             issuer=str(cert_info.issuer),
                                             subject=str(cert_info.subject),
+                                            san=str(cert_info.san),
                                             key_usage=cert_info.key_usage,
                                             signature_algorithm=cert_info.signature_algorithm
                                         )

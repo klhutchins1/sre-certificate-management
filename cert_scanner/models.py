@@ -21,6 +21,7 @@ class Certificate(Base):
     valid_until = Column(DateTime)
     issuer = Column(String)
     subject = Column(String)
+    san = Column(String)  # Store SANs as JSON string
     key_usage = Column(String)
     signature_algorithm = Column(String)
     

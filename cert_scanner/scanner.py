@@ -116,7 +116,10 @@ class CertificateScanner:
             if 'subjectAltName' in str(ext.get_short_name()):
                 san_string = ext.__str__()
                 # Parse the SAN string into a list
-                san = [name.strip() for name in san_string.split(',')]
+                for entry in san_string.split(','):
+                    entry = entry.strip()
+                    if entry.startswith('DNS:'):
+                        san.append(entry.split('DNS:')[1].strip())
         return san
         
     def _extract_common_name(self, x509cert) -> Optional[str]:

@@ -1,4 +1,5 @@
 venv/
-cert_scanner/__pycache__
-
+__pycache__
+*.db
+*.lock
 SRE-CertificateManagement.code-workspace

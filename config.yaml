@@ -1,12 +1,30 @@
+alerts:
+  expiry_warnings:
+  - days: 90
+    level: info
+  - days: 30
+    level: warning
+  - days: 7
+    level: critical
+  failed_scans:
+    consecutive_failures: 3
+  persistence_file: data/alerts.json
+exports:
+  csv:
+    delimiter: ','
+    encoding: utf-8
+  pdf:
+    logo: reports/logo.png
+    template: reports/template.html
 paths:
-  backups: C:\Users\Kimball\AppData\Local\Temp\pytest-of-Kimball\pytest-37\test_multiple_backups_ordering0\backups
-  database: C:\Users\Kimball\AppData\Local\Temp\pytest-of-Kimball\pytest-37\test_multiple_backups_ordering0\data\test.db
+  backups: data/backups
+  database: data/certificates.db
 scanning:
   external:
-    delay: 1.0
+    delay: 5.0
     domains: []
-    rate_limit: 30
+    rate_limit: 15
   internal:
-    delay: 0.5
+    delay: 2.0
     domains: []
     rate_limit: 60

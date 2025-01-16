@@ -123,7 +123,7 @@ def render_certificate_card(cert, session):
     tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Bindings", "Details", "Change Tracking"])
     
     with tab1:
-        render_certificate_overview(cert)
+        render_certificate_overview(cert, session)
     
     with tab2:
         render_certificate_bindings(cert, session)
@@ -134,7 +134,7 @@ def render_certificate_card(cert, session):
     with tab4:
         render_certificate_tracking(cert, session)
 
-def render_certificate_overview(cert):
+def render_certificate_overview(cert, session):
     """Render the certificate overview tab"""
     col1, col2 = st.columns(2)
     with col1:
@@ -150,20 +150,43 @@ def render_certificate_overview(cert):
         platforms = [b.platform for b in bindings if b.platform]
         st.markdown(f"""
             **Total Bindings:** {len(bindings)}  
-            **Platforms:** {", ".join(set(platforms)) or "None"}
+            **Platforms:** {", ".join(set(platforms)) or "None"}  
+            **SANs Scanned:** {"Yes" if cert.sans_scanned else "No"}
         """)
     
-    # Add SAN section with expander
+    # Add SAN section with expander and scan button
     with st.expander("Subject Alternative Names", expanded=True):
         if cert.san:
             try:
-                san_list = eval(cert.san)
+                # Parse SANs - handle both string and list formats
+                san_list = cert.san
+                if isinstance(san_list, str):
+                    try:
+                        san_list = eval(san_list)
+                    except:
+                        san_list = cert.san.split(',')
+                
+                # Clean up the SAN list - remove any empty strings and strip whitespace
+                san_list = [s.strip() for s in san_list if s.strip()]
+                
                 if san_list:
-                    st.text_area("", value="\n".join(san_list), height=min(35 + 21 * len(san_list), 300), disabled=True)
+                    col1, col2 = st.columns([0.7, 0.3])
+                    with col1:
+                        st.text_area("", value="\n".join(san_list), height=min(35 + 21 * len(san_list), 300), disabled=True)
+                    with col2:
+                        if st.button("🔍 Scan SANs", type="primary", key=f"scan_sans_{cert.id}"):
+                            # Store SANs in session state for scan page
+                            st.session_state.scan_targets = san_list
+                            # Mark certificate as scanned and commit to database
+                            cert.sans_scanned = True
+                            session.commit()
+                            # Navigate to scan view
+                            st.session_state.current_view = "Scan"
+                            st.rerun()
                 else:
                     st.info("No Subject Alternative Names")
-            except Exception:
-                st.error("Error parsing Subject Alternative Names")
+            except Exception as e:
+                st.error(f"Error parsing Subject Alternative Names: {str(e)}")
         else:
             st.info("No Subject Alternative Names")
 

@@ -9,13 +9,30 @@ from ..models import (
 
 def render_scan_interface(engine):
     """Render the certificate scanning interface"""
+    # Clear transitioning flag if set
+    if st.session_state.get('transitioning', False):
+        st.session_state.transitioning = False
+        
     st.title("Scan Certificates")
     
     col1, col2 = st.columns([3, 1])
     
     with col1:
+        # Check for pre-populated SANs from certificate view
+        default_scan_targets = st.session_state.get('scan_targets', [])
+        if default_scan_targets:
+            # Ensure we have a list of strings
+            if isinstance(default_scan_targets, str):
+                default_scan_targets = [default_scan_targets]
+            # Clean up the targets
+            default_scan_targets = [s.strip() for s in default_scan_targets if s.strip()]
+            default_text = "\n".join(default_scan_targets)
+        else:
+            default_text = ""
+            
         scan_input = st.text_area(
             "Enter hostnames to scan (one per line)",
+            value=default_text,
             height=150,
             placeholder="""example.com
 example.com:8443
@@ -230,6 +247,10 @@ internal.server.local:444"""
                                 st.markdown(f"- {host}")
                         
                         st.success(f"Scan completed! Found {len(results_table['success'])} certificates.")
+                
+                # Only clear scan targets after successful scan
+                if 'scan_targets' in st.session_state:
+                    del st.session_state.scan_targets
             else:
                 st.warning("Please enter at least one hostname to scan")
     

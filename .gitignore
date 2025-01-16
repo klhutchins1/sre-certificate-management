@@ -1,6 +1,9 @@
 venv/
 __pycache__
 backups/
+
+
 *.db
 *.lock
+.app_running
 SRE-CertificateManagement.code-workspace

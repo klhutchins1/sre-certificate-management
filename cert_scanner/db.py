@@ -21,9 +21,9 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'cert
 db_lock = threading.Lock()
 
 def update_database_schema(engine):
-    """Update database schema to include new tables"""
+    """Update database schema to include new tables and columns"""
     try:
-        logger.info("Checking for missing tables...")
+        logger.info("Checking for missing tables and columns...")
         inspector = inspect(engine)
         existing_tables = inspector.get_table_names()
         
@@ -39,11 +39,27 @@ def update_database_schema(engine):
             for table_name in missing_tables:
                 if table_name in Base.metadata.tables:
                     Base.metadata.tables[table_name].create(engine)
-            logger.info("Database schema updated successfully")
-            return True
-        else:
-            logger.debug("No missing tables found")
-            return True
+        
+        # Check for missing columns in existing tables
+        for table_name in existing_tables:
+            if table_name in Base.metadata.tables:
+                model_columns = {c.name: c for c in Base.metadata.tables[table_name].columns}
+                existing_columns = {c['name']: c for c in inspector.get_columns(table_name)}
+                
+                # Find missing columns
+                missing_columns = set(model_columns.keys()) - set(existing_columns.keys())
+                if missing_columns:
+                    logger.info(f"Adding missing columns to {table_name}: {missing_columns}")
+                    with engine.begin() as connection:
+                        for column_name in missing_columns:
+                            column = model_columns[column_name]
+                            nullable = 'NOT NULL' if not column.nullable else ''
+                            default = f"DEFAULT {column.default.arg}" if column.default is not None else ''
+                            sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {nullable} {default}"
+                            connection.execute(text(sql.strip()))
+        
+        logger.info("Database schema updated successfully")
+        return True
             
     except Exception as e:
         logger.error(f"Failed to update database schema: {str(e)}")
@@ -73,9 +89,10 @@ def init_database():
         logger.info(f"Using database at: {db_path}")
         engine = create_engine(f"sqlite:///{db_path}")
         
-        # Create tables
+        # Create tables and update schema
         logger.info("Creating database tables...")
         Base.metadata.create_all(engine)
+        update_database_schema(engine)
         
         # Verify tables were created
         with engine.connect() as conn:

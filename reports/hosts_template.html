@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Host Management Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header img {
+            max-width: 200px;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            color: #2c3e50;
+            margin: 0;
+            font-size: 24px;
+        }
+        .header p {
+            color: #7f8c8d;
+            margin: 5px 0;
+        }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .summary-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .summary-box h3 {
+            margin: 0;
+            color: #2c3e50;
+        }
+        .summary-box p {
+            margin: 5px 0;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .hosts {
+            margin-bottom: 30px;
+        }
+        .host {
+            background: #fff;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .host h3 {
+            color: #2c3e50;
+            margin: 0 0 15px 0;
+        }
+        .host-info {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .host-field {
+            margin-bottom: 10px;
+        }
+        .host-field strong {
+            color: #34495e;
+            display: block;
+            margin-bottom: 5px;
+        }
+        .host-field span {
+            color: #7f8c8d;
+        }
+        .bindings {
+            margin-top: 15px;
+        }
+        .bindings table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 5px;
+        }
+        .bindings th {
+            background: #f8f9fa;
+            padding: 8px;
+            text-align: left;
+            border: 1px solid #dee2e6;
+            color: #2c3e50;
+        }
+        .bindings td {
+            padding: 8px;
+            border: 1px solid #dee2e6;
+            color: #7f8c8d;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        .status-valid {
+            background: #27ae60;
+            color: white;
+        }
+        .status-expired {
+            background: #e74c3c;
+            color: white;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #7f8c8d;
+            font-size: 12px;
+        }
+        @page {
+            margin: 2cm;
+            @top-center {
+                content: "Host Management Report";
+                font-family: Arial, sans-serif;
+                font-size: 10px;
+                color: #7f8c8d;
+            }
+            @bottom-center {
+                content: "Page " counter(page) " of " counter(pages);
+                font-family: Arial, sans-serif;
+                font-size: 10px;
+                color: #7f8c8d;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        {% if logo_path %}
+        <img src="{{ logo_path }}" alt="Logo">
+        {% endif %}
+        <h1>Host Management Report</h1>
+        <p>Generated on {{ generated_at }}</p>
+    </div>
+
+    <div class="summary">
+        <div class="summary-box">
+            <h3>Total Hosts</h3>
+            <p>{{ total_hosts }}</p>
+        </div>
+        <div class="summary-box">
+            <h3>Total Certificates</h3>
+            <p>{{ total_certificates }}</p>
+        </div>
+    </div>
+
+    <div class="hosts">
+        <h2>Host Details</h2>
+        {% for host in hosts %}
+        <div class="host">
+            <h3>{{ host.hostname }}</h3>
+            <div class="host-info">
+                <div class="host-field">
+                    <strong>Hostname</strong>
+                    <span>{{ host.hostname }}</span>
+                </div>
+                <div class="host-field">
+                    <strong>IP Address</strong>
+                    <span>{{ host.ip_address }}</span>
+                </div>
+            </div>
+
+            <div class="bindings">
+                <strong>Certificate Bindings</strong>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Port</th>
+                            <th>Platform</th>
+                            <th>Certificate</th>
+                            <th>Status</th>
+                            <th>Valid From</th>
+                            <th>Valid Until</th>
+                            <th>Last Seen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for binding in host.bindings %}
+                        <tr>
+                            <td>{{ binding.port }}</td>
+                            <td>{{ binding.platform }}</td>
+                            <td>{{ binding.certificate.common_name }}</td>
+                            <td>
+                                <span class="status {% if binding.certificate.is_valid %}status-valid{% else %}status-expired{% endif %}">
+                                    {% if binding.certificate.is_valid %}Valid{% else %}Expired{% endif %}
+                                </span>
+                            </td>
+                            <td>{{ binding.certificate.not_before.strftime('%Y-%m-%d') }}</td>
+                            <td>{{ binding.certificate.not_after.strftime('%Y-%m-%d') }}</td>
+                            <td>{{ binding.last_seen.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="footer">
+        <p>Generated by Certificate Management System</p>
+    </div>
+</body>
+</html> 

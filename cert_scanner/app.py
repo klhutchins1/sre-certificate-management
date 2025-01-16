@@ -33,72 +33,61 @@ logger = logging.getLogger(__name__)
 # Lock for thread-safe initialization
 init_lock = threading.Lock()
 
-# Page configuration
+# Configure page at module level (must be first Streamlit command)
 st.set_page_config(
     page_title="Certificate Manager",
-    page_icon="🔒",
+    page_icon="🔐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Global styling for full width and navigation
+# Add CSS for consistent layout
 st.markdown("""
     <style>
-        .block-container {
-            padding-top: 1rem;
-            padding-right: 1rem;
-            padding-left: 1rem;
-            padding-bottom: 1rem;
-            max-width: 100%;
+        /* Main container and header */
+        [data-testid="stAppViewContainer"] {
+            width: 100vw;
+            padding: 0;
         }
-        .stDataFrame {
-            width: 100%;
+        
+        [data-testid="stHeader"] {
+            display: none;
         }
-        .element-container {
-            width: 100%;
+        
+        /* Sidebar */
+        [data-testid="stSidebar"] {
+            width: 250px;
+            position: fixed;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            overflow: auto;
         }
-        /* Make all containers full width */
-        .stTabs [data-baseweb="tab-panel"] {
-            padding-top: 1rem;
-            width: 100%;
-        }
-        section[data-testid="stSidebar"] {
-            width: 250px !important;
-        }
-        /* Main content area */
-        .main .block-container {
+        
+        [data-testid="stSidebarContent"] {
             padding: 2rem 1rem;
+        }
+        
+        /* Main content area */
+        [data-testid="stMainBlockContainer"] {
+            margin-left: 250px;
+            width: calc(100vw - 250px);
+            padding: 2rem;
             max-width: none;
         }
-        /* Tables and dataframes */
-        .stTable, div[data-testid="stTable"] {
-            width: 100%;
-        }
-        /* Forms and inputs */
-        .stForm {
-            width: 100%;
-        }
-        /* Metrics and cards */
-        [data-testid="stMetricValue"] {
-            width: 100%;
-        }
-        /* Expanders */
-        .streamlit-expanderContent {
-            width: 100%;
-        }
-        /* Sidebar styling */
-        div[data-testid="stSidebarNav"] {
-            padding-top: 2rem;
-        }
+        
+        /* Navigation styling */
         div.row-widget.stRadio > div {
-            font-size: 1rem;
-            line-height: 2.5;
+            flex-direction: column;
+            gap: 0.5rem;
         }
+        
         div.row-widget.stRadio > div[role="radiogroup"] > label {
             padding: 0.5rem 1rem;
             width: 100%;
             cursor: pointer;
         }
+        
         div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
             background-color: rgba(151, 166, 195, 0.15);
         }
@@ -112,6 +101,7 @@ def init_session_state():
             logger.info("Initializing session state...")
             st.session_state.scanner = CertificateScanner()
             st.session_state.selected_cert = None
+            st.session_state.current_view = "Dashboard"
             logger.info("Initializing database engine...")
             st.session_state.engine = init_database()
             if st.session_state.engine:
@@ -126,56 +116,66 @@ def render_sidebar():
         st.title("Certificate Manager")
         st.markdown("---")
         
+        # Map pages to their display names with icons
+        page_mapping = {
+            "Dashboard": "📊 Dashboard",
+            "Certificates": "🔐 Certificates",
+            "Hosts": "💻 Hosts",
+            "Scan": "🔍 Scan",
+            "History": "📜 History",
+            "Search": "🔎 Search",
+            "Settings": "⚙️ Settings"
+        }
+        
+        # Create reverse mapping for display names to pages
+        reverse_mapping = {display: page for page, display in page_mapping.items()}
+        
+        # Get the current view's display name
+        current_display = page_mapping.get(st.session_state.current_view, "📊 Dashboard")
+        
         # Navigation list with icons
         selected = st.radio(
             "Navigation",
-            options=[
-                "📊 Dashboard",
-                "🔐 Certificates",
-                "💻 Hosts",
-                "🔍 Scan",
-                "📜 History",
-                "🔎 Search",
-                "⚙️ Settings"
-            ],
-            label_visibility="collapsed",
-            horizontal=False
+            options=list(page_mapping.values()),
+            index=list(page_mapping.values()).index(current_display),
+            key="nav_radio",
+            label_visibility="collapsed"
         )
         
-        # Strip icons for page logic
-        current_page = selected.split(" ")[1]
+        # Update the current view based on selection
+        new_view = reverse_mapping[selected]
+        if new_view != st.session_state.current_view:
+            st.session_state.current_view = new_view
+            st.rerun()
         
         st.markdown("---")
         st.caption("v1.0.0")
-        return current_page
+        
+        return st.session_state.current_view
 
 def main():
-    logger.info("Starting application...")
+    """Main application entry point"""
+    # Initialize session state
     init_session_state()
     
-    if not st.session_state.engine:
-        st.error("Failed to initialize database. Please check your configuration.")
-        return
+    # Get current view from sidebar
+    current_view = render_sidebar()
     
-    logger.info("Rendering main interface...")
-    # Render sidebar and get current page
-    current_page = render_sidebar()
-    
-    # Render the selected page
-    if current_page == "Dashboard":
+    # Render the appropriate view
+    if current_view == "Dashboard":
         render_dashboard(st.session_state.engine)
-    elif current_page == "Certificates":
+    elif current_view == "Certificates":
         render_certificate_list(st.session_state.engine)
-    elif current_page == "Hosts":
+    elif current_view == "Hosts":
         render_hosts_view(st.session_state.engine)
-    elif current_page == "Scan":
+    elif current_view == "Scan":
         render_scan_interface(st.session_state.engine)
-    elif current_page == "History":
+    elif current_view == "History":
         render_history_view(st.session_state.engine)
-    elif current_page == "Search":
+    elif current_view == "Search":
         render_search_view(st.session_state.engine)
-    elif current_page == "Settings":
-        render_settings_view()
+    elif current_view == "Settings":
+        render_settings_view(st.session_state.engine)
 
 if __name__ == "__main__":
     main() 

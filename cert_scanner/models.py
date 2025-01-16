@@ -125,9 +125,12 @@ class Certificate(Base):
     san = Column(String)
     key_usage = Column(String)
     signature_algorithm = Column(String)
-    certificate_bindings = relationship("CertificateBinding", back_populates="certificate")
+    sans_scanned = Column(Boolean, default=False)  # Track if SANs have been scanned
+    
+    # Relationships
+    certificate_bindings = relationship("CertificateBinding", back_populates="certificate", cascade="all, delete-orphan")
+    tracking_entries = relationship("CertificateTracking", back_populates="certificate", cascade="all, delete-orphan")
     scans = relationship("CertificateScan", back_populates="certificate")
-    tracking_entries = relationship("CertificateTracking", back_populates="certificate", order_by="CertificateTracking.planned_change_date")
 
 class CertificateScan(Base):
     __tablename__ = 'certificate_scans'

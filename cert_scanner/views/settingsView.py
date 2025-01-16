@@ -1,5 +1,5 @@
 import streamlit as st
-from ..settings import settings
+from ..settings import Settings
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +9,14 @@ import glob
 import logging
 import yaml
 import time
+from ..db import SessionManager
+from ..exports import (
+    export_certificates_to_csv,
+    export_certificates_to_pdf,
+    export_hosts_to_csv,
+    export_hosts_to_pdf,
+    WEASYPRINT_AVAILABLE
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,136 +184,90 @@ def create_backup():
         logger.error(f"Failed to create backup: {str(e)}")
         return False, f"Failed to create backup: {str(e)}"
 
-def render_settings_view():
-    st.title("Settings")
+def render_settings_view(engine):
+    """Render the settings interface"""
+    settings = Settings()
     
-    # Backup and Restore section
-    st.subheader("Backup & Restore")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### Create Backup")
-        if st.button("Create New Backup", help="Create a backup of database and configuration"):
-            success, message = create_backup()
-            if success:
-                st.success(message)
-            else:
-                st.error(message)
-    
-    with col2:
-        st.markdown("#### Restore Backup")
-        backups = list_backups()
-        if not backups:
-            st.info("No backups found")
-        else:
-            # Create a list of backup options with formatted timestamps
-            backup_options = {
-                f"Backup from {datetime.fromisoformat(b['created']).strftime('%Y-%m-%d %H:%M:%S')}": b 
-                for b in backups
-            }
-            
-            selected_backup = st.selectbox(
-                "Select Backup to Restore",
-                options=list(backup_options.keys()),
-                help="Choose a backup to restore from"
-            )
-            
-            if st.button("Restore Selected Backup", help="Restore the selected backup"):
-                if st.warning("This will overwrite current settings and database. Are you sure?"):
-                    success, message = restore_backup(backup_options[selected_backup])
-                    if success:
-                        st.success(message)
-                        st.warning("Please restart the application for changes to take effect")
-                    else:
-                        st.error(message)
-    
-    st.markdown("---")
-    
-    # Create tabs for different settings categories
+    # Create tabs for different settings sections
     tabs = st.tabs(["Paths", "Scanning", "Alerts", "Exports"])
     
     with tabs[0]:  # Paths
-        st.header("Database & Backup Paths")
+        st.header("Path Settings")
         
-        db_path = st.text_input(
+        database_path = st.text_input(
             "Database Path",
             value=settings.get("paths.database"),
-            help="Path where the certificate database is stored"
-        )
-        backup_path = st.text_input(
-            "Backups Directory",
-            value=settings.get("paths.backups"),
-            help="Directory where backups will be stored"
+            help="Path to the SQLite database file"
         )
         
-        if st.button("Save Paths"):
-            settings.update("paths.database", db_path)
+        backup_path = st.text_input(
+            "Backup Path",
+            value=settings.get("paths.backups"),
+            help="Path for storing backup files"
+        )
+        
+        if st.button("Save Path Settings"):
+            settings.update("paths.database", database_path)
             settings.update("paths.backups", backup_path)
+            
             if settings.save():
-                st.success("Paths updated successfully!")
+                st.success("Path settings updated successfully!")
             else:
                 st.error("Failed to save path settings")
     
     with tabs[1]:  # Scanning
         st.header("Scanning Settings")
         
-        # Internal scanning profile
-        st.subheader("Internal Scanning Profile")
-        internal_rate = st.number_input(
+        # Internal scanning settings
+        st.subheader("Internal Scanning")
+        internal_rate_limit = st.number_input(
             "Rate Limit (requests/minute)",
             min_value=1,
             value=int(settings.get("scanning.internal.rate_limit", 60)),
-            key="internal_rate",
-            step=1
+            help="Maximum number of requests per minute for internal scanning"
         )
         internal_delay = st.number_input(
             "Delay Between Requests (seconds)",
             min_value=0.0,
-            value=float(settings.get("scanning.internal.delay", 0.5)),
-            key="internal_delay",
-            step=0.1,
+            value=float(settings.get("scanning.internal.delay", 2.0)),
+            help="Delay between requests for internal scanning",
             format="%.1f"
         )
         internal_domains = st.text_area(
             "Internal Domains (one per line)",
             value="\n".join(settings.get("scanning.internal.domains", [])),
-            help="List of internal domains to scan",
-            key="internal_domains"
+            help="List of internal domains to scan"
         )
         
-        # External scanning profile
-        st.subheader("External Scanning Profile")
-        external_rate = st.number_input(
+        # External scanning settings
+        st.subheader("External Scanning")
+        external_rate_limit = st.number_input(
             "Rate Limit (requests/minute)",
             min_value=1,
-            value=int(settings.get("scanning.external.rate_limit", 30)),
-            key="external_rate",
-            step=1
+            value=int(settings.get("scanning.external.rate_limit", 15)),
+            help="Maximum number of requests per minute for external scanning"
         )
         external_delay = st.number_input(
             "Delay Between Requests (seconds)",
             min_value=0.0,
-            value=float(settings.get("scanning.external.delay", 1.0)),
-            key="external_delay",
-            step=0.1,
+            value=float(settings.get("scanning.external.delay", 5.0)),
+            help="Delay between requests for external scanning",
             format="%.1f"
         )
         external_domains = st.text_area(
             "External Domains (one per line)",
             value="\n".join(settings.get("scanning.external.domains", [])),
-            help="List of external domains to scan",
-            key="external_domains"
+            help="List of external domains to scan"
         )
         
         if st.button("Save Scanning Settings"):
-            # Update internal settings
-            settings.update("scanning.internal.rate_limit", internal_rate)
+            # Update internal scanning settings
+            settings.update("scanning.internal.rate_limit", internal_rate_limit)
             settings.update("scanning.internal.delay", internal_delay)
             settings.update("scanning.internal.domains", [d.strip() for d in internal_domains.split("\n") if d.strip()])
             
-            # Update external settings
-            settings.update("scanning.external.rate_limit", external_rate)
+            # Update external scanning settings
+            settings.update("scanning.external.rate_limit", external_rate_limit)
             settings.update("scanning.external.delay", external_delay)
             settings.update("scanning.external.domains", [d.strip() for d in external_domains.split("\n") if d.strip()])
             
@@ -321,36 +283,43 @@ def render_settings_view():
         st.subheader("Certificate Expiry Warnings")
         expiry_warnings = settings.get("alerts.expiry_warnings", [])
         
-        col1, col2 = st.columns(2)
-        with col1:
-            days_90 = st.number_input("Info Alert (days)", value=90, min_value=1)
-            days_30 = st.number_input("Warning Alert (days)", value=30, min_value=1)
-            days_7 = st.number_input("Critical Alert (days)", value=7, min_value=1)
+        for i, warning in enumerate(expiry_warnings):
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                days = st.number_input(
+                    f"Days before expiry {i+1}",
+                    min_value=1,
+                    value=warning.get("days", 30)
+                )
+            with col2:
+                level = st.selectbox(
+                    f"Alert level {i+1}",
+                    options=["info", "warning", "critical"],
+                    index=["info", "warning", "critical"].index(warning.get("level", "warning"))
+                )
+            with col3:
+                if st.button(f"Remove Warning {i+1}"):
+                    expiry_warnings.pop(i)
+                    settings.update("alerts.expiry_warnings", expiry_warnings)
+                    settings.save()
+                    st.rerun()
         
-        with col2:
-            st.write("Alert Levels")
-            st.info("Info Alert")
-            st.warning("Warning Alert")
-            st.error("Critical Alert")
+        if st.button("Add Expiry Warning"):
+            expiry_warnings.append({"days": 30, "level": "warning"})
+            settings.update("alerts.expiry_warnings", expiry_warnings)
+            settings.save()
+            st.rerun()
         
-        # Failed scans
+        # Failed scan alerts
         st.subheader("Failed Scan Alerts")
         consecutive_failures = st.number_input(
-            "Consecutive Failures Before Alert",
+            "Consecutive failures before alert",
             min_value=1,
-            value=settings.get("alerts.failed_scans.consecutive_failures"),
+            value=settings.get("alerts.failed_scans.consecutive_failures", 3)
         )
         
         if st.button("Save Alert Settings"):
-            # Update expiry warnings
-            new_expiry_warnings = [
-                {"days": days_90, "level": "info"},
-                {"days": days_30, "level": "warning"},
-                {"days": days_7, "level": "critical"}
-            ]
-            settings.update("alerts.expiry_warnings", new_expiry_warnings)
             settings.update("alerts.failed_scans.consecutive_failures", consecutive_failures)
-            
             if settings.save():
                 st.success("Alert settings updated successfully!")
             else:
@@ -361,15 +330,24 @@ def render_settings_view():
         
         # PDF settings
         st.subheader("PDF Export Settings")
+        if not WEASYPRINT_AVAILABLE:
+            st.warning(
+                "PDF export is currently unavailable. To enable PDF export, please install GTK3. "
+                "Visit https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows "
+                "for installation instructions."
+            )
+        
         pdf_template = st.text_input(
             "PDF Template Path",
             value=settings.get("exports.pdf.template"),
-            help="Path to the HTML template for PDF reports"
+            help="Path to the HTML template for PDF reports",
+            disabled=not WEASYPRINT_AVAILABLE
         )
         pdf_logo = st.text_input(
             "Logo Path",
             value=settings.get("exports.pdf.logo"),
-            help="Path to the logo image for PDF reports"
+            help="Path to the logo image for PDF reports",
+            disabled=not WEASYPRINT_AVAILABLE
         )
         
         # CSV settings
@@ -394,4 +372,52 @@ def render_settings_view():
             if settings.save():
                 st.success("Export settings updated successfully!")
             else:
-                st.error("Failed to save export settings") 
+                st.error("Failed to save export settings")
+        
+        # Export functionality
+        st.divider()
+        st.subheader("Generate Reports")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("Certificate Reports")
+            if st.button("Export Certificates to CSV"):
+                try:
+                    with SessionManager(engine) as session:
+                        output_path = export_certificates_to_csv(session)
+                        st.success(f"Certificates exported to CSV: {output_path}")
+                except Exception as e:
+                    st.error(f"Failed to export certificates to CSV: {str(e)}")
+            
+            pdf_button = st.button("Export Certificates to PDF", disabled=not WEASYPRINT_AVAILABLE)
+            if pdf_button:
+                try:
+                    with SessionManager(engine) as session:
+                        output_path = export_certificates_to_pdf(session)
+                        st.success(f"Certificates exported to PDF: {output_path}")
+                except RuntimeError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Failed to export certificates to PDF: {str(e)}")
+        
+        with col2:
+            st.write("Host Reports")
+            if st.button("Export Hosts to CSV"):
+                try:
+                    with SessionManager(engine) as session:
+                        output_path = export_hosts_to_csv(session)
+                        st.success(f"Hosts exported to CSV: {output_path}")
+                except Exception as e:
+                    st.error(f"Failed to export hosts to CSV: {str(e)}")
+            
+            pdf_button = st.button("Export Hosts to PDF", disabled=not WEASYPRINT_AVAILABLE)
+            if pdf_button:
+                try:
+                    with SessionManager(engine) as session:
+                        output_path = export_hosts_to_pdf(session)
+                        st.success(f"Hosts exported to PDF: {output_path}")
+                except RuntimeError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Failed to export hosts to PDF: {str(e)}") 

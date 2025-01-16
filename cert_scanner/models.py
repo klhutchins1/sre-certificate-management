@@ -136,12 +136,14 @@ class CertificateScan(Base):
     __tablename__ = 'certificate_scans'
     
     id = Column(Integer, primary_key=True)
-    certificate_id = Column(Integer, ForeignKey('certificates.id'))
+    certificate_id = Column(Integer, ForeignKey('certificates.id'), nullable=True)
+    host_id = Column(Integer, ForeignKey('hosts.id'), nullable=True)
     scan_date = Column(DateTime)
     status = Column(String)
     port = Column(Integer)
     
     certificate = relationship("Certificate", back_populates="scans")
+    host = relationship("Host", backref="scans")
 
 class CertificateTracking(Base):
     """Tracks changes and upcoming changes for certificates"""

@@ -15,6 +15,14 @@ def render_scan_interface(engine):
         
     st.title("Scan Certificates")
     
+    # Initialize session state for scan results if not exists
+    if 'scan_results' not in st.session_state:
+        st.session_state.scan_results = {
+            "success": [],
+            "error": [],
+            "warning": []
+        }
+    
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -66,6 +74,13 @@ internal.server.local:444"""
             """)
         
         if st.button("Start Scan"):
+            # Clear previous results
+            st.session_state.scan_results = {
+                "success": [],
+                "error": [],
+                "warning": []
+            }
+            
             entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
             scan_targets = []
             
@@ -109,24 +124,17 @@ internal.server.local:444"""
                     continue
             
             if scan_targets:
-                # Create containers for results
-                results_container = st.empty()
+                # Create containers for progress
                 progress_container = st.empty()
                 
                 with progress_container:
                     progress = st.progress(0)
                 
-                results_table = {
-                    "success": [],
-                    "error": [],
-                    "warning": []
-                }
-                
                 for i, (hostname, port) in enumerate(scan_targets):
                     with st.spinner(f'Scanning {hostname}:{port}...'):
                         cert_info = st.session_state.scanner.scan_certificate(hostname, port)
                         if cert_info:
-                            results_table["success"].append(f"{hostname}:{port}")
+                            st.session_state.scan_results["success"].append(f"{hostname}:{port}")
                             # Save to database
                             with Session(engine) as session:
                                 try:
@@ -218,35 +226,40 @@ internal.server.local:444"""
                                     
                                     session.commit()
                                 except Exception as e:
-                                    results_table["error"].append(f"{hostname}:{port}")
+                                    st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
                                     session.rollback()
                         else:
-                            results_table["error"].append(f"{hostname}:{port}")
+                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
+                            # Record failed scan
+                            with Session(engine) as session:
+                                try:
+                                    # Create or get host for failed scan
+                                    host = session.query(Host).filter_by(name=hostname).first()
+                                    if not host:
+                                        host = Host(
+                                            name=hostname,
+                                            host_type=HOST_TYPE_SERVER,
+                                            environment=ENV_PRODUCTION,
+                                            last_seen=datetime.now()
+                                        )
+                                        session.add(host)
+                                        session.flush()
+
+                                    # Create scan record for failed attempt
+                                    scan = CertificateScan(
+                                        scan_date=datetime.now(),
+                                        status='Failed',
+                                        port=port,
+                                        host_id=host.id
+                                    )
+                                    session.add(scan)
+                                    session.commit()
+                                except Exception as e:
+                                    logger.error(f"Failed to record failed scan: {str(e)}")
+                                    session.rollback()
                         
                         with progress_container:
                             progress.progress((i + 1) / len(scan_targets))
-                    
-                    # Update results display
-                    with results_container:
-                        st.empty()  # Clear previous results
-                        st.subheader("Scan Results")
-                        
-                        if results_table["success"]:
-                            st.markdown("#### ✅ Successfully Scanned")
-                            for host in results_table["success"]:
-                                st.markdown(f"- {host}")
-                        
-                        if results_table["error"]:
-                            st.markdown("#### ❌ Failed to Scan")
-                            for host in results_table["error"]:
-                                st.markdown(f"- {host}")
-                        
-                        if results_table["warning"]:
-                            st.markdown("#### ⚠️ Warnings")
-                            for host in results_table["warning"]:
-                                st.markdown(f"- {host}")
-                        
-                        st.success(f"Scan completed! Found {len(results_table['success'])} certificates.")
                 
                 # Only clear scan targets after successful scan
                 if 'scan_targets' in st.session_state:
@@ -258,7 +271,7 @@ internal.server.local:444"""
         st.subheader("Recent Scans")
         with Session(engine) as session:
             recent_scans = session.query(CertificateScan)\
-                .join(Certificate)\
+                .outerjoin(Certificate)\
                 .order_by(CertificateScan.scan_date.desc())\
                 .limit(5)\
                 .all()
@@ -267,12 +280,47 @@ internal.server.local:444"""
                 st.markdown("<div style='font-size:0.9em'>", unsafe_allow_html=True)
                 for scan in recent_scans:
                     scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                    st.markdown(
-                        f"**{scan.certificate.common_name}** "
-                        f"<span style='color:gray'>"
-                        f"(🕒 {scan_time} • {scan.status})</span>",
-                        unsafe_allow_html=True
-                    )
+                    if scan.certificate:
+                        cert_name = scan.certificate.common_name
+                        status_color = "green" if scan.status == 'Valid' else "red"
+                        st.markdown(
+                            f"**{cert_name}** "
+                            f"<span style='color:gray'>"
+                            f"(🕒 {scan_time} • <span style='color:{status_color}'>{scan.status}</span>)</span>",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        # Get host information for failed scan
+                        host = session.query(Host).filter_by(id=scan.host_id).first()
+                        host_info = f"{host.name}:{scan.port}" if host else "Unknown Host"
+                        st.markdown(
+                            f"**{host_info}** "
+                            f"<span style='color:gray'>"
+                            f"(🕒 {scan_time} • <span style='color:red'>Failed</span>)</span>",
+                            unsafe_allow_html=True
+                        )
                 st.markdown("</div>", unsafe_allow_html=True)
             else:
                 st.info("No recent scans")
+    
+    # Display current scan results
+    if any(st.session_state.scan_results.values()):
+        st.divider()
+        st.subheader("Current Scan Results")
+        
+        if st.session_state.scan_results["success"]:
+            st.markdown("#### ✅ Successfully Scanned")
+            for host in st.session_state.scan_results["success"]:
+                st.markdown(f"- {host}")
+        
+        if st.session_state.scan_results["error"]:
+            st.markdown("#### ❌ Failed to Scan")
+            for host in st.session_state.scan_results["error"]:
+                st.markdown(f"- {host}")
+        
+        if st.session_state.scan_results["warning"]:
+            st.markdown("#### ⚠️ Warnings")
+            for host in st.session_state.scan_results["warning"]:
+                st.markdown(f"- {host}")
+        
+        st.success(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.")

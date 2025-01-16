@@ -169,14 +169,16 @@ def create_timeline_chart(data):
 def render_scan_history(engine):
     """Render the scan history view"""
     with SessionManager(engine) as session:
-        # Get all scans with certificate info
-        scans = session.query(
-            CertificateScan, Certificate
-        ).join(
-            Certificate
-        ).order_by(
-            desc(CertificateScan.scan_date)
-        ).all()
+        # Get all scans with certificate and host info
+        scans = session.query(CertificateScan)\
+            .outerjoin(Certificate)\
+            .outerjoin(Host)\
+            .options(
+                joinedload(CertificateScan.certificate),
+                joinedload(CertificateScan.host).joinedload(Host.ip_addresses)
+            )\
+            .order_by(desc(CertificateScan.scan_date))\
+            .all()
         
         if not scans:
             st.warning("No scan history found")
@@ -184,17 +186,40 @@ def render_scan_history(engine):
         
         # Convert to DataFrame for easier manipulation
         scan_data = []
-        for scan, cert in scans:
-            scan_data.append({
+        for scan in scans:
+            # Get host information
+            if scan.host:
+                host_display = scan.host.name
+                # Get IP addresses for the host
+                if scan.host.ip_addresses:
+                    ip_addresses = [ip.ip_address for ip in scan.host.ip_addresses]
+                    if ip_addresses:
+                        host_display = f"{host_display} ({', '.join(ip_addresses)})"
+            else:
+                host_display = "Unknown Host"  # Fallback if no host information
+            
+            data = {
                 "Scan Date": scan.scan_date,
-                "Certificate": cert.common_name,
                 "Status": scan.status,
                 "Port": scan.port,
-                "Serial Number": cert.serial_number,
-                "Valid Until": cert.valid_until,
-                "Scan ID": scan.id,
-                "Certificate ID": cert.id
-            })
+                "Host": host_display,
+            }
+            
+            # Add certificate info if available
+            if scan.certificate:
+                data.update({
+                    "Certificate": scan.certificate.common_name,
+                    "Serial Number": scan.certificate.serial_number,
+                    "Valid Until": scan.certificate.valid_until,
+                })
+            else:
+                data.update({
+                    "Certificate": "N/A",
+                    "Serial Number": "N/A",
+                    "Valid Until": None,
+                })
+            
+            scan_data.append(data)
         
         df = pd.DataFrame(scan_data)
         
@@ -226,11 +251,13 @@ def render_scan_history(engine):
                 df = df[df["Status"] == status_filter]
         
         with col3:
-            # Certificate filter
-            certificates = ["All"] + sorted(df["Certificate"].unique().tolist())
-            cert_filter = st.selectbox("Certificate", certificates)
-            if cert_filter != "All":
-                df = df[df["Certificate"] == cert_filter]
+            # Host filter - handle None values in sorting
+            unique_hosts = df["Host"].unique().tolist()
+            unique_hosts = [h for h in unique_hosts if h is not None]  # Remove None values
+            hosts = ["All"] + sorted(unique_hosts)
+            host_filter = st.selectbox("Host", hosts)
+            if host_filter != "All":
+                df = df[df["Host"] == host_filter]
         
         # Display metrics
         col1, col2, col3 = st.columns(3)
@@ -240,13 +267,34 @@ def render_scan_history(engine):
             success_rate = (df["Status"] == "Valid").mean() * 100
             st.metric("Success Rate", f"{success_rate:.1f}%")
         with col3:
-            unique_certs = len(df["Certificate"].unique())
-            st.metric("Unique Certificates", unique_certs)
+            unique_hosts = len(df["Host"].unique())
+            st.metric("Unique Hosts", unique_hosts)
+        
+        # Create a function to color the status
+        def color_status(val):
+            color = "red" if val == "Failed" else "green"
+            return f'color: {color}'
+        
+        # Reorder columns first, then apply styling
+        df = df[['Host', 'Port', 'Status', 'Scan Date', 'Certificate', 'Valid Until', 'Serial Number']]
         
         # Display the scan history table
         st.dataframe(
-            df,
+            df.style.applymap(color_status, subset=['Status']),
             column_config={
+                "Host": st.column_config.TextColumn(
+                    "Host",
+                    width="medium"
+                ),
+                "Port": st.column_config.NumberColumn(
+                    "Port",
+                    width="small",
+                    format="%d"  # Remove thousand separator (comma)
+                ),
+                "Status": st.column_config.TextColumn(
+                    "Status",
+                    width="small"
+                ),
                 "Scan Date": st.column_config.DatetimeColumn(
                     "Scan Date",
                     format="DD/MM/YYYY HH:mm:ss",
@@ -256,30 +304,14 @@ def render_scan_history(engine):
                     "Certificate",
                     width="medium"
                 ),
-                "Status": st.column_config.TextColumn(
-                    "Status",
-                    width="small"
-                ),
-                "Port": st.column_config.NumberColumn(
-                    "Port",
-                    width="small"
-                ),
-                "Serial Number": st.column_config.TextColumn(
-                    "Serial Number",
-                    width="medium"
-                ),
                 "Valid Until": st.column_config.DatetimeColumn(
                     "Valid Until",
                     format="DD/MM/YYYY",
                     width="medium"
                 ),
-                "Scan ID": st.column_config.Column(
-                    "Scan ID",
-                    disabled=True
-                ),
-                "Certificate ID": st.column_config.Column(
-                    "Certificate ID",
-                    disabled=True
+                "Serial Number": st.column_config.TextColumn(
+                    "Serial Number",
+                    width="medium"
                 )
             },
             hide_index=True,

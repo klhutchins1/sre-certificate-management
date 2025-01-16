@@ -207,7 +207,41 @@ def render_certificate_bindings(cert, session):
         </style>
     """, unsafe_allow_html=True)
     
-    # Show current bindings first
+    # Add new binding section at the top
+    st.markdown("### Add New Binding")
+    # Add host management section
+    col1, col2 = st.columns(2)
+    with col1:
+        new_hostname = st.text_input("Hostname", key=f"hostname_{cert.id}")
+        new_ip = st.text_input("IP Address (optional)", key=f"ip_{cert.id}")
+        new_port = st.number_input(
+            "Port (optional)", 
+            min_value=1, 
+            max_value=65535, 
+            value=443, 
+            key=f"port_{cert.id}"
+        )
+    with col2:
+        new_platform = st.selectbox(
+            "Platform Selection",  # Changed from empty label
+            options=[''] + list(platform_options.keys()),
+            format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
+            key=f"new_platform_{cert.id}",
+            label_visibility="visible"  # This one should be visible as it's a new entry
+        )
+        binding_type = st.selectbox(
+            "Binding Type",
+            [BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT],
+            help="Type of certificate binding",
+            key=f"binding_type_{cert.id}"
+        )
+    
+    if st.button("Add Host", key=f"add_host_{cert.id}"):
+        add_host_to_certificate(cert, new_hostname, new_ip, new_port, new_platform, binding_type, session)
+    
+    st.divider()  # Add a visual separator
+    
+    # Show current bindings
     if cert.certificate_bindings:
         st.markdown("### Current Bindings")
         for binding in cert.certificate_bindings:
@@ -265,38 +299,6 @@ def render_certificate_bindings(cert, session):
                 st.markdown(details)
                 
                 st.divider()  # Add a visual separator between bindings
-    
-    # Add new binding section
-    st.markdown("### Add New Binding")
-    # Add host management section
-    col1, col2 = st.columns(2)
-    with col1:
-        new_hostname = st.text_input("Hostname", key=f"hostname_{cert.id}")
-        new_ip = st.text_input("IP Address (optional)", key=f"ip_{cert.id}")
-        new_port = st.number_input(
-            "Port (optional)", 
-            min_value=1, 
-            max_value=65535, 
-            value=443, 
-            key=f"port_{cert.id}"
-        )
-    with col2:
-        new_platform = st.selectbox(
-            "Platform Selection",  # Changed from empty label
-            options=[''] + list(platform_options.keys()),
-            format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-            key=f"new_platform_{cert.id}",
-            label_visibility="visible"  # This one should be visible as it's a new entry
-        )
-        binding_type = st.selectbox(
-            "Binding Type",
-            [BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT],
-            help="Type of certificate binding",
-            key=f"binding_type_{cert.id}"
-        )
-    
-    if st.button("Add Host", key=f"add_host_{cert.id}"):
-        add_host_to_certificate(cert, new_hostname, new_ip, new_port, new_platform, binding_type, session)
 
 def render_certificate_details(cert):
     """Render the certificate details tab"""

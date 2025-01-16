@@ -49,19 +49,160 @@ DEFAULT_CONFIG = {
 class Settings:
     _instance = None
     _config: Dict[str, Any] = {}
+    _test_mode = False
+    _test_config = None  # Store test config in memory
+    _config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+    _original_config = None  # Store original config during tests
+    _app_lock_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".app_running")
     
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(Settings, cls).__new__(cls)
-            cls._instance._config = DEFAULT_CONFIG.copy()
-            cls._instance._load_config()
+            
+            if cls._test_mode:
+                # In test mode, use the test config or defaults
+                cls._instance._config = cls._test_config.copy() if cls._test_config else DEFAULT_CONFIG.copy()
+                # Remove stale lock file if it exists
+                if os.path.exists(cls._app_lock_file):
+                    try:
+                        os.remove(cls._app_lock_file)
+                    except Exception as e:
+                        logger.error(f"Failed to remove stale lock file: {str(e)}")
+            else:
+                # Start with defaults
+                cls._instance._config = DEFAULT_CONFIG.copy()
+                # Only load config if it exists, never create it automatically
+                if os.path.exists(cls._config_file):
+                    try:
+                        with open(cls._config_file, 'r') as f:
+                            loaded_config = yaml.safe_load(f)
+                            if loaded_config is not None:
+                                cls._instance._merge_config(loaded_config)
+                    except Exception as e:
+                        logger.error(f"Error loading {cls._config_file}: {str(e)}")
+                # Create app lock file
+                try:
+                    with open(cls._app_lock_file, 'w') as f:
+                        f.write(str(os.getpid()))
+                except Exception as e:
+                    logger.error(f"Failed to create app lock file: {str(e)}")
         return cls._instance
+    
+    def __del__(self):
+        # Remove app lock file when instance is destroyed
+        if not self._test_mode and os.path.exists(self._app_lock_file):
+            try:
+                os.remove(self._app_lock_file)
+            except Exception as e:
+                logger.error(f"Failed to remove app lock file: {str(e)}")
     
     @classmethod
     def _reset(cls):
         """Reset the singleton instance (for testing)"""
+        if not cls._test_mode:
+            logger.warning("Attempting to reset settings outside of test mode")
+            return
+            
+        # Restore original config if we have one
+        if cls._original_config and os.path.exists(cls._config_file):
+            try:
+                with open(cls._config_file, 'w') as f:
+                    yaml.safe_dump(cls._original_config, f, default_flow_style=False)
+            except Exception as e:
+                logger.error(f"Error restoring original config: {str(e)}")
+        
+        # Remove lock file if it exists
+        if os.path.exists(cls._app_lock_file):
+            try:
+                os.remove(cls._app_lock_file)
+            except Exception as e:
+                logger.error(f"Failed to remove lock file: {str(e)}")
+        
         cls._instance = None
-        cls._config = DEFAULT_CONFIG.copy()
+        cls._test_mode = False
+        cls._test_config = None
+        cls._original_config = None
+    
+    @classmethod
+    def set_test_mode(cls, test_config=None):
+        """Enable test mode with optional test config"""
+        # Remove lock file if it exists
+        if os.path.exists(cls._app_lock_file):
+            try:
+                os.remove(cls._app_lock_file)
+            except Exception as e:
+                logger.error(f"Failed to remove lock file: {str(e)}")
+            
+        # Backup original config if it exists
+        if os.path.exists(cls._config_file):
+            try:
+                with open(cls._config_file, 'r') as f:
+                    cls._original_config = yaml.safe_load(f)
+            except Exception as e:
+                logger.error(f"Error backing up original config: {str(e)}")
+        
+        cls._test_mode = True
+        cls._test_config = test_config.copy() if test_config else DEFAULT_CONFIG.copy()
+        cls._instance = None  # Force recreation with test config
+    
+    def _merge_config(self, loaded_config: Dict[str, Any]):
+        """Merge loaded config with defaults to ensure all keys exist"""
+        def merge_dicts(default: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+            result = default.copy()
+            for key, value in override.items():
+                if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                    result[key] = merge_dicts(result[key], value)
+                else:
+                    result[key] = value
+            return result
+        
+        self._config = merge_dicts(DEFAULT_CONFIG.copy(), loaded_config)
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a configuration value using dot notation"""
+        try:
+            value = self._config
+            for k in key.split('.'):
+                value = value[k]
+            return value
+        except (KeyError, TypeError):
+            return default
+    
+    def update(self, key: str, value: Any) -> bool:
+        """Update a configuration value using dot notation"""
+        if not self._validate_config_value(key, value):
+            return False
+            
+        try:
+            keys = key.split('.')
+            config = self._config
+            
+            # Create nested structure if it doesn't exist
+            for k in keys[:-1]:
+                if k not in config:
+                    config[k] = {}
+                config = config[k]
+            
+            config[keys[-1]] = value
+            return True
+        except Exception as e:
+            logger.error(f"Error updating config key {key}: {str(e)}")
+            return False
+    
+    def save(self) -> bool:
+        """Save current configuration to file"""
+        if self._test_mode:
+            # In test mode, just update the in-memory test config
+            self.__class__._test_config = self._config.copy()
+            return True
+            
+        try:
+            with open(self._config_file, 'w') as f:
+                yaml.safe_dump(self._config, f, default_flow_style=False)
+            return True
+        except Exception as e:
+            logger.error(f"Error saving config: {str(e)}")
+            return False
     
     def _validate_config_value(self, key: str, value: Any) -> bool:
         """Validate a configuration value"""
@@ -114,104 +255,6 @@ class Settings:
             return True
         except Exception as e:
             logger.error(f"Validation error for {key}: {str(e)}")
-            return False
-    
-    def _load_config(self):
-        """Load configuration from file or create default"""
-        config_paths = [
-            "config.yaml",  # Current directory
-            os.path.expanduser("~/.cert_scanner/config.yaml"),  # User's home
-            "/etc/cert_scanner/config.yaml"  # System-wide
-        ]
-        
-        # Also check if there's an environment variable pointing to config
-        if "CERT_SCANNER_CONFIG" in os.environ:
-            config_paths.insert(0, os.environ["CERT_SCANNER_CONFIG"])
-        
-        config_file = None
-        for path in config_paths:
-            if os.path.exists(path):
-                config_file = path
-                break
-        
-        if config_file:
-            try:
-                with open(config_file, 'r') as f:
-                    loaded_config = yaml.safe_load(f)
-                    if loaded_config is not None:
-                        # Merge with defaults to ensure all required keys exist
-                        self._merge_config(loaded_config)
-                logger.info(f"Loaded configuration from {config_file}")
-            except Exception as e:
-                logger.error(f"Error loading config from {config_file}: {str(e)}")
-                self._config = DEFAULT_CONFIG.copy()
-        else:
-            logger.warning("No config file found, using defaults")
-            self._config = DEFAULT_CONFIG.copy()
-            self._save_default_config()
-    
-    def _merge_config(self, loaded_config: Dict[str, Any]):
-        """Merge loaded config with defaults to ensure all keys exist"""
-        def merge_dicts(default: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-            result = default.copy()
-            for key, value in override.items():
-                if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                    result[key] = merge_dicts(result[key], value)
-                else:
-                    result[key] = value
-            return result
-        
-        self._config = merge_dicts(DEFAULT_CONFIG.copy(), loaded_config)
-    
-    def _save_default_config(self):
-        """Save default configuration if no config exists"""
-        try:
-            # Try to save in current directory first
-            with open("config.yaml", 'w') as f:
-                yaml.safe_dump(self._config, f, default_flow_style=False)
-            logger.info("Created default config.yaml")
-        except Exception as e:
-            logger.error(f"Could not save default config: {str(e)}")
-    
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value using dot notation"""
-        try:
-            value = self._config
-            for k in key.split('.'):
-                value = value[k]
-            return value
-        except (KeyError, TypeError):
-            return default
-    
-    def update(self, key: str, value: Any) -> bool:
-        """Update a configuration value using dot notation"""
-        if not self._validate_config_value(key, value):
-            return False
-            
-        try:
-            keys = key.split('.')
-            config = self._config
-            
-            # Create nested structure if it doesn't exist
-            for k in keys[:-1]:
-                if k not in config:
-                    config[k] = {}
-                config = config[k]
-            
-            config[keys[-1]] = value
-            return True
-        except Exception as e:
-            logger.error(f"Error updating config key {key}: {str(e)}")
-            return False
-    
-    def save(self) -> bool:
-        """Save current configuration to file"""
-        try:
-            with open("config.yaml", 'w') as f:
-                yaml.safe_dump(self._config, f, default_flow_style=False)
-            return True
-        except Exception as e:
-            logger.error(f"Error saving config: {str(e)}")
             return False
 
 # Global settings instance

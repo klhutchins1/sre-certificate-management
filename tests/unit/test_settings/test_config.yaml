@@ -1,0 +1,37 @@
+paths:
+  database: "tests/data/test.db"
+  backups: "tests/data/backups"
+
+scanning:
+  internal:
+    rate_limit: 5
+    delay: 1
+    domains:
+      - "test.internal.com"
+      - "dev.internal.com"
+  external:
+    rate_limit: 2
+    delay: 2
+    domains:
+      - "test.external.com"
+      - "prod.external.com"
+
+alerts:
+  expiry_warnings:
+    - days: 90
+      level: "info"
+    - days: 30
+      level: "warning"
+    - days: 7
+      level: "critical"
+  failed_scans:
+    consecutive_failures: 3
+  persistence_file: "tests/data/test_alerts.json"
+
+exports:
+  pdf:
+    template: "tests/data/test_template.html"
+    logo: "tests/data/test_logo.png"
+  csv:
+    delimiter: ","
+    encoding: "utf-8" 

@@ -6,26 +6,53 @@ import shutil
 from datetime import datetime
 import json
 import glob
+import logging
+import yaml
+import time
+
+logger = logging.getLogger(__name__)
 
 def list_backups():
     """List all available backups with their details"""
-    backup_dir = Path(settings.get("paths.backups"))
-    if not backup_dir.exists():
+    try:
+        backup_dir = Path(settings.get("paths.backups", "data/backups"))
+        if not backup_dir.exists():
+            backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        backups = []
+        # List all files in backup directory for debugging
+        all_files = list(backup_dir.glob("*"))
+        logger.debug(f"All files in backup directory: {[str(f) for f in all_files]}")
+        
+        # Find all manifest files
+        manifest_files = list(backup_dir.glob("backup_*.json"))
+        logger.debug(f"Found manifest files: {[str(f) for f in manifest_files]}")
+        
+        for manifest_file in manifest_files:
+            try:
+                with open(manifest_file, 'r') as f:
+                    manifest = json.load(f)
+                    # Add manifest filename for reference
+                    manifest['manifest_file'] = str(manifest_file)
+                    # Ensure both timestamp and created fields exist
+                    if 'created' not in manifest and 'timestamp' in manifest:
+                        manifest['created'] = datetime.strptime(
+                            manifest['timestamp'], 
+                            "%Y%m%d_%H%M%S"
+                        ).isoformat()
+                    backups.append(manifest)
+            except Exception as e:
+                logger.error(f"Error reading manifest {manifest_file}: {str(e)}")
+                continue
+        
+        # Sort backups by created timestamp, newest first
+        sorted_backups = sorted(backups, key=lambda x: x.get('created', x.get('timestamp', '')), reverse=True)
+        logger.debug(f"Returning {len(sorted_backups)} backups")
+        return sorted_backups
+        
+    except Exception as e:
+        logger.error(f"Error listing backups: {str(e)}")
         return []
-    
-    backups = []
-    for manifest_file in backup_dir.glob("backup_*.json"):
-        try:
-            with open(manifest_file, 'r') as f:
-                manifest = json.load(f)
-                # Add manifest filename for reference
-                manifest['manifest_file'] = str(manifest_file)
-                backups.append(manifest)
-        except Exception:
-            continue
-    
-    # Sort backups by timestamp, newest first
-    return sorted(backups, key=lambda x: x['timestamp'], reverse=True)
 
 def restore_backup(manifest):
     """Restore database and config from a backup"""
@@ -33,63 +60,120 @@ def restore_backup(manifest):
         # Verify backup files exist
         config_file = Path(manifest['config'])
         if not config_file.exists():
+            logger.error(f"Config backup file not found: {config_file}")
             return False, "Config backup file not found"
-        
-        # Create backup of current state before restore
-        current_backup_success, _ = create_backup()
-        if not current_backup_success:
-            return False, "Failed to backup current state before restore"
-        
-        # Restore config
-        shutil.copy2(config_file, "config.yaml")
         
         # Restore database if it exists in backup
         if manifest['database']:
             db_file = Path(manifest['database'])
-            if db_file.exists():
-                db_path = Path(settings.get("paths.database"))
-                # Ensure target directory exists
-                db_path.parent.mkdir(parents=True, exist_ok=True)
+            if not db_file.exists():
+                logger.error(f"Database backup file not found: {db_file}")
+                return False, "Database backup file not found"
+                
+            db_path = Path(settings.get("paths.database", "data/certificates.db"))
+            # Ensure target directory exists
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                if db_path.exists():
+                    db_path.unlink()
                 shutil.copy2(db_file, db_path)
+            except Exception as e:
+                logger.error(f"Failed to restore database: {str(e)}")
+                return False, f"Failed to restore database: {str(e)}"
         
-        return True, "Backup restored successfully"
+        # Restore config
+        try:
+            # First verify the backup config is valid YAML
+            with open(config_file, 'r') as f:
+                backup_config = yaml.safe_load(f)
+            if not isinstance(backup_config, dict):
+                logger.error("Invalid backup configuration format")
+                return False, "Invalid backup configuration format"
+            
+            # Update settings with backup config
+            settings._config = backup_config.copy()
+            settings.save()  # This will write to config.yaml
+            
+            return True, "Backup restored successfully"
+        except Exception as e:
+            logger.error(f"Failed to restore config: {str(e)}")
+            return False, f"Failed to restore config: {str(e)}"
+            
     except Exception as e:
+        logger.error(f"Failed to restore backup: {str(e)}")
         return False, f"Failed to restore backup: {str(e)}"
 
 def create_backup():
     """Create a backup of database and configuration"""
     try:
         # Ensure backup directory exists
-        backup_dir = Path(settings.get("paths.backups"))
+        backup_dir = Path(settings.get("paths.backups", "data/backups"))
         backup_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create timestamp for backup
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Create timestamp for backup with microsecond precision
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
         
-        # Backup database
-        db_path = Path(settings.get("paths.database"))
+        # Initialize backup paths
+        db_backup = None
+        config_backup = backup_dir / f"config_{timestamp}.yaml"
+        
+        # Backup database if it exists
+        db_path = Path(settings.get("paths.database", "data/certificates.db"))
         if db_path.exists():
             db_backup = backup_dir / f"certificates_{timestamp}.db"
-            shutil.copy2(db_path, db_backup)
+            try:
+                shutil.copy2(db_path, db_backup)
+            except Exception as e:
+                logger.error(f"Failed to backup database: {str(e)}")
+                return False, f"Failed to backup database: {str(e)}"
         
         # Backup config
-        config_backup = backup_dir / f"config_{timestamp}.yaml"
-        shutil.copy2("config.yaml", config_backup)
+        try:
+            current_config = settings._config.copy()
+            with open(config_backup, 'w') as f:
+                yaml.safe_dump(current_config, f)
+        except Exception as e:
+            logger.error(f"Failed to backup config: {str(e)}")
+            if db_backup and db_backup.exists():
+                db_backup.unlink()  # Clean up database backup if config fails
+            return False, f"Failed to backup config: {str(e)}"
         
         # Create backup manifest
-        manifest = {
-            "timestamp": timestamp,
-            "database": str(db_backup) if db_path.exists() else None,
-            "config": str(config_backup),
-            "created": datetime.now().isoformat()
-        }
-        
-        manifest_file = backup_dir / f"backup_{timestamp}.json"
-        with open(manifest_file, 'w') as f:
-            json.dump(manifest, f, indent=2)
-        
-        return True, f"Backup created successfully at {backup_dir}"
+        try:
+            manifest = {
+                "timestamp": timestamp,
+                "database": str(db_backup) if db_backup else None,
+                "config": str(config_backup),
+                "created": now.isoformat()
+            }
+            
+            manifest_file = backup_dir / f"backup_{timestamp}.json"
+            with open(manifest_file, 'w') as f:
+                json.dump(manifest, f, indent=2)
+            
+            # Verify all files were created
+            expected_files = [manifest_file, config_backup]
+            if db_backup:
+                expected_files.append(db_backup)
+                
+            for file in expected_files:
+                if not file.exists():
+                    logger.error(f"Expected backup file not found: {file}")
+                    return False, f"Failed to verify backup files"
+            
+            return True, f"Backup created successfully at {backup_dir}"
+        except Exception as e:
+            logger.error(f"Failed to create manifest: {str(e)}")
+            # Clean up any created files
+            for file in [db_backup, config_backup]:
+                if file and file.exists():
+                    file.unlink()
+            return False, f"Failed to create manifest: {str(e)}"
+            
     except Exception as e:
+        logger.error(f"Failed to create backup: {str(e)}")
         return False, f"Failed to create backup: {str(e)}"
 
 def render_settings_view():
@@ -171,14 +255,17 @@ def render_settings_view():
         internal_rate = st.number_input(
             "Rate Limit (requests/minute)",
             min_value=1,
-            value=settings.get("scanning.internal.rate_limit"),
-            key="internal_rate"
+            value=int(settings.get("scanning.internal.rate_limit", 60)),
+            key="internal_rate",
+            step=1
         )
         internal_delay = st.number_input(
             "Delay Between Requests (seconds)",
-            min_value=0,
-            value=settings.get("scanning.internal.delay"),
-            key="internal_delay"
+            min_value=0.0,
+            value=float(settings.get("scanning.internal.delay", 0.5)),
+            key="internal_delay",
+            step=0.1,
+            format="%.1f"
         )
         internal_domains = st.text_area(
             "Internal Domains (one per line)",
@@ -192,14 +279,17 @@ def render_settings_view():
         external_rate = st.number_input(
             "Rate Limit (requests/minute)",
             min_value=1,
-            value=settings.get("scanning.external.rate_limit"),
-            key="external_rate"
+            value=int(settings.get("scanning.external.rate_limit", 30)),
+            key="external_rate",
+            step=1
         )
         external_delay = st.number_input(
             "Delay Between Requests (seconds)",
-            min_value=0,
-            value=settings.get("scanning.external.delay"),
-            key="external_delay"
+            min_value=0.0,
+            value=float(settings.get("scanning.external.delay", 1.0)),
+            key="external_delay",
+            step=0.1,
+            format="%.1f"
         )
         external_domains = st.text_area(
             "External Domains (one per line)",

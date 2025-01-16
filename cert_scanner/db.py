@@ -6,6 +6,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from .models import Base
 from sqlalchemy import inspect
+from pathlib import Path
+from sqlalchemy import text
+from .settings import settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -48,32 +51,47 @@ def update_database_schema(engine):
 
 def init_database():
     """Initialize the database connection and create tables if they don't exist"""
-    with db_lock:
-        try:
-            logger.info("Initializing database connection...")
+    try:
+        # Get database path from settings
+        db_path = Path(settings.get("paths.database", "data/certificates.db"))
+        
+        # Ensure the database directory exists
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # If database exists but is corrupted, remove it
+        if db_path.exists():
+            try:
+                # Test if database is valid
+                engine = create_engine(f"sqlite:///{db_path}")
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+            except Exception as e:
+                logger.error(f"Existing database is corrupted, removing: {str(e)}")
+                db_path.unlink()
+        
+        # Create database engine
+        logger.info(f"Using database at: {db_path}")
+        engine = create_engine(f"sqlite:///{db_path}")
+        
+        # Create tables
+        logger.info("Creating database tables...")
+        Base.metadata.create_all(engine)
+        
+        # Verify tables were created
+        with engine.connect() as conn:
+            tables = inspect(engine).get_table_names()
+            logger.info(f"Created tables: {', '.join(tables)}")
             
-            # Create data directory if it doesn't exist
-            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-            logger.info(f"Using database at: {DB_PATH}")
-            
-            # Create database connection
-            engine = create_engine(f'sqlite:///{DB_PATH}', echo=False, pool_pre_ping=True)
-            
-            # Update schema to include any new tables
-            if not update_database_schema(engine):
-                logger.error("Failed to update database schema")
-                return None
-            
-            # Test the connection
-            with engine.connect() as conn:
-                logger.debug("Database connection successful")
-            
-            return engine
-            
-        except Exception as e:
-            logger.error(f"Database initialization failed: {str(e)}")
-            st.error(f"Failed to initialize database: {str(e)}")
-            return None
+            # Verify each required table exists
+            required_tables = ['certificates', 'hosts', 'certificate_bindings', 'certificate_tracking', 'certificate_scans', 'host_ips']
+            missing_tables = [table for table in required_tables if table not in tables]
+            if missing_tables:
+                raise Exception(f"Failed to create tables: {', '.join(missing_tables)}")
+        
+        return engine
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        raise
 
 def get_session(engine):
     """Create a new database session"""

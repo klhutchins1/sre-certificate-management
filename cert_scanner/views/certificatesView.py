@@ -4,126 +4,135 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import joinedload
 from ..models import (
-    Certificate, Host, HostIP, CertificateBinding,
+    Certificate, Host, HostIP, CertificateBinding, CertificateTracking,
     HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
     ENV_INTERNAL
 )
-from ..constants import platform_options  # Import platform options from app
-from ..db import SessionManager  # Import SessionManager for database sessions
+from ..constants import platform_options
+from ..db import SessionManager
 
 def render_certificate_list(engine):
     """Render the certificate list view"""
-    st.title("Certificates")
+    # Add custom CSS to align the button with the title
+    st.markdown("""
+        <style>
+        div[data-testid="stHorizontalBlock"] {
+            align-items: center;
+        }
+        </style>
+    """, unsafe_allow_html=True)
     
-    # Create tabs for different views
-    list_tab, detail_tab = st.tabs(["Certificate List", "Certificate Details"])
-    
-    with list_tab:
-        # Add button for manual certificate entry
-        if st.button("➕ Add Manual Certificate", type="primary"):
+    # Create title row with columns
+    col1, col2 = st.columns([0.7, 0.3])
+    with col1:
+        st.title("Certificates")
+    with col2:
+        if st.button("➕ Add Certificate", type="primary", use_container_width=True):
             st.session_state.show_manual_entry = True
-        
-        # Show manual entry form if button was clicked
-        if st.session_state.get('show_manual_entry', False):
-            with SessionManager(engine) as session:
-                render_manual_entry_form(session)
-        
-        st.divider()
-        
-        # Create a placeholder for the table
-        table_placeholder = st.empty()
-        
-        with st.spinner("Loading certificates..."):
-            with SessionManager(engine) as session:
-                if not session:
-                    st.error("Database connection failed")
-                    return
-                
-                # Fetch certificates for the table view
-                certs_data = []
-                for cert in session.query(Certificate).all():
-                    certs_data.append({
-                        "Common Name": cert.common_name,
-                        "Serial Number": cert.serial_number,
-                        "Valid From": cert.valid_from.strftime("%Y-%m-%d"),
-                        "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
-                        "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
-                        "Bindings": len(cert.certificate_bindings),
-                        "ID": cert.id  # Hidden column for reference
-                    })
-                
-                if certs_data:
-                    df = pd.DataFrame(certs_data)
-                    
-                    # Add styling
-                    def color_status(val):
-                        return 'color: red' if val == 'Expired' else 'color: green'
-                    
-                    # Style the dataframe
-                    styled_df = df.style.applymap(color_status, subset=['Status'])
-                    
-                    # Display the table
-                    st.dataframe(
-                        styled_df,
-                        column_config={
-                            "Common Name": st.column_config.TextColumn("Common Name", width="large"),
-                            "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
-                            "Valid From": st.column_config.DateColumn("Valid From"),
-                            "Valid Until": st.column_config.DateColumn("Valid Until"),
-                            "Status": st.column_config.TextColumn("Status", width="small"),
-                            "Bindings": st.column_config.NumberColumn("Bindings", width="small"),
-                            "ID": st.column_config.Column("ID", disabled=True)
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
-                else:
-                    st.warning("No certificates found in database")
     
-    with detail_tab:
-        # Show loading state
-        with st.spinner("Loading certificates..."):
-            with SessionManager(engine) as session:
-                if not session:
-                    st.error("Database connection failed")
-                    return
+    # Show manual entry form if button was clicked
+    if st.session_state.get('show_manual_entry', False):
+        with SessionManager(engine) as session:
+            render_manual_entry_form(session)
+            st.divider()
+    
+    # Create a placeholder for the table
+    with st.spinner("Loading certificates..."):
+        with SessionManager(engine) as session:
+            if not session:
+                st.error("Database connection failed")
+                return
+            
+            # Fetch certificates for the table view
+            certs_data = []
+            certificates_dict = {}  # Store certificates for quick lookup
+            
+            certificates = (
+                session.query(Certificate)
+                .options(
+                    joinedload(Certificate.certificate_bindings)
+                    .joinedload(CertificateBinding.host)
+                    .joinedload(Host.ip_addresses),
+                    joinedload(Certificate.certificate_bindings)
+                    .joinedload(CertificateBinding.host_ip)
+                )
+                .all()
+            )
+            
+            for cert in certificates:
+                certs_data.append({
+                    "Common Name": cert.common_name,
+                    "Serial Number": cert.serial_number,
+                    "Valid From": cert.valid_from.strftime("%Y-%m-%d"),
+                    "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
+                    "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
+                    "Bindings": len(cert.certificate_bindings),
+                    "ID": cert.id
+                })
+                certificates_dict[cert.id] = cert
+            
+            if certs_data:
+                df = pd.DataFrame(certs_data)
                 
-                # Fetch all certificates once with relationships eagerly loaded
-                certificates = (
-                    session.query(Certificate)
-                    .options(
-                        joinedload(Certificate.certificate_bindings)
-                        .joinedload(CertificateBinding.host)
-                        .joinedload(Host.ip_addresses),
-                        joinedload(Certificate.certificate_bindings)
-                        .joinedload(CertificateBinding.host_ip)
-                    )
-                    .all()
+                # Add styling
+                def color_status(val):
+                    return 'color: red' if val == 'Expired' else 'color: green'
+                
+                # Style the dataframe
+                styled_df = df.style.applymap(color_status, subset=['Status'])
+                
+                # Display the table
+                st.dataframe(
+                    styled_df,
+                    column_config={
+                        "Common Name": st.column_config.TextColumn("Common Name", width="large"),
+                        "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
+                        "Valid From": st.column_config.DateColumn("Valid From"),
+                        "Valid Until": st.column_config.DateColumn("Valid Until"),
+                        "Status": st.column_config.TextColumn("Status", width="small"),
+                        "Bindings": st.column_config.NumberColumn("Bindings", width="small"),
+                        "ID": st.column_config.Column("ID", disabled=True)
+                    },
+                    hide_index=True,
+                    use_container_width=True
                 )
                 
-                if not certificates:
-                    st.warning("No certificates found in database")
-                    return
+                # Add certificate selection dropdown
+                cert_options = {f"{cert['Common Name']} ({cert['Serial Number']})": cert['ID'] 
+                              for cert in certs_data}
+                selected_cert_name = st.selectbox(
+                    "Select a certificate to view details",
+                    options=list(cert_options.keys()),
+                    index=None
+                )
                 
-                # Display all certificates with their details
-                for cert in certificates:
-                    render_certificate_card(cert, session)
+                # Show certificate details if one is selected
+                if selected_cert_name:
+                    selected_cert_id = cert_options[selected_cert_name]
+                    selected_cert = certificates_dict[selected_cert_id]
+                    
+                    st.divider()
+                    render_certificate_card(selected_cert, session)
+            else:
+                st.warning("No certificates found in database")
 
 def render_certificate_card(cert, session):
     """Render a single certificate card with details"""
-    with st.expander(
-        f"📜 {cert.common_name}"
-    ):
-        tab1, tab2, tab3 = st.tabs(["Overview", "Bindings", "Details"])
+    st.subheader(f"📜 {cert.common_name}")
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Bindings", "Details", "Change Tracking"])
+    
+    with tab1:
+        render_certificate_overview(cert)
+    
+    with tab2:
+        render_certificate_bindings(cert, session)
         
-        with tab1:
-            render_certificate_overview(cert)
+    with tab3:
+        render_certificate_details(cert)
         
-        with tab2:
-            render_certificate_bindings(cert, session)
-            
-        with tab3:
-            render_certificate_details(cert)
+    with tab4:
+        render_certificate_tracking(cert, session)
 
 def render_certificate_overview(cert):
     """Render the certificate overview tab"""
@@ -141,12 +150,40 @@ def render_certificate_overview(cert):
         platforms = [b.platform for b in bindings if b.platform]
         st.markdown(f"""
             **Total Bindings:** {len(bindings)}  
-            **Platforms:** {", ".join(set(platforms)) or "None"}  
-            **SANs:** {len(eval(cert.san)) if cert.san else 0} names
+            **Platforms:** {", ".join(set(platforms)) or "None"}
         """)
+    
+    # Add SAN section with expander
+    with st.expander("Subject Alternative Names", expanded=True):
+        if cert.san:
+            try:
+                san_list = eval(cert.san)
+                if san_list:
+                    st.text_area("", value="\n".join(san_list), height=min(35 + 21 * len(san_list), 300), disabled=True)
+                else:
+                    st.info("No Subject Alternative Names")
+            except Exception:
+                st.error("Error parsing Subject Alternative Names")
+        else:
+            st.info("No Subject Alternative Names")
 
 def render_certificate_bindings(cert, session):
     """Render the certificate bindings tab"""
+    # Add custom CSS to reduce spacing
+    st.markdown("""
+        <style>
+        /* Reduce spacing between columns */
+        [data-testid="column"] {
+            padding: 0 !important;
+            margin: 0 !important;
+        }
+        /* Make selectbox more compact */
+        [data-testid="stSelectbox"] > div > div {
+            min-width: 150px !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     # Show current bindings first
     if cert.certificate_bindings:
         st.markdown("### Current Bindings")
@@ -166,36 +203,43 @@ def render_certificate_bindings(cert, session):
                 else:
                     st.caption(f"Type: {binding.binding_type}")
                 
+                # Create columns for platform selection with adjusted widths
+                col1, col2, col3 = st.columns([0.15, 0.3, 0.15])
+                
+                with col1:
+                    st.markdown("**Platform:**")
+                
                 current_platform = binding.platform
-                new_platform = st.selectbox(
-                    "Platform",
-                    options=[''] + list(platform_options.keys()),
-                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                    key=f"platform_select_{cert.id}_{binding.id}",
-                    index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0
-                )
+                with col2:
+                    new_platform = st.selectbox(
+                        "Platform Selection",  # Proper label that will be hidden
+                        options=[''] + list(platform_options.keys()),
+                        format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
+                        key=f"platform_select_{cert.id}_{binding.id}",
+                        index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0,
+                        label_visibility="collapsed"
+                    )
+                
+                with col3:
+                    if new_platform != current_platform:
+                        if st.button("Update", key=f"update_platform_{cert.id}_{binding.id}", type="primary"):
+                            binding.platform = new_platform
+                            session.commit()
+                            st.success("Platform updated!")
+                            st.rerun()
                 
                 # Show current binding details
                 if binding.binding_type == BINDING_TYPE_IP:
                     details = f"""
-                        **Current Platform:** {platform_options.get(current_platform, 'Not Set')}
-                        **Port:** {binding.port}
+                        **Port:** {binding.port}  
                         **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
                     """
                 else:
                     details = f"""
-                        **Current Platform:** {platform_options.get(current_platform, 'Not Set')}
-                        **Binding Type:** {binding.binding_type}
+                        **Binding Type:** {binding.binding_type}  
                         **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
                     """
                 st.markdown(details)
-                
-                if new_platform != current_platform:
-                    if st.button("Update Platform", key=f"update_platform_{cert.id}_{binding.id}"):
-                        binding.platform = new_platform
-                        session.commit()
-                        st.success("Platform updated!")
-                        st.rerun()
                 
                 st.divider()  # Add a visual separator between bindings
     
@@ -215,10 +259,11 @@ def render_certificate_bindings(cert, session):
         )
     with col2:
         new_platform = st.selectbox(
-            "Platform",
+            "Platform Selection",  # Changed from empty label
             options=[''] + list(platform_options.keys()),
             format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-            key=f"new_platform_{cert.id}"
+            key=f"new_platform_{cert.id}",
+            label_visibility="visible"  # This one should be visible as it's a new entry
         )
         binding_type = st.selectbox(
             "Binding Type",
@@ -240,6 +285,98 @@ def render_certificate_details(cert):
         "Key Usage": cert.key_usage,
         "Signature Algorithm": cert.signature_algorithm
     })
+
+def render_certificate_tracking(cert, session):
+    """Render the certificate tracking tab"""
+    col1, col2 = st.columns([0.7, 0.3])
+    
+    with col1:
+        st.subheader("Change History")
+    with col2:
+        if st.button("➕ Add Change Entry", type="primary", use_container_width=True):
+            st.session_state.show_tracking_entry = True
+            st.session_state.editing_cert_id = cert.id
+    
+    # Show tracking entry form if button was clicked
+    if st.session_state.get('show_tracking_entry', False) and st.session_state.get('editing_cert_id') == cert.id:
+        with st.form("tracking_entry_form"):
+            st.subheader("Add Change Entry")
+            
+            change_number = st.text_input("Change/Ticket Number", placeholder="e.g., CHG0012345")
+            planned_date = st.date_input("Planned Change Date")
+            status = st.selectbox(
+                "Status",
+                ["Pending", "Completed", "Cancelled"]
+            )
+            notes = st.text_area("Notes", placeholder="Enter any additional notes about this change...")
+            
+            submitted = st.form_submit_button("Save Entry")
+            if submitted:
+                # Create new tracking entry
+                from datetime import datetime
+                new_entry = CertificateTracking(
+                    certificate_id=cert.id,
+                    change_number=change_number,
+                    planned_change_date=datetime.combine(planned_date, datetime.min.time()),
+                    notes=notes,
+                    status=status,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now()
+                )
+                session.add(new_entry)
+                session.commit()
+                st.success("Change entry added!")
+                st.session_state.show_tracking_entry = False
+                st.rerun()
+    
+    # Display existing tracking entries
+    if cert.tracking_entries:
+        # Create DataFrame for display
+        tracking_data = []
+        for entry in cert.tracking_entries:
+            tracking_data.append({
+                "Change Number": entry.change_number,
+                "Planned Date": entry.planned_change_date,
+                "Status": entry.status,
+                "Notes": entry.notes,
+                "Created": entry.created_at,
+                "Updated": entry.updated_at
+            })
+        
+        df = pd.DataFrame(tracking_data)
+        st.dataframe(
+            df,
+            column_config={
+                "Change Number": st.column_config.TextColumn(
+                    "Change Number",
+                    width="medium"
+                ),
+                "Planned Date": st.column_config.DatetimeColumn(
+                    "Planned Date",
+                    format="DD/MM/YYYY"
+                ),
+                "Status": st.column_config.TextColumn(
+                    "Status",
+                    width="small"
+                ),
+                "Notes": st.column_config.TextColumn(
+                    "Notes",
+                    width="large"
+                ),
+                "Created": st.column_config.DatetimeColumn(
+                    "Created",
+                    format="DD/MM/YYYY HH:mm"
+                ),
+                "Updated": st.column_config.DatetimeColumn(
+                    "Updated",
+                    format="DD/MM/YYYY HH:mm"
+                )
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        st.info("No change entries found for this certificate")
 
 def render_manual_entry_form(session):
     """Render the manual certificate entry form"""

@@ -17,6 +17,35 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'cert
 # Lock for thread-safe database operations
 db_lock = threading.Lock()
 
+def update_database_schema(engine):
+    """Update database schema to include new tables"""
+    try:
+        logger.info("Checking for missing tables...")
+        inspector = inspect(engine)
+        existing_tables = inspector.get_table_names()
+        
+        # Get all table names from our models
+        model_tables = set(Base.metadata.tables.keys())
+        
+        # Find missing tables
+        missing_tables = model_tables - set(existing_tables)
+        
+        if missing_tables:
+            logger.info(f"Creating missing tables: {missing_tables}")
+            # Create only the missing tables
+            for table_name in missing_tables:
+                if table_name in Base.metadata.tables:
+                    Base.metadata.tables[table_name].create(engine)
+            logger.info("Database schema updated successfully")
+            return True
+        else:
+            logger.debug("No missing tables found")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Failed to update database schema: {str(e)}")
+        return False
+
 def init_database():
     """Initialize the database connection and create tables if they don't exist"""
     with db_lock:
@@ -30,15 +59,10 @@ def init_database():
             # Create database connection
             engine = create_engine(f'sqlite:///{DB_PATH}', echo=False, pool_pre_ping=True)
             
-            # Check if tables exist before creating them
-            inspector = inspect(engine)
-            existing_tables = inspector.get_table_names()
-            
-            if not existing_tables:
-                logger.info("Creating database tables...")
-                Base.metadata.create_all(engine)
-            else:
-                logger.debug(f"Using existing tables: {existing_tables}")
+            # Update schema to include any new tables
+            if not update_database_schema(engine):
+                logger.error("Failed to update database schema")
+                return None
             
             # Test the connection
             with engine.connect() as conn:

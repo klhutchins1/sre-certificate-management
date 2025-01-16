@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -127,6 +127,7 @@ class Certificate(Base):
     signature_algorithm = Column(String)
     certificate_bindings = relationship("CertificateBinding", back_populates="certificate")
     scans = relationship("CertificateScan", back_populates="certificate")
+    tracking_entries = relationship("CertificateTracking", back_populates="certificate", order_by="CertificateTracking.planned_change_date")
 
 class CertificateScan(Base):
     __tablename__ = 'certificate_scans'
@@ -137,4 +138,19 @@ class CertificateScan(Base):
     status = Column(String)
     port = Column(Integer)
     
-    certificate = relationship("Certificate", back_populates="scans") 
+    certificate = relationship("Certificate", back_populates="scans")
+
+class CertificateTracking(Base):
+    """Tracks changes and upcoming changes for certificates"""
+    __tablename__ = 'certificate_tracking'
+    
+    id = Column(Integer, primary_key=True)
+    certificate_id = Column(Integer, ForeignKey('certificates.id'))
+    change_number = Column(String)  # Change/ticket number
+    planned_change_date = Column(DateTime, nullable=True)  # When the change is scheduled
+    notes = Column(Text, nullable=True)  # Any additional notes
+    status = Column(String)  # e.g., 'Pending', 'Completed', 'Cancelled'
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+    
+    certificate = relationship("Certificate", back_populates="tracking_entries") 

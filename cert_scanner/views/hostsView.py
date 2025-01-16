@@ -8,20 +8,8 @@ def render_hosts_view(engine):
     """Render the hosts view"""
     st.title("Hosts")
     
-    # Use full width for the main content
-    st.markdown("""
-        <style>
-            .block-container {
-                padding-top: 1rem;
-                padding-right: 1rem;
-                padding-left: 1rem;
-                padding-bottom: 1rem;
-            }
-            .stDataFrame {
-                width: 100%;
-            }
-        </style>
-    """, unsafe_allow_html=True)
+    # Create three columns for metrics
+    col1, col2 = st.columns(2)
     
     with Session(engine) as session:
         # Get all bindings
@@ -34,7 +22,11 @@ def render_hosts_view(engine):
         # Display total count
         unique_ips = len(set(b.host_ip.ip_address for b in bindings if b.host_ip))
         unique_hosts = len(set(b.host_id for b in bindings))
-        st.caption(f"Total IPs: {unique_ips} | Total Hosts: {unique_hosts}")
+        
+        col1.metric("Total IPs", unique_ips)
+        col2.metric("Total Hosts", unique_hosts)
+        
+        st.divider()
         
         # Convert to DataFrame for display
         binding_data = []
@@ -111,6 +103,8 @@ def render_hosts_view(engine):
             hide_index=True
         )
         
+        st.divider()
+        
         # Add IP:Port selection for details
         ip_ports = sorted(set(f"{row['IP Address']}:{row['Port']}" for _, row in df.iterrows()))
         selected = st.selectbox("Select IP:Port to view details", ip_ports)
@@ -127,7 +121,6 @@ def render_hosts_view(engine):
                 CertificateBinding.port == port
             ).first()
             
-            st.divider()
             st.subheader(f"Binding Details: {ip}:{port}")
             
             # Create three columns for basic info

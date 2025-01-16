@@ -14,17 +14,13 @@ def render_scan_interface(engine):
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        # Create containers for results
-        results_container = st.container()
-        progress_container = st.container()
-        
         scan_input = st.text_area(
             "Enter hostnames to scan (one per line)",
             height=150,
             placeholder="""example.com
- example.com:8443
- https://example.com
- internal.server.local:444"""
+example.com:8443
+https://example.com
+internal.server.local:444"""
         )
         
         with st.expander("ℹ️ Input Format Help"):
@@ -50,7 +46,7 @@ def render_scan_interface(engine):
               - 8443: Alternative HTTPS
               - 4443: Alternative HTTPS
               - 8080: Alternative HTTP
-        """)
+            """)
         
         if st.button("Start Scan"):
             entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
@@ -96,16 +92,18 @@ def render_scan_interface(engine):
                     continue
             
             if scan_targets:
+                # Create containers for results
+                results_container = st.empty()
+                progress_container = st.empty()
+                
                 with progress_container:
                     progress = st.progress(0)
                 
-                with results_container:
-                    st.subheader("Scan Results")
-                    results_table = {
-                        "success": [],
-                        "error": [],
-                        "warning": []
-                    }
+                results_table = {
+                    "success": [],
+                    "error": [],
+                    "warning": []
+                }
                 
                 for i, (hostname, port) in enumerate(scan_targets):
                     with st.spinner(f'Scanning {hostname}:{port}...'):
@@ -230,8 +228,7 @@ def render_scan_interface(engine):
                             st.markdown("#### ⚠️ Warnings")
                             for host in results_table["warning"]:
                                 st.markdown(f"- {host}")
-                    
-                    with progress_container:
+                        
                         st.success(f"Scan completed! Found {len(results_table['success'])} certificates.")
             else:
                 st.warning("Please enter at least one hostname to scan")
@@ -240,6 +237,7 @@ def render_scan_interface(engine):
         st.subheader("Recent Scans")
         with Session(engine) as session:
             recent_scans = session.query(CertificateScan)\
+                .join(Certificate)\
                 .order_by(CertificateScan.scan_date.desc())\
                 .limit(5)\
                 .all()

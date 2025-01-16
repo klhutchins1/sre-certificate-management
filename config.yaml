@@ -1,0 +1,30 @@
+alerts:
+  expiry_warnings:
+  - days: 90
+    level: info
+  - days: 30
+    level: warning
+  - days: 7
+    level: critical
+  failed_scans:
+    consecutive_failures: 3
+  persistence_file: data/alerts.json
+exports:
+  csv:
+    delimiter: ','
+    encoding: utf-8
+  pdf:
+    logo: reports/logo.png
+    template: reports/template.html
+paths:
+  backups: data/backups
+  database: data/certificates.db
+scanning:
+  external:
+    delay: 5
+    domains: []
+    rate_limit: 5
+  internal:
+    delay: 2
+    domains: []
+    rate_limit: 10

@@ -22,6 +22,7 @@ from cert_scanner.views.hostsView import render_hosts_view
 from cert_scanner.views.scannerView import render_scan_interface
 from cert_scanner.views.historyView import render_history_view
 from cert_scanner.views.searchView import render_search_view
+from cert_scanner.views.settingsView import render_settings_view
 
 __all__ = ['main']  # Explicitly declare what should be exported
 
@@ -134,7 +135,8 @@ def render_sidebar():
                 "💻 Hosts",
                 "🔍 Scan",
                 "📜 History",
-                "🔎 Search"
+                "🔎 Search",
+                "⚙️ Settings"
             ],
             label_visibility="collapsed",
             horizontal=False
@@ -172,6 +174,8 @@ def main():
         render_history_view(st.session_state.engine)
     elif current_page == "Search":
         render_search_view(st.session_state.engine)
+    elif current_page == "Settings":
+        render_settings_view()
 
 if __name__ == "__main__":
     main() 

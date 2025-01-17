@@ -29,18 +29,58 @@ class CertificateScanner:
     def __init__(self, logger=None):
         self.logger = logger or logging.getLogger(__name__)
     
+    def _get_base_domain(self, wildcard_domain: str) -> Optional[str]:
+        """Extract base domain from wildcard domain.
+        Example: *.google.com -> google.com
+                *.google.co.in -> google.co.in
+        """
+        if wildcard_domain.startswith('*.'):
+            return wildcard_domain[2:]
+        return None
+    
+    def _expand_domains(self, domains: List[str]) -> List[str]:
+        """Expand list of domains to include base domains for wildcards.
+        Skips the wildcard domains themselves as they can't be scanned directly."""
+        expanded = set()
+        for domain in domains:
+            if domain.startswith('*.'):
+                base_domain = self._get_base_domain(domain)
+                if base_domain:
+                    self.logger.info(f'Converting wildcard {domain} to base domain {base_domain}')
+                    expanded.add(base_domain)
+            else:
+                expanded.add(domain)
+        return list(expanded)
+    
     def scan_certificate(self, address: str, port: int = 443) -> Optional[CertificateInfo]:
-        """Asynchronously scan a certificate from given address and port"""
+        """Scan a certificate from given address and port"""
+        # Skip attempting to scan wildcard domains directly
+        if address.startswith('*.'):
+            self.logger.info(f'Skipping wildcard domain {address}')
+            return None
+            
         try:
             cert_binary = self._get_certificate(address, port)
             if not cert_binary:
                 return None
                 
-            return self._process_certificate(cert_binary, address, port)
+            cert_info = self._process_certificate(cert_binary, address, port)
+            return cert_info
+            
         except Exception as e:
             self.logger.error(f"Error scanning {address}:{port} - {str(e)}")
             return None
-            
+    
+    def scan_domains(self, domains: List[str], port: int = 443) -> List[CertificateInfo]:
+        """Scan a list of domains, including base domains for wildcards."""
+        expanded_domains = self._expand_domains(domains)
+        results = []
+        for domain in expanded_domains:
+            cert_info = self.scan_certificate(domain, port)
+            if cert_info:
+                results.append(cert_info)
+        return results
+    
     def _get_certificate(self, address: str, port: int) -> Optional[bytes]:
         """Retrieve raw certificate data"""
         try:

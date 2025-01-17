@@ -14,8 +14,7 @@ from ..exports import (
     export_certificates_to_csv,
     export_certificates_to_pdf,
     export_hosts_to_csv,
-    export_hosts_to_pdf,
-    WEASYPRINT_AVAILABLE
+    export_hosts_to_pdf
 )
 
 logger = logging.getLogger(__name__)
@@ -328,28 +327,6 @@ def render_settings_view(engine):
     with tabs[3]:  # Exports
         st.header("Export Settings")
         
-        # PDF settings
-        st.subheader("PDF Export Settings")
-        if not WEASYPRINT_AVAILABLE:
-            st.warning(
-                "PDF export is currently unavailable. To enable PDF export, please install GTK3. "
-                "Visit https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows "
-                "for installation instructions."
-            )
-        
-        pdf_template = st.text_input(
-            "PDF Template Path",
-            value=settings.get("exports.pdf.template"),
-            help="Path to the HTML template for PDF reports",
-            disabled=not WEASYPRINT_AVAILABLE
-        )
-        pdf_logo = st.text_input(
-            "Logo Path",
-            value=settings.get("exports.pdf.logo"),
-            help="Path to the logo image for PDF reports",
-            disabled=not WEASYPRINT_AVAILABLE
-        )
-        
         # CSV settings
         st.subheader("CSV Export Settings")
         csv_delimiter = st.text_input(
@@ -364,8 +341,6 @@ def render_settings_view(engine):
         )
         
         if st.button("Save Export Settings"):
-            settings.update("exports.pdf.template", pdf_template)
-            settings.update("exports.pdf.logo", pdf_logo)
             settings.update("exports.csv.delimiter", csv_delimiter)
             settings.update("exports.csv.encoding", csv_encoding)
             
@@ -390,14 +365,11 @@ def render_settings_view(engine):
                 except Exception as e:
                     st.error(f"Failed to export certificates to CSV: {str(e)}")
             
-            pdf_button = st.button("Export Certificates to PDF", disabled=not WEASYPRINT_AVAILABLE)
-            if pdf_button:
+            if st.button("Export Certificates to PDF"):
                 try:
                     with SessionManager(engine) as session:
                         output_path = export_certificates_to_pdf(session)
                         st.success(f"Certificates exported to PDF: {output_path}")
-                except RuntimeError as e:
-                    st.error(str(e))
                 except Exception as e:
                     st.error(f"Failed to export certificates to PDF: {str(e)}")
         
@@ -411,13 +383,10 @@ def render_settings_view(engine):
                 except Exception as e:
                     st.error(f"Failed to export hosts to CSV: {str(e)}")
             
-            pdf_button = st.button("Export Hosts to PDF", disabled=not WEASYPRINT_AVAILABLE)
-            if pdf_button:
+            if st.button("Export Hosts to PDF"):
                 try:
                     with SessionManager(engine) as session:
                         output_path = export_hosts_to_pdf(session)
                         st.success(f"Hosts exported to PDF: {output_path}")
-                except RuntimeError as e:
-                    st.error(str(e))
                 except Exception as e:
                     st.error(f"Failed to export hosts to PDF: {str(e)}") 

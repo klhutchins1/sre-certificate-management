@@ -3,16 +3,9 @@ import plotly.figure_factory as ff
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy.orm import Session
-from jinja2 import Environment, FileSystemLoader
 from .settings import Settings
 from .models import Certificate, Host, CertificateBinding
-
-# Try to import WeasyPrint, but don't fail if it's not available
-try:
-    from weasyprint import HTML, CSS
-    WEASYPRINT_AVAILABLE = True
-except (ImportError, OSError):
-    WEASYPRINT_AVAILABLE = False
+from fpdf import FPDF
 
 def export_certificates_to_csv(session: Session, output_path: str = None) -> str:
     """Export certificates to a CSV file.
@@ -164,30 +157,13 @@ def create_timeline_chart(certificates):
     
     # Save as PNG for inclusion in PDF
     img_path = 'exports/temp_timeline.png'
+    Path(img_path).parent.mkdir(parents=True, exist_ok=True)
     fig.write_image(img_path)
     
     return img_path
 
 def export_certificates_to_pdf(session: Session, output_path: str = None) -> str:
-    """Export certificates to a PDF file.
-    
-    Args:
-        session: Database session
-        output_path: Optional path for the output file. If not provided, a timestamped filename will be used.
-        
-    Returns:
-        str: Path to the exported PDF file
-        
-    Raises:
-        RuntimeError: If WeasyPrint is not available
-    """
-    if not WEASYPRINT_AVAILABLE:
-        raise RuntimeError(
-            "PDF export requires WeasyPrint. Please install GTK3 and try again. "
-            "Visit https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows "
-            "for installation instructions."
-        )
-    
+    """Export certificates to a PDF file using fpdf2."""
     settings = Settings()
     
     # Get certificates with their bindings
@@ -196,24 +172,71 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     # Create timeline chart
     timeline_path = create_timeline_chart(certificates)
     
-    # Prepare data for the template
-    template_data = {
-        'certificates': certificates,
-        'timeline_path': timeline_path,
-        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'total_certificates': len(certificates),
-        'valid_certificates': sum(1 for c in certificates if c.valid_until > datetime.now()),
-        'expired_certificates': sum(1 for c in certificates if c.valid_until <= datetime.now()),
-        'logo_path': settings.get('exports.pdf.logo')
-    }
+    # Create PDF object
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Set up Jinja2 environment
-    template_dir = Path(settings.get('exports.pdf.template', 'reports')).parent
-    env = Environment(loader=FileSystemLoader(str(template_dir)))
-    template = env.get_template(Path(settings.get('exports.pdf.template', 'reports/template.html')).name)
+    # Add title page
+    pdf.add_page()
+    pdf.set_font('helvetica', 'B', 24)
+    pdf.cell(0, 20, 'Certificate Report', ln=True, align='C')
+    pdf.ln(20)
     
-    # Render HTML
-    html_content = template.render(**template_data)
+    # Add summary
+    pdf.set_font('helvetica', 'B', 14)
+    pdf.cell(0, 10, 'Summary', ln=True)
+    pdf.set_font('helvetica', '', 12)
+    pdf.cell(0, 8, f'Total Certificates: {len(certificates)}', ln=True)
+    pdf.cell(0, 8, f'Valid Certificates: {sum(1 for c in certificates if c.valid_until > datetime.now())}', ln=True)
+    pdf.cell(0, 8, f'Expired Certificates: {sum(1 for c in certificates if c.valid_until <= datetime.now())}', ln=True)
+    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True)
+    
+    # Add timeline chart
+    if Path(timeline_path).exists():
+        pdf.add_page()
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 10, 'Certificate Timeline', ln=True)
+        try:
+            pdf.image(timeline_path, x=10, w=190)
+        except Exception as e:
+            pdf.set_font('helvetica', '', 12)
+            pdf.cell(0, 10, f'Error adding timeline: {str(e)}', ln=True)
+    
+    # Add certificate details
+    for cert in certificates:
+        pdf.add_page()
+        pdf.set_font('helvetica', 'B', 16)
+        pdf.cell(0, 10, f'Certificate: {cert.common_name}', ln=True)
+        
+        # Overview
+        pdf.ln(5)
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 10, 'Overview', ln=True)
+        pdf.set_font('helvetica', '', 12)
+        pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
+        pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', ln=True)
+        pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', ln=True)
+        pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
+        
+        # Bindings
+        if cert.certificate_bindings:
+            pdf.ln(5)
+            pdf.set_font('helvetica', 'B', 14)
+            pdf.cell(0, 10, 'Bindings', ln=True)
+            pdf.set_font('helvetica', '', 12)
+            for binding in cert.certificate_bindings:
+                host_name = binding.host.name if binding.host else "Unknown Host"
+                host_ip = getattr(binding, 'host_ip', None)
+                ip_address = host_ip.ip_address if host_ip else "No IP"
+                port = binding.port if binding.port else "N/A"
+                
+                pdf.cell(0, 8, f'Host: {host_name}', ln=True)
+                if binding.binding_type == 'IP':
+                    pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', ln=True)
+                pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
+                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
+                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
+                pdf.ln(5)
     
     # Generate output path if not provided
     if output_path is None:
@@ -223,55 +246,72 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     # Ensure output directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     
-    # Convert HTML to PDF
-    HTML(string=html_content).write_pdf(output_path)
+    # Save PDF
+    pdf.output(output_path)
     
     # Clean up temporary files
-    Path(timeline_path).unlink()
+    if Path(timeline_path).exists():
+        Path(timeline_path).unlink()
     
     return output_path
 
 def export_hosts_to_pdf(session: Session, output_path: str = None) -> str:
-    """Export hosts to a PDF file.
-    
-    Args:
-        session: Database session
-        output_path: Optional path for the output file. If not provided, a timestamped filename will be used.
-        
-    Returns:
-        str: Path to the exported PDF file
-        
-    Raises:
-        RuntimeError: If WeasyPrint is not available
-    """
-    if not WEASYPRINT_AVAILABLE:
-        raise RuntimeError(
-            "PDF export requires WeasyPrint. Please install GTK3 and try again. "
-            "Visit https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows "
-            "for installation instructions."
-        )
-    
+    """Export hosts to a PDF file using fpdf2."""
     settings = Settings()
     
     # Get hosts with their bindings
     hosts = session.query(Host).all()
     
-    # Prepare data for the template
-    template_data = {
-        'hosts': hosts,
-        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'total_hosts': len(hosts),
-        'total_certificates': len({b.certificate for h in hosts for b in h.certificate_bindings}),
-        'logo_path': settings.get('exports.pdf.logo')
-    }
+    # Create PDF object
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Set up Jinja2 environment
-    template_dir = Path(settings.get('exports.pdf.template', 'reports')).parent
-    env = Environment(loader=FileSystemLoader(str(template_dir)))
-    template = env.get_template(Path(settings.get('exports.pdf.template', 'reports/hosts_template.html')).name)
+    # Add title page
+    pdf.add_page()
+    pdf.set_font('helvetica', 'B', 24)
+    pdf.cell(0, 20, 'Host Report', ln=True, align='C')
+    pdf.ln(20)
     
-    # Render HTML
-    html_content = template.render(**template_data)
+    # Add summary
+    pdf.set_font('helvetica', 'B', 14)
+    pdf.cell(0, 10, 'Summary', ln=True)
+    pdf.set_font('helvetica', '', 12)
+    pdf.cell(0, 8, f'Total Hosts: {len(hosts)}', ln=True)
+    total_bindings = sum(len(host.certificate_bindings) for host in hosts)
+    pdf.cell(0, 8, f'Total Certificate Bindings: {total_bindings}', ln=True)
+    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True)
+    
+    # Add host details
+    for host in hosts:
+        pdf.add_page()
+        pdf.set_font('helvetica', 'B', 16)
+        pdf.cell(0, 10, f'Host: {host.name}', ln=True)
+        
+        # IP Addresses
+        pdf.ln(5)
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 10, 'IP Addresses', ln=True)
+        pdf.set_font('helvetica', '', 12)
+        for ip in host.ip_addresses:
+            pdf.cell(0, 8, f'IP: {ip.ip_address}', ln=True)
+        
+        # Certificate Bindings
+        if host.certificate_bindings:
+            pdf.ln(5)
+            pdf.set_font('helvetica', 'B', 14)
+            pdf.cell(0, 10, 'Certificate Bindings', ln=True)
+            pdf.set_font('helvetica', '', 12)
+            for binding in host.certificate_bindings:
+                cert = binding.certificate
+                pdf.cell(0, 8, f'Certificate: {cert.common_name}', ln=True)
+                pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
+                if binding.binding_type == 'IP':
+                    pdf.cell(0, 8, f'Port: {binding.port}', ln=True)
+                pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
+                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
+                pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
+                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
+                pdf.ln(5)
     
     # Generate output path if not provided
     if output_path is None:
@@ -281,7 +321,7 @@ def export_hosts_to_pdf(session: Session, output_path: str = None) -> str:
     # Ensure output directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     
-    # Convert HTML to PDF
-    HTML(string=html_content).write_pdf(output_path)
+    # Save PDF
+    pdf.output(output_path)
     
     return output_path 

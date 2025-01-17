@@ -67,7 +67,7 @@ def render_certificate_list(engine):
                     "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
                     "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
                     "Bindings": len(cert.certificate_bindings),
-                    "ID": cert.id
+                    "_id": cert.id  # Hidden ID for internal use
                 })
                 certificates_dict[cert.id] = cert
             
@@ -91,14 +91,14 @@ def render_certificate_list(engine):
                         "Valid Until": st.column_config.DateColumn("Valid Until"),
                         "Status": st.column_config.TextColumn("Status", width="small"),
                         "Bindings": st.column_config.NumberColumn("Bindings", width="small"),
-                        "ID": st.column_config.Column("ID", disabled=True)
+                        "_id": st.column_config.Column("ID", disabled=True, required=False)
                     },
                     hide_index=True,
                     use_container_width=True
                 )
                 
                 # Add certificate selection dropdown
-                cert_options = {f"{cert['Common Name']} ({cert['Serial Number']})": cert['ID'] 
+                cert_options = {f"{cert['Common Name']} ({cert['Serial Number']})": cert['_id'] 
                               for cert in certs_data}
                 selected_cert_name = st.selectbox(
                     "Select a certificate to view details",
@@ -192,7 +192,7 @@ def render_certificate_overview(cert, session):
 
 def render_certificate_bindings(cert, session):
     """Render the certificate bindings tab"""
-    # Add custom CSS to reduce spacing
+    # Add custom CSS to reduce spacing and fix alignment
     st.markdown("""
         <style>
         /* Reduce spacing between columns */
@@ -200,44 +200,88 @@ def render_certificate_bindings(cert, session):
             padding: 0 !important;
             margin: 0 !important;
         }
-        /* Make selectbox more compact */
-        [data-testid="stSelectbox"] > div > div {
-            min-width: 150px !important;
+        /* Make form elements more compact and aligned */
+        [data-testid="stVerticalBlock"] > div {
+            padding-bottom: 0.5rem !important;
+        }
+        /* Align form inputs */
+        .stTextInput, .stNumberInput, .stSelectbox {
+            margin-top: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0.5rem !important;
+        }
+        /* Fix label alignment */
+        .stTextInput > label, .stNumberInput > label, .stSelectbox > label {
+            padding-bottom: 0.5rem !important;
+        }
+        /* Make inputs same height */
+        .stTextInput > div > div > input, .stNumberInput > div > div > input {
+            line-height: 1.6 !important;
+        }
+        /* Remove form border */
+        [data-testid="stForm"] {
+            border: none !important;
+            padding: 0 !important;
+        }
+        /* Add space above button row */
+        .stButton {
+            margin-top: 1rem !important;
         }
         </style>
     """, unsafe_allow_html=True)
     
-    # Add new binding section at the top
-    st.markdown("### Add New Binding")
-    # Add host management section
-    col1, col2 = st.columns(2)
-    with col1:
-        new_hostname = st.text_input("Hostname", key=f"hostname_{cert.id}")
-        new_ip = st.text_input("IP Address (optional)", key=f"ip_{cert.id}")
-        new_port = st.number_input(
-            "Port (optional)", 
-            min_value=1, 
-            max_value=65535, 
-            value=443, 
-            key=f"port_{cert.id}"
-        )
-    with col2:
-        new_platform = st.selectbox(
-            "Platform Selection",  # Changed from empty label
-            options=[''] + list(platform_options.keys()),
-            format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-            key=f"new_platform_{cert.id}",
-            label_visibility="visible"  # This one should be visible as it's a new entry
-        )
-        binding_type = st.selectbox(
-            "Binding Type",
-            [BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT],
-            help="Type of certificate binding",
-            key=f"binding_type_{cert.id}"
-        )
-    
-    if st.button("Add Host", key=f"add_host_{cert.id}"):
-        add_host_to_certificate(cert, new_hostname, new_ip, new_port, new_platform, binding_type, session)
+    # Add new binding section at the top with expander
+    with st.expander("➕ Add New Binding", expanded=False):
+        with st.form(key=f"binding_form_{cert.id}", clear_on_submit=True):
+            # First row - all inputs in one line
+            col1, col2, col3, col4, col5 = st.columns([0.2, 0.2, 0.2, 0.2, 0.2])
+            
+            with col1:
+                new_hostname = st.text_input(
+                    "Hostname",
+                    key=f"hostname_{cert.id}",
+                    placeholder="Enter hostname"
+                )
+            
+            with col2:
+                new_ip = st.text_input(
+                    "IP Address",
+                    key=f"ip_{cert.id}",
+                    placeholder="Optional"
+                )
+            
+            with col3:
+                new_port = st.number_input(
+                    "Port",
+                    min_value=1,
+                    max_value=65535,
+                    value=443,
+                    key=f"port_{cert.id}"
+                )
+            
+            with col4:
+                binding_type = st.selectbox(
+                    "Binding Type",
+                    [BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT],
+                    help="Type of certificate binding",
+                    key=f"binding_type_{cert.id}"
+                )
+            
+            with col5:
+                new_platform = st.selectbox(
+                    "Platform",
+                    options=[''] + list(platform_options.keys()),
+                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
+                    key=f"new_platform_{cert.id}"
+                )
+            
+            # Second row - button centered
+            _, col_btn, _ = st.columns([0.4, 0.2, 0.4])
+            with col_btn:
+                submitted = st.form_submit_button("Add Binding", type="primary", use_container_width=True)
+            
+            if submitted:
+                add_host_to_certificate(cert, new_hostname, new_ip, new_port, new_platform, binding_type, session)
     
     st.divider()  # Add a visual separator
     
@@ -269,7 +313,7 @@ def render_certificate_bindings(cert, session):
                 current_platform = binding.platform
                 with col2:
                     new_platform = st.selectbox(
-                        "Platform Selection",  # Proper label that will be hidden
+                        f"Platform for {host_name}",  # Descriptive label for accessibility
                         options=[''] + list(platform_options.keys()),
                         format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
                         key=f"platform_select_{cert.id}_{binding.id}",
@@ -327,13 +371,25 @@ def render_certificate_tracking(cert, session):
         with st.form("tracking_entry_form"):
             st.subheader("Add Change Entry")
             
-            change_number = st.text_input("Change/Ticket Number", placeholder="e.g., CHG0012345")
-            planned_date = st.date_input("Planned Change Date")
-            status = st.selectbox(
-                "Status",
-                ["Pending", "Completed", "Cancelled"]
+            change_number = st.text_input(
+                "Change/Ticket Number",
+                placeholder="e.g., CHG0012345",
+                key=f"change_number_{cert.id}"
             )
-            notes = st.text_area("Notes", placeholder="Enter any additional notes about this change...")
+            planned_date = st.date_input(
+                "Planned Change Date",
+                key=f"planned_date_{cert.id}"
+            )
+            status = st.selectbox(
+                "Change Status",  # Changed from "Status" to be more descriptive
+                options=["Pending", "Completed", "Cancelled"],
+                key=f"status_{cert.id}"
+            )
+            notes = st.text_area(
+                "Change Notes",  # Changed from "Notes" to be more descriptive
+                placeholder="Enter any additional notes about this change...",
+                key=f"notes_{cert.id}"
+            )
             
             submitted = st.form_submit_button("Save Entry")
             if submitted:
@@ -525,4 +581,184 @@ def save_manual_certificate(cert_type, common_name, serial_number, thumbprint,
     except Exception as e:
         st.error(f"Error saving certificate: {str(e)}")
         session.rollback()
+
+def export_certificate_to_pdf(cert, filename):
+    """Export certificate details to PDF"""
+    from fpdf import FPDF
+    from datetime import datetime
+    
+    # Create PDF object
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Set font
+    pdf.set_font('helvetica', 'B', 16)
+    
+    # Title
+    pdf.cell(0, 10, f'Certificate Details: {cert.common_name}', ln=True, align='C')
+    pdf.ln(10)
+    
+    # Set font for content
+    pdf.set_font('helvetica', '', 12)
+    
+    # Certificate Overview
+    pdf.set_font('helvetica', 'B', 14)
+    pdf.cell(0, 10, 'Overview', ln=True)
+    pdf.set_font('helvetica', '', 12)
+    pdf.cell(0, 8, f'Common Name: {cert.common_name}', ln=True)
+    pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
+    pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', ln=True)
+    pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', ln=True)
+    pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
+    pdf.ln(5)
+    
+    # Bindings
+    if cert.certificate_bindings:
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 10, 'Bindings', ln=True)
+        pdf.set_font('helvetica', '', 12)
+        for binding in cert.certificate_bindings:
+            host_name = binding.host.name if binding.host else "Unknown Host"
+            host_ip = getattr(binding, 'host_ip', None)
+            ip_address = host_ip.ip_address if host_ip else "No IP"
+            port = binding.port if binding.port else "N/A"
+            
+            pdf.cell(0, 8, f'Host: {host_name}', ln=True)
+            if binding.binding_type == BINDING_TYPE_IP:
+                pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', ln=True)
+            pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
+            pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
+            pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
+            pdf.ln(5)
+    
+    # Subject Alternative Names
+    if cert.san:
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 10, 'Subject Alternative Names', ln=True)
+        pdf.set_font('helvetica', '', 12)
+        try:
+            san_list = cert.san
+            if isinstance(san_list, str):
+                try:
+                    san_list = eval(san_list)
+                except:
+                    san_list = cert.san.split(',')
+            
+            san_list = [s.strip() for s in san_list if s.strip()]
+            for san in san_list:
+                pdf.cell(0, 8, san, ln=True)
+        except Exception as e:
+            pdf.cell(0, 8, f'Error parsing SANs: {str(e)}', ln=True)
+        pdf.ln(5)
+    
+    # Certificate Details
+    pdf.set_font('helvetica', 'B', 14)
+    pdf.cell(0, 10, 'Technical Details', ln=True)
+    pdf.set_font('helvetica', '', 12)
+    pdf.cell(0, 8, f'Thumbprint: {cert.thumbprint}', ln=True)
+    if cert.issuer:
+        issuer_dict = eval(cert.issuer)
+        pdf.cell(0, 8, f'Issuer: {", ".join(f"{k}={v}" for k, v in issuer_dict.items())}', ln=True)
+    if cert.subject:
+        subject_dict = eval(cert.subject)
+        pdf.cell(0, 8, f'Subject: {", ".join(f"{k}={v}" for k, v in subject_dict.items())}', ln=True)
+    pdf.cell(0, 8, f'Key Usage: {cert.key_usage}', ln=True)
+    pdf.cell(0, 8, f'Signature Algorithm: {cert.signature_algorithm}', ln=True)
+    
+    # Save the PDF
+    pdf.output(filename)
+
+def export_certificates_to_pdf(certificates, filename):
+    """Export multiple certificates to a single PDF"""
+    from fpdf import FPDF
+    from datetime import datetime
+    
+    # Create PDF object
+    pdf = FPDF()
+    
+    # For each certificate
+    for i, cert in enumerate(certificates):
+        pdf.add_page()
+        
+        # Set font
+        pdf.set_font('helvetica', 'B', 16)
+        
+        # Title
+        pdf.cell(0, 10, f'Certificate Details: {cert.common_name}', ln=True, align='C')
+        pdf.ln(10)
+        
+        # Set font for content
+        pdf.set_font('helvetica', '', 12)
+        
+        # Certificate Overview
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 10, 'Overview', ln=True)
+        pdf.set_font('helvetica', '', 12)
+        pdf.cell(0, 8, f'Common Name: {cert.common_name}', ln=True)
+        pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
+        pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', ln=True)
+        pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', ln=True)
+        pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
+        pdf.ln(5)
+        
+        # Bindings
+        if cert.certificate_bindings:
+            pdf.set_font('helvetica', 'B', 14)
+            pdf.cell(0, 10, 'Bindings', ln=True)
+            pdf.set_font('helvetica', '', 12)
+            for binding in cert.certificate_bindings:
+                host_name = binding.host.name if binding.host else "Unknown Host"
+                host_ip = getattr(binding, 'host_ip', None)
+                ip_address = host_ip.ip_address if host_ip else "No IP"
+                port = binding.port if binding.port else "N/A"
+                
+                pdf.cell(0, 8, f'Host: {host_name}', ln=True)
+                if binding.binding_type == BINDING_TYPE_IP:
+                    pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', ln=True)
+                pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
+                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
+                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
+                pdf.ln(5)
+        
+        # Subject Alternative Names
+        if cert.san:
+            pdf.set_font('helvetica', 'B', 14)
+            pdf.cell(0, 10, 'Subject Alternative Names', ln=True)
+            pdf.set_font('helvetica', '', 12)
+            try:
+                san_list = cert.san
+                if isinstance(san_list, str):
+                    try:
+                        san_list = eval(san_list)
+                    except:
+                        san_list = cert.san.split(',')
+                
+                san_list = [s.strip() for s in san_list if s.strip()]
+                for san in san_list:
+                    pdf.cell(0, 8, san, ln=True)
+            except Exception as e:
+                pdf.cell(0, 8, f'Error parsing SANs: {str(e)}', ln=True)
+            pdf.ln(5)
+        
+        # Certificate Details
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 10, 'Technical Details', ln=True)
+        pdf.set_font('helvetica', '', 12)
+        pdf.cell(0, 8, f'Thumbprint: {cert.thumbprint}', ln=True)
+        if cert.issuer:
+            issuer_dict = eval(cert.issuer)
+            pdf.cell(0, 8, f'Issuer: {", ".join(f"{k}={v}" for k, v in issuer_dict.items())}', ln=True)
+        if cert.subject:
+            subject_dict = eval(cert.subject)
+            pdf.cell(0, 8, f'Subject: {", ".join(f"{k}={v}" for k, v in subject_dict.items())}', ln=True)
+        pdf.cell(0, 8, f'Key Usage: {cert.key_usage}', ln=True)
+        pdf.cell(0, 8, f'Signature Algorithm: {cert.signature_algorithm}', ln=True)
+        
+        # Add page number
+        pdf.set_y(-15)
+        pdf.set_font('helvetica', 'I', 8)
+        pdf.cell(0, 10, f'Page {i+1} of {len(certificates)}', 0, 0, 'C')
+    
+    # Save the PDF
+    pdf.output(filename)
 

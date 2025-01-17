@@ -1,7 +1,7 @@
 venv/
 __pycache__
 backups/
-
+exports/
 
 *.db
 *.lock

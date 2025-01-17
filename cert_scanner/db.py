@@ -8,7 +8,9 @@ from .models import Base
 from sqlalchemy import inspect
 from pathlib import Path
 from sqlalchemy import text
-from .settings import settings
+from .settings import Settings
+import shutil
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -65,34 +67,48 @@ def update_database_schema(engine):
         logger.error(f"Failed to update database schema: {str(e)}")
         return False
 
-def init_database():
+def init_database(db_path=None):
     """Initialize the database connection and create tables if they don't exist"""
     try:
-        # Get database path from settings
-        db_path = Path(settings.get("paths.database", "data/certificates.db"))
+        # Get database path from parameter or settings
+        if db_path is None:
+            settings = Settings()
+            db_path = Path(settings.get("paths.database", "data/certificates.db"))
+        else:
+            db_path = Path(db_path)
         
         # Ensure the database directory exists
         db_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # If database exists but is corrupted, remove it
+        # If database exists but is corrupted or empty, remove it
         if db_path.exists():
             try:
                 # Test if database is valid
-                engine = create_engine(f"sqlite:///{db_path}")
-                with engine.connect() as conn:
+                test_engine = create_engine(f"sqlite:///{db_path}")
+                with test_engine.connect() as conn:
                     conn.execute(text("SELECT 1"))
+                test_engine.dispose()
             except Exception as e:
-                logger.error(f"Existing database is corrupted, removing: {str(e)}")
-                db_path.unlink()
+                logger.warning(f"Removing invalid or corrupted database: {str(e)}")
+                try:
+                    # Close any existing connections
+                    test_engine.dispose()
+                except:
+                    pass
+                # Remove the corrupted file
+                try:
+                    db_path.unlink()
+                except Exception as e:
+                    logger.error(f"Failed to remove corrupted database: {str(e)}")
+                    raise
         
-        # Create database engine
+        # Create new database engine
         logger.info(f"Using database at: {db_path}")
         engine = create_engine(f"sqlite:///{db_path}")
         
         # Create tables and update schema
         logger.info("Creating database tables...")
         Base.metadata.create_all(engine)
-        update_database_schema(engine)
         
         # Verify tables were created
         with engine.connect() as conn:
@@ -104,6 +120,9 @@ def init_database():
             missing_tables = [table for table in required_tables if table not in tables]
             if missing_tables:
                 raise Exception(f"Failed to create tables: {', '.join(missing_tables)}")
+        
+        # Update schema if needed
+        update_database_schema(engine)
         
         return engine
     except Exception as e:
@@ -163,3 +182,45 @@ class SessionManager:
             if exc_type is not None:
                 self.session.rollback()
             self.session.close() 
+
+def backup_database(engine, backup_dir):
+    """Create a backup of the database"""
+    try:
+        # Get the database path from the engine URL
+        db_path = engine.url.database
+        
+        # Create backup directory if it doesn't exist
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # Generate backup filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(backup_dir, f"backup_{timestamp}.db")
+        
+        # Copy the database file
+        with db_lock:
+            shutil.copy2(db_path, backup_path)
+        
+        logger.info(f"Database backup created at: {backup_path}")
+        return backup_path
+    except Exception as e:
+        logger.error(f"Failed to create database backup: {str(e)}")
+        raise
+
+def restore_database(backup_path, engine):
+    """Restore database from a backup"""
+    try:
+        # Get the current database path from the engine URL
+        db_path = engine.url.database
+        
+        # Close all connections
+        engine.dispose()
+        
+        # Restore the database file
+        with db_lock:
+            shutil.copy2(backup_path, db_path)
+        
+        logger.info(f"Database restored from backup: {backup_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to restore database from backup: {str(e)}")
+        raise 

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 def list_backups():
     """List all available backups with their details"""
     try:
+        settings = Settings()
         backup_dir = Path(settings.get("paths.backups", "data/backups"))
         if not backup_dir.exists():
             backup_dir.mkdir(parents=True, exist_ok=True)
@@ -64,6 +65,10 @@ def list_backups():
 def restore_backup(manifest):
     """Restore database and config from a backup"""
     try:
+        settings = Settings()
+        logger.info("Starting database restore process")
+        logger.info(f"Manifest contents: {manifest}")
+        
         # Verify backup files exist
         config_file = Path(manifest['config'])
         if not config_file.exists():
@@ -72,25 +77,64 @@ def restore_backup(manifest):
         
         # Restore database if it exists in backup
         if manifest['database']:
+            logger.info(f"Database backup file found in manifest: {manifest['database']}")
             db_file = Path(manifest['database'])
+            logger.info(f"Restoring from backup file: {db_file}")
+            
             if not db_file.exists():
                 logger.error(f"Database backup file not found: {db_file}")
                 return False, "Database backup file not found"
                 
             db_path = Path(settings.get("paths.database", "data/certificates.db"))
+            logger.info(f"Target database path: {db_path}")
+            
             # Ensure target directory exists
             db_path.parent.mkdir(parents=True, exist_ok=True)
             
             try:
+                # Close all existing database connections
+                from sqlalchemy import create_engine
+                from sqlalchemy.orm import Session, sessionmaker
+                from ..models import Base, Certificate
+                
+                # Drop all tables and recreate them
+                engine = create_engine(f"sqlite:///{db_path}")
+                logger.info("Closing all existing database sessions")
+                Session.close_all()
+                
+                logger.info("Dropping all tables")
+                Base.metadata.drop_all(engine)
+                engine.dispose()
+                
+                # Wait a moment for connections to fully close
+                time.sleep(0.1)
+                
+                logger.info("Copying backup file")
                 if db_path.exists():
+                    logger.info("Removing existing database file")
                     db_path.unlink()
                 shutil.copy2(db_file, db_path)
+                
+                # Create a new engine and ensure tables exist
+                logger.info("Creating tables in restored database")
+                engine = create_engine(f"sqlite:///{db_path}")
+                Base.metadata.create_all(engine)
+                
+                # Verify the restored database
+                with Session(engine) as session:
+                    cert_count = session.query(Certificate).count()
+                    logger.info(f"Found {cert_count} certificates in restored database")
+                
+                engine.dispose()
+                logger.info("Database restore completed")
+                
             except Exception as e:
                 logger.error(f"Failed to restore database: {str(e)}")
                 return False, f"Failed to restore database: {str(e)}"
         
         # Restore config
         try:
+            logger.info("Restoring configuration")
             # First verify the backup config is valid YAML
             with open(config_file, 'r') as f:
                 backup_config = yaml.safe_load(f)
@@ -101,6 +145,7 @@ def restore_backup(manifest):
             # Update settings with backup config
             settings._config = backup_config.copy()
             settings.save()  # This will write to config.yaml
+            logger.info("Configuration restored successfully")
             
             return True, "Backup restored successfully"
         except Exception as e:
@@ -114,9 +159,13 @@ def restore_backup(manifest):
 def create_backup():
     """Create a backup of database and configuration"""
     try:
+        settings = Settings()
+        logger.info("Starting backup creation")
+        
         # Ensure backup directory exists
         backup_dir = Path(settings.get("paths.backups", "data/backups"))
         backup_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Using backup directory: {backup_dir}")
         
         # Create timestamp for backup with microsecond precision
         now = datetime.now()
@@ -128,16 +177,21 @@ def create_backup():
         
         # Backup database if it exists
         db_path = Path(settings.get("paths.database", "data/certificates.db"))
+        logger.info(f"Database path to backup: {db_path}")
         if db_path.exists():
             db_backup = backup_dir / f"certificates_{timestamp}.db"
             try:
+                logger.info(f"Creating database backup at: {db_backup}")
                 shutil.copy2(db_path, db_backup)
             except Exception as e:
                 logger.error(f"Failed to backup database: {str(e)}")
                 return False, f"Failed to backup database: {str(e)}"
+        else:
+            logger.warning(f"Database file not found at {db_path}")
         
         # Backup config
         try:
+            logger.info("Creating config backup")
             current_config = settings._config.copy()
             with open(config_backup, 'w') as f:
                 yaml.safe_dump(current_config, f)
@@ -155,6 +209,7 @@ def create_backup():
                 "config": str(config_backup),
                 "created": now.isoformat()
             }
+            logger.info(f"Creating manifest with contents: {manifest}")
             
             manifest_file = backup_dir / f"backup_{timestamp}.json"
             with open(manifest_file, 'w') as f:
@@ -170,6 +225,7 @@ def create_backup():
                     logger.error(f"Expected backup file not found: {file}")
                     return False, f"Failed to verify backup files"
             
+            logger.info("Backup created successfully")
             return True, f"Backup created successfully at {backup_dir}"
         except Exception as e:
             logger.error(f"Failed to create manifest: {str(e)}")

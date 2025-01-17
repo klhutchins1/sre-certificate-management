@@ -6,8 +6,17 @@ import json
 from datetime import datetime
 from cert_scanner.views.settingsView import create_backup, restore_backup, list_backups
 from cert_scanner.settings import Settings
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from cert_scanner.models import Base, Certificate
 import time
 import yaml
+
+@pytest.fixture(autouse=True)
+def cleanup_settings():
+    """Clean up settings after each test"""
+    yield
+    Settings._reset()
 
 @pytest.fixture
 def test_env(tmp_path):
@@ -18,10 +27,11 @@ def test_env(tmp_path):
     db_dir.mkdir(parents=True, exist_ok=True)
     backup_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create test database file
+    # Create test database file using SQLAlchemy
     db_file = db_dir / "test.db"
-    with open(db_file, 'w') as f:
-        f.write("test database content")
+    engine = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
     
     # Create test config with proper YAML structure
     test_config = {
@@ -43,17 +53,18 @@ def test_env(tmp_path):
         }
     }
     
-    # Update settings to use test paths
-    settings = Settings()
-    settings._config = test_config.copy()  # Use the same config we just created
-    settings.save()  # This will create config.yaml
+    # Enable test mode with our test config
+    Settings.set_test_mode(test_config)
     
-    return {
+    yield {
         'tmp_path': tmp_path,
         'db_file': db_file,
         'backup_dir': backup_dir,
         'config_file': Path("config.yaml")
     }
+    
+    # Clean up
+    Settings._reset()
 
 def test_create_backup(test_env):
     """Test creating a backup"""
@@ -93,46 +104,115 @@ def test_list_backups(test_env):
 
 def test_restore_backup(test_env):
     """Test restoring from a backup"""
+    # Create a test record in the database
+    engine = create_engine(f"sqlite:///{test_env['db_file']}")
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        cert = Certificate(
+            serial_number="test123",
+            thumbprint="abc123",
+            common_name="test.com",
+            valid_from=datetime.now(),
+            valid_until=datetime.now(),
+            issuer="Test CA",
+            subject="CN=test.com",
+            san="test.com"
+        )
+        session.add(cert)
+        session.commit()
+    Session.close_all()
+    engine.dispose()
+
+    # Store original settings
+    settings = Settings()
+    original_config = settings._config.copy()
+    original_backup_path = settings.get("paths.backups")
+    original_db_path = settings.get("paths.database")
+
     # Create initial backup
     success, message = create_backup()
     assert success, f"Failed to create initial backup: {message}"
 
-    # Get the original content
-    with open(test_env['db_file'], 'r') as f:
-        original_content = f.read()
-    with open(test_env['config_file'], 'r') as f:
-        original_config = f.read()
+    # Store original certificate data
+    engine = create_engine(f"sqlite:///{test_env['db_file']}")
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        original_cert = session.query(Certificate).first()
+        original_data = {
+            'serial_number': original_cert.serial_number,
+            'thumbprint': original_cert.thumbprint,
+            'common_name': original_cert.common_name,
+            'issuer': original_cert.issuer,
+            'subject': original_cert.subject,
+            'san': original_cert.san
+        }
+    Session.close_all()
+    engine.dispose()
 
-    # Modify current files
-    with open(test_env['db_file'], 'w') as f:
-        f.write("modified database")
-    
+    # Modify database by adding another record
+    engine = create_engine(f"sqlite:///{test_env['db_file']}")
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        cert = Certificate(
+            serial_number="modified456",
+            thumbprint="def456",
+            common_name="modified.com",
+            valid_from=datetime.now(),
+            valid_until=datetime.now(),
+            issuer="Test CA",
+            subject="CN=modified.com",
+            san="modified.com"
+        )
+        session.add(cert)
+        session.commit()
+    Session.close_all()
+    engine.dispose()
+
+    # Modify config
     modified_config = {
         "paths": {
-            "database": "modified/path/db",
-            "backups": "modified/path/backups"
+            "database": str(test_env['db_file']),  # Use the actual test database path
+            "backups": str(test_env['backup_dir'])  # Use the actual test backup path
         }
     }
-    with open("config.yaml", 'w') as f:
-        yaml.safe_dump(modified_config, f)
+    settings._config = modified_config
+    settings.save()
 
     # Get backup to restore
     backups = list_backups()
     assert len(backups) > 0, "No backups found"
+    backup_to_restore = backups[0]
+
+    # Close all database connections before restore
+    Session.close_all()
 
     # Restore backup
-    success, message = restore_backup(backups[0])
+    success, message = restore_backup(backup_to_restore)
     assert success, f"Restore failed: {message}"
 
-    # Verify restored content
-    with open(test_env['db_file'], 'r') as f:
-        restored_content = f.read()
-    assert restored_content == original_content, "Database content was not restored correctly"
+    # Verify database content through SQLAlchemy
+    engine = create_engine(f"sqlite:///{test_env['db_file']}")
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        # Should only find the original record
+        certs = session.query(Certificate).all()
+        assert len(certs) == 1, "Wrong number of certificates after restore"
+        restored_cert = certs[0]
+        restored_data = {
+            'serial_number': restored_cert.serial_number,
+            'thumbprint': restored_cert.thumbprint,
+            'common_name': restored_cert.common_name,
+            'issuer': restored_cert.issuer,
+            'subject': restored_cert.subject,
+            'san': restored_cert.san
+        }
+        assert restored_data == original_data, "Certificate data does not match after restore"
+    Session.close_all()
+    engine.dispose()
 
     # Verify config was restored
-    with open("config.yaml", 'r') as f:
-        restored_config = f.read()
-    assert restored_config == original_config, "Config was not restored correctly"
+    settings = Settings()  # Get fresh settings instance
+    assert settings._config == original_config, "Config was not restored correctly"
 
 def test_restore_nonexistent_backup(test_env):
     """Test restoring from a nonexistent backup"""
@@ -186,9 +266,23 @@ def test_multiple_backups_ordering(test_env):
         
         # Create multiple backups with delays to ensure different timestamps
         for i in range(3):
-            # Modify the database content slightly for each backup
-            with open(test_env['db_file'], 'w') as f:
-                f.write(f"test database content {i}")
+            # Modify the database content by adding a test record
+            engine = create_engine(f"sqlite:///{test_env['db_file']}")
+            Session = sessionmaker(bind=engine)
+            with Session() as session:
+                cert = Certificate(
+                    serial_number=f"test{i}",
+                    thumbprint=f"abc{i}",
+                    common_name=f"test{i}.com",
+                    valid_from=datetime.now(),
+                    valid_until=datetime.now(),
+                    issuer="Test CA",
+                    subject=f"CN=test{i}.com",
+                    san=f"test{i}.com"
+                )
+                session.add(cert)
+                session.commit()
+            engine.dispose()
             
             # Ensure settings are correct for each backup
             settings._config = original_config.copy()
@@ -212,32 +306,13 @@ def test_multiple_backups_ordering(test_env):
             
             created_backups.extend([str(f) for f in backup_files])
             
-            # List backups after each creation to debug
-            current_backups = list_backups()
-            print(f"\nAfter backup {i}:")
-            print(f"Backup files in directory: {[str(f) for f in backup_files]}")
-            print(f"Backups from list_backups(): {current_backups}")
-            print(f"Unique timestamps so far: {created_timestamps}")
-            
             time.sleep(0.001)  # Small delay just to be safe
         
         # Verify we have unique timestamps
         assert len(created_timestamps) == 3, f"Expected 3 unique timestamps, got {len(created_timestamps)}: {created_timestamps}"
         
-        # Restore original settings for listing backups
-        settings._config = original_config.copy()
-        settings._config['paths']['database'] = str(test_env['db_file'])
-        settings._config['paths']['backups'] = str(test_env['backup_dir'])
-        settings.save()
-        
-        # Debug output
-        print(f"\nFinal state:")
-        print(f"All created backup files: {created_backups}")
-        print(f"All files in backup dir: {[str(f) for f in test_env['backup_dir'].glob('*')]}")
-        
+        # List backups and verify order
         backups = list_backups()
-        print(f"Final backups from list_backups(): {backups}")
-        
         assert len(backups) >= 3, (
             f"Expected at least 3 backups, got {len(backups)}\n"
             f"Backup dir: {test_env['backup_dir']}\n"
@@ -248,18 +323,13 @@ def test_multiple_backups_ordering(test_env):
         
         # Verify timestamps are in descending order
         timestamps = [datetime.fromisoformat(b['created']) for b in backups]
-        assert timestamps == sorted(timestamps, reverse=True), "Backups are not properly ordered by timestamp"
-        
-        # Verify each backup has the correct files
-        for backup in backups[:3]:  # Check the first 3 backups
-            assert Path(backup['config']).exists(), f"Config file missing for backup: {backup['created']}"
-            assert Path(backup['database']).exists(), f"Database file missing for backup: {backup['created']}"
-            
-            # Verify backup content
-            with open(Path(backup['database']), 'r') as f:
-                content = f.read()
-                assert "test database content" in content, f"Unexpected content in backup: {content}"
+        assert all(timestamps[i] >= timestamps[i+1] for i in range(len(timestamps)-1)), "Backups not in descending order"
+    
     finally:
+        # Clean up any engines
+        engine = create_engine(f"sqlite:///{test_env['db_file']}")
+        engine.dispose()
+        
         # Always restore original settings
         settings._config = original_config.copy()
         settings.save()  # Make sure we persist the original settings

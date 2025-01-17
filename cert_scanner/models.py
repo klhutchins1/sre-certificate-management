@@ -1,6 +1,5 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text
-from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, declarative_base
 
 # Host Types
 HOST_TYPE_SERVER = 'Server'
@@ -70,8 +69,8 @@ class Host(Base):
     last_seen = Column(DateTime)
     
     # Relationships
-    ip_addresses = relationship("HostIP", back_populates="host")
-    certificate_bindings = relationship("CertificateBinding", back_populates="host")
+    ip_addresses = relationship("HostIP", back_populates="host", cascade="all, delete-orphan")
+    certificate_bindings = relationship("CertificateBinding", back_populates="host", cascade="all, delete-orphan")
 
 class HostIP(Base):
     """Represents IP addresses assigned to a host"""

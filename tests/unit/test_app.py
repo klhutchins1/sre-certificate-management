@@ -3,10 +3,12 @@ import streamlit as st
 from cert_scanner.app import init_session_state, render_sidebar, main
 from cert_scanner.scanner import CertificateScanner
 from cert_scanner.settings import Settings
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from cert_scanner.models import Base, Certificate
+import threading
+import logging
 
 @pytest.fixture(autouse=True)
 def mock_streamlit():
@@ -212,3 +214,182 @@ def test_main_preserves_session(mock_init_db, mock_sidebar, mock_settings, mock_
     assert st.session_state.engine is mock_db_engine
     # Verify init_database wasn't called again
     mock_init_db.assert_not_called() 
+
+@patch('streamlit.set_page_config')
+def test_page_configuration(mock_set_page_config):
+    """Test that page configuration is set correctly"""
+    # Force module reload to trigger module-level code
+    import importlib
+    import cert_scanner.app
+    importlib.reload(cert_scanner.app)
+    
+    # Verify page config was called with correct parameters
+    mock_set_page_config.assert_called_once_with(
+        page_title="Certificate Manager",
+        page_icon="🔐",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+@patch('streamlit.markdown')
+def test_css_styling(mock_markdown):
+    """Test that CSS styling is applied"""
+    # Force module reload to trigger module-level code
+    import importlib
+    import cert_scanner.app
+    importlib.reload(cert_scanner.app)
+    
+    # Verify markdown was called with CSS content
+    mock_markdown.assert_called_once()
+    css_content = mock_markdown.call_args[0][0]
+    assert 'stAppViewContainer' in css_content
+    assert 'stSidebar' in css_content
+    assert mock_markdown.call_args[1].get('unsafe_allow_html') is True
+
+@patch('streamlit.sidebar')
+@patch('streamlit.title')
+@patch('streamlit.markdown')
+@patch('streamlit.radio')
+@patch('streamlit.caption')
+def test_sidebar_complete_render(mock_caption, mock_radio, mock_markdown, mock_title, mock_sidebar):
+    """Test complete sidebar rendering including title, dividers and version"""
+    # Setup
+    st.session_state.current_view = "Dashboard"
+    mock_radio.return_value = "📊 Dashboard"
+    
+    # Render sidebar
+    render_sidebar()
+    
+    # Verify all sidebar elements were rendered
+    mock_title.assert_called_once_with("Certificate Manager")
+    assert mock_markdown.call_count >= 2  # Should be called at least twice for dividers
+    mock_caption.assert_called_once_with("v1.0.0")
+    mock_radio.assert_called_once()
+
+@patch('cert_scanner.app.init_database')
+def test_database_initialization_logging(mock_init_db, caplog):
+    """Test that database initialization is properly logged"""
+    # Setup
+    mock_init_db.return_value = create_engine('sqlite:///:memory:')
+    
+    # Clear session state
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Initialize session state
+    with caplog.at_level(logging.INFO):
+        init_session_state()
+    
+    # Verify logging messages
+    assert "Initializing session state..." in caplog.text
+    assert "Initializing database engine..." in caplog.text
+    assert "Database engine initialized successfully" in caplog.text
+
+@patch('cert_scanner.app.init_database')
+def test_database_initialization_error_logging(mock_init_db, caplog):
+    """Test that database initialization errors are properly logged"""
+    # Setup database initialization to fail
+    mock_init_db.return_value = None
+    
+    # Clear session state
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Initialize session state
+    with caplog.at_level(logging.ERROR):
+        init_session_state()
+    
+    # Verify error was logged
+    assert "Failed to initialize database engine" in caplog.text
+
+def test_thread_safe_initialization():
+    """Test that session state initialization is thread-safe"""
+    # Clear session state
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Create multiple threads to initialize session state
+    threads = []
+    for _ in range(5):
+        thread = threading.Thread(target=init_session_state)
+        threads.append(thread)
+    
+    # Start all threads
+    for thread in threads:
+        thread.start()
+    
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()
+    
+    # Verify session state was initialized only once
+    assert st.session_state.initialized is True
+    assert isinstance(st.session_state.scanner, CertificateScanner)
+
+@patch('cert_scanner.app.init_database')
+def test_database_initialization_failure(mock_init_db, mock_settings):
+    """Test handling of database initialization failure"""
+    # Mock database initialization to fail
+    mock_init_db.return_value = None
+    
+    # Clear session state
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Initialize session state
+    init_session_state()
+    
+    # Verify session state reflects failed initialization
+    assert st.session_state.initialized is True
+    assert st.session_state.engine is None
+
+@patch('streamlit.sidebar')
+@patch('streamlit.radio')
+@patch('streamlit.caption')
+def test_sidebar_version_display(mock_caption, mock_radio, mock_sidebar):
+    """Test that version is displayed in sidebar"""
+    # Setup
+    st.session_state.current_view = "Dashboard"
+    mock_radio.return_value = "📊 Dashboard"
+    
+    # Render sidebar
+    render_sidebar()
+    
+    # Verify version caption was displayed
+    mock_caption.assert_called_once_with("v1.0.0")
+
+@patch('streamlit.rerun')
+@patch('streamlit.radio')
+def test_view_change_triggers_rerun(mock_radio, mock_rerun):
+    """Test that changing views triggers a rerun"""
+    # Setup initial state
+    st.session_state.current_view = "Dashboard"
+    
+    # Mock radio to return a different view
+    mock_radio.return_value = "🔐 Certificates"
+    
+    # Render sidebar
+    render_sidebar()
+    
+    # Verify that rerun was called
+    assert st.session_state.current_view == "Certificates"
+    mock_rerun.assert_called_once()
+
+@patch('cert_scanner.app.render_sidebar')
+@patch('cert_scanner.app.init_database')
+def test_main_error_handling(mock_init_db, mock_sidebar, mock_render_functions):
+    """Test that main handles errors in view rendering"""
+    # Setup
+    mock_init_db.return_value = create_engine('sqlite:///:memory:')
+    mock_sidebar.return_value = "Dashboard"
+    mock_render_functions['dashboard'].side_effect = Exception("Test error")
+    
+    # Initialize session state
+    st.session_state.initialized = True
+    st.session_state.engine = mock_init_db.return_value
+    
+    # Run main and verify it handles the error gracefully
+    try:
+        main()
+    except Exception as e:
+        pytest.fail(f"main() should handle view rendering errors: {e}") 

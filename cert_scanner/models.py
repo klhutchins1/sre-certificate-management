@@ -1,5 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text
 from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.ext.hybrid import hybrid_property
+import json
 
 # Host Types
 HOST_TYPE_SERVER = 'Server'
@@ -119,9 +121,9 @@ class Certificate(Base):
     common_name = Column(String)
     valid_from = Column(DateTime)
     valid_until = Column(DateTime)
-    issuer = Column(String)
-    subject = Column(String)
-    san = Column(String)
+    _issuer = Column('issuer', String)
+    _subject = Column('subject', String)
+    _san = Column('san', String)
     key_usage = Column(String)
     signature_algorithm = Column(String)
     sans_scanned = Column(Boolean, default=False)  # Track if SANs have been scanned
@@ -130,6 +132,54 @@ class Certificate(Base):
     certificate_bindings = relationship("CertificateBinding", back_populates="certificate", cascade="all, delete-orphan")
     tracking_entries = relationship("CertificateTracking", back_populates="certificate", cascade="all, delete-orphan")
     scans = relationship("CertificateScan", back_populates="certificate")
+
+    @hybrid_property
+    def issuer(self):
+        if self._issuer:
+            try:
+                return json.loads(self._issuer)
+            except:
+                return {}
+        return {}
+
+    @issuer.setter
+    def issuer(self, value):
+        if value is not None:
+            self._issuer = json.dumps(value)
+        else:
+            self._issuer = None
+
+    @hybrid_property
+    def subject(self):
+        if self._subject:
+            try:
+                return json.loads(self._subject)
+            except:
+                return {}
+        return {}
+
+    @subject.setter
+    def subject(self, value):
+        if value is not None:
+            self._subject = json.dumps(value)
+        else:
+            self._subject = None
+
+    @hybrid_property
+    def san(self):
+        if self._san:
+            try:
+                return json.loads(self._san)
+            except:
+                return []
+        return []
+
+    @san.setter
+    def san(self, value):
+        if value is not None:
+            self._san = json.dumps(value)
+        else:
+            self._san = None
 
 class CertificateScan(Base):
     __tablename__ = 'certificate_scans'

@@ -99,24 +99,20 @@ class Settings:
     @classmethod
     def _reset(cls):
         """Reset the singleton instance (for testing)"""
-        if not cls._test_mode:
-            logger.warning("Attempting to reset settings outside of test mode")
-            return
-            
-        # Restore original config if we have one
-        if cls._original_config and os.path.exists(cls._config_file):
-            try:
-                with open(cls._config_file, 'w') as f:
-                    yaml.safe_dump(cls._original_config, f, default_flow_style=False)
-            except Exception as e:
-                logger.error(f"Error restoring original config: {str(e)}")
-        
         # Remove lock file if it exists
         if os.path.exists(cls._app_lock_file):
             try:
                 os.remove(cls._app_lock_file)
             except Exception as e:
                 logger.error(f"Failed to remove lock file: {str(e)}")
+        
+        # Restore original config if we have one and we're in test mode
+        if cls._test_mode and cls._original_config and os.path.exists(cls._config_file):
+            try:
+                with open(cls._config_file, 'w') as f:
+                    yaml.safe_dump(cls._original_config, f, default_flow_style=False)
+            except Exception as e:
+                logger.error(f"Error restoring original config: {str(e)}")
         
         cls._instance = None
         cls._test_mode = False

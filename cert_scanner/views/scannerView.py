@@ -324,3 +324,25 @@ internal.server.local:444"""
                 st.markdown(f"- {host}")
         
         st.success(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.")
+
+def render_scan_results():
+    """Render the scan results section"""
+    if st.session_state.scan_results["success"]:
+        st.markdown("### ✅ Successful Scans")
+        for scan in st.session_state.scan_results["success"]:
+            scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
+            st.markdown(
+                f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
+                f"(🕒 {scan_time} • <span style='color:green'>Valid</span>)</span>",
+                unsafe_allow_html=True
+            )
+    
+    if st.session_state.scan_results["error"]:
+        st.markdown("### ❌ Failed Scans")
+        for scan in st.session_state.scan_results["error"]:
+            scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
+            st.markdown(
+                f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
+                f"(🕒 {scan_time} • <span style='color:red'>Failed</span>)</span>",
+                unsafe_allow_html=True
+            )

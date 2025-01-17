@@ -70,15 +70,16 @@ def restore_backup(manifest):
         logger.info(f"Manifest contents: {manifest}")
         
         # Verify backup files exist
-        config_file = Path(manifest['config'])
+        config_file = Path(manifest.get('config', ''))
         if not config_file.exists():
             logger.error(f"Config backup file not found: {config_file}")
             return False, "Config backup file not found"
         
         # Restore database if it exists in backup
-        if manifest['database']:
-            logger.info(f"Database backup file found in manifest: {manifest['database']}")
-            db_file = Path(manifest['database'])
+        db_file = manifest.get('database')
+        if db_file:
+            logger.info(f"Database backup file found in manifest: {db_file}")
+            db_file = Path(db_file)
             logger.info(f"Restoring from backup file: {db_file}")
             
             if not db_file.exists():

@@ -158,21 +158,33 @@ def render_certificate_overview(cert, session):
     with st.expander("Subject Alternative Names", expanded=True):
         if cert.san:
             try:
-                # Parse SANs - handle both string and list formats
+                # Get SANs and ensure it's a list
                 san_list = cert.san
-                if isinstance(san_list, str):
-                    try:
-                        san_list = eval(san_list)
-                    except:
-                        san_list = cert.san.split(',')
                 
-                # Clean up the SAN list - remove any empty strings and strip whitespace
-                san_list = [s.strip() for s in san_list if s.strip()]
+                # Handle string-formatted SANs (legacy data)
+                if isinstance(san_list, str):
+                    # Try to clean up the string format
+                    san_list = san_list.replace("'", "").replace("[", "").replace("]", "").split(",")
+                
+                # Clean up the list - remove any formatting artifacts and empty entries
+                san_list = [
+                    domain.strip(" '\"[]") 
+                    for domain in san_list 
+                    if domain and domain.strip()
+                ]
                 
                 if san_list:
                     col1, col2 = st.columns([0.7, 0.3])
                     with col1:
-                        st.text_area("", value="\n".join(san_list), height=min(35 + 21 * len(san_list), 300), disabled=True)
+                        # Display each SAN on a new line with proper formatting
+                        content_height = max(68, 35 + (21 * len(san_list)))
+                        formatted_sans = "\n".join(sorted(set(san_list)))  # Sort domains and remove duplicates
+                        st.text_area(
+                            "",
+                            value=formatted_sans,
+                            height=content_height,
+                            disabled=True
+                        )
                     with col2:
                         if st.button("🔍 Scan SANs", type="primary", key=f"scan_sans_{cert.id}"):
                             # Store SANs in session state for scan page
@@ -761,4 +773,24 @@ def export_certificates_to_pdf(certificates, filename):
     
     # Save the PDF
     pdf.output(filename)
+
+def render_certificate_scans(cert):
+    """Render the scan history for a certificate"""
+    if not cert.scans:
+        st.warning("No scan history found for this certificate.")
+        return
+
+    scan_data = []
+    for scan in cert.scans:
+        scan_data.append({
+            "Scan Date": scan.scan_date,
+            "Status": scan.status,
+            "Port": scan.port,
+        })
+
+    if scan_data:
+        df = pd.DataFrame(scan_data)
+        st.dataframe(df)
+    else:
+        st.warning("No scan history found for this certificate.")
 

@@ -204,26 +204,27 @@ def test_certificate_tracking(session, certificate):
     """Test creating certificate tracking entries"""
     tracking = CertificateTracking(
         certificate=certificate,
-        timestamp=datetime.now(),
-        change_type="Added",
-        description="Initial deployment",
-        platform=PLATFORM_F5,
-        environment=ENV_PRODUCTION
+        change_number="CHG001",
+        planned_change_date=datetime.now(),
+        notes="Initial deployment",
+        status="Pending",
+        created_at=datetime.now(),
+        updated_at=datetime.now()
     )
     session.add(tracking)
     session.commit()
 
     assert tracking.id is not None
     assert tracking.certificate.common_name == "test.com"
-    assert tracking.change_type == "Added"
+    assert tracking.status == "Pending"
 
 def test_certificate_scan(session, certificate):
     """Test creating certificate scan entries"""
     scan = CertificateScan(
         certificate=certificate,
-        scan_time=datetime.now(),
+        scan_date=datetime.now(),
         status="Valid",
-        error_message=None
+        port=443
     )
     session.add(scan)
     session.commit()
@@ -237,16 +238,18 @@ def test_cascade_delete_certificate(session, certificate):
     # Add scan and tracking entries
     scan = CertificateScan(
         certificate=certificate,
-        scan_time=datetime.now(),
-        status="Valid"
+        scan_date=datetime.now(),
+        status="Valid",
+        port=443
     )
     tracking = CertificateTracking(
         certificate=certificate,
-        timestamp=datetime.now(),
-        change_type="Added",
-        description="Test entry",
-        platform=PLATFORM_F5,
-        environment=ENV_PRODUCTION
+        change_number="CHG002",
+        planned_change_date=datetime.now(),
+        notes="Test entry",
+        status="Pending",
+        created_at=datetime.now(),
+        updated_at=datetime.now()
     )
     session.add(scan)
     session.add(tracking)
@@ -259,7 +262,7 @@ def test_cascade_delete_certificate(session, certificate):
     # Verify everything is deleted
     assert session.query(Certificate).count() == 0
     assert session.query(CertificateScan).count() == 0
-    assert session.query(CertificateTracking).count() == 0 
+    assert session.query(CertificateTracking).count() == 0
 
 def test_certificate_scan_relationship():
     """Test the relationship between Certificate and CertificateScan"""

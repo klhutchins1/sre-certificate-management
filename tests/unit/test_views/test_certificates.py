@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import streamlit as st
 from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from cert_scanner.models import Base, Certificate, Host, HostIP, CertificateBinding, CertificateTracking
 from cert_scanner.views.certificatesView import render_certificate_list, render_certificate_card
 import json
+from unittest import mock
 
 @pytest.fixture(scope="function")
 def engine():
@@ -156,6 +157,13 @@ def test_render_certificate_card(mock_streamlit, sample_certificate, session):
         tab.__enter__ = MagicMock(return_value=None)
         tab.__exit__ = MagicMock(return_value=None)
     mock_streamlit.tabs.return_value = mock_tabs
+    
+    # Mock form inputs with actual values instead of MagicMock objects
+    mock_streamlit.text_input.return_value = "CHG123"
+    mock_streamlit.date_input.return_value = date(2024, 1, 1)
+    mock_streamlit.selectbox.return_value = "Pending"
+    mock_streamlit.text_area.return_value = "Test notes"
+    mock_streamlit.form_submit_button.return_value = False  # Don't trigger form submission
     
     render_certificate_card(sample_certificate, session)
     

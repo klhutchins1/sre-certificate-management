@@ -375,21 +375,40 @@ def test_view_change_triggers_rerun(mock_radio, mock_rerun):
     assert st.session_state.current_view == "Certificates"
     mock_rerun.assert_called_once()
 
-@patch('cert_scanner.app.render_sidebar')
 @patch('cert_scanner.app.init_database')
-def test_main_error_handling(mock_init_db, mock_sidebar, mock_render_functions):
-    """Test that main handles errors in view rendering"""
-    # Setup
-    mock_init_db.return_value = create_engine('sqlite:///:memory:')
-    mock_sidebar.return_value = "Dashboard"
-    mock_render_functions['dashboard'].side_effect = Exception("Test error")
+@patch('streamlit.sidebar')
+def test_main_error_handling(mock_sidebar, mock_init_db):
+    """Test that main() handles view rendering errors"""
+    # Mock database initialization
+    engine = create_engine('sqlite:///:memory:')
+    mock_init_db.return_value = engine
     
-    # Initialize session state
+    # Initialize session state with all required values
+    st.session_state.current_view = "Dashboard"
     st.session_state.initialized = True
-    st.session_state.engine = mock_init_db.return_value
+    st.session_state.engine = engine
+    st.session_state.scanner = CertificateScanner()
+    st.session_state.selected_cert = None
     
-    # Run main and verify it handles the error gracefully
-    try:
+    # Mock the view to raise an exception
+    def mock_view_error(*args, **kwargs):
+        raise Exception("Test error")
+    
+    # Setup all required mocks
+    with patch('streamlit.radio', return_value="📊 Dashboard") as mock_radio, \
+         patch('cert_scanner.app.render_dashboard', side_effect=mock_view_error), \
+         patch('streamlit.error') as mock_error, \
+         patch('streamlit.title'), \
+         patch('streamlit.markdown'), \
+         patch('streamlit.caption'), \
+         patch('cert_scanner.app.st.sidebar', new_callable=MagicMock) as mock_st_sidebar:
+        
+        # Mock the sidebar context manager
+        mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)
+        mock_st_sidebar.__exit__ = MagicMock(return_value=None)
+        
+        # Run main - this should catch the error and display it
         main()
-    except Exception as e:
-        pytest.fail(f"main() should handle view rendering errors: {e}") 
+        
+        # Verify the error was displayed
+        mock_error.assert_called_once_with("Error rendering view: Test error") 

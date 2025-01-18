@@ -131,7 +131,7 @@ class Certificate(Base):
     # Relationships
     certificate_bindings = relationship("CertificateBinding", back_populates="certificate", cascade="all, delete-orphan")
     tracking_entries = relationship("CertificateTracking", back_populates="certificate", cascade="all, delete-orphan")
-    scans = relationship("CertificateScan", back_populates="certificate")
+    scans = relationship("CertificateScan", back_populates="certificate", cascade="all, delete-orphan")
 
     @hybrid_property
     def issuer(self):

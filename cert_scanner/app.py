@@ -155,27 +155,30 @@ def render_sidebar():
 
 def main():
     """Main application entry point"""
-    # Initialize session state
-    init_session_state()
-    
-    # Get current view from sidebar
-    current_view = render_sidebar()
-    
-    # Render the appropriate view
-    if current_view == "Dashboard":
-        render_dashboard(st.session_state.engine)
-    elif current_view == "Certificates":
-        render_certificate_list(st.session_state.engine)
-    elif current_view == "Hosts":
-        render_hosts_view(st.session_state.engine)
-    elif current_view == "Scan":
-        render_scan_interface(st.session_state.engine)
-    elif current_view == "History":
-        render_history_view(st.session_state.engine)
-    elif current_view == "Search":
-        render_search_view(st.session_state.engine)
-    elif current_view == "Settings":
-        render_settings_view(st.session_state.engine)
+    try:
+        # Initialize session state
+        init_session_state()
+        
+        # Get current view from sidebar
+        current_view = render_sidebar()
+        
+        # Render the appropriate view
+        if current_view == "Dashboard":
+            render_dashboard(st.session_state.engine)
+        elif current_view == "Certificates":
+            render_certificate_list(st.session_state.engine)
+        elif current_view == "Hosts":
+            render_hosts_view(st.session_state.engine)
+        elif current_view == "Scan":
+            render_scan_interface(st.session_state.engine)
+        elif current_view == "History":
+            render_history_view(st.session_state.engine)
+        elif current_view == "Search":
+            render_search_view(st.session_state.engine)
+        elif current_view == "Settings":
+            render_settings_view(st.session_state.engine)
+    except Exception as e:
+        st.error(f"Error rendering view: {str(e)}")
 
 if __name__ == "__main__":
     main() 

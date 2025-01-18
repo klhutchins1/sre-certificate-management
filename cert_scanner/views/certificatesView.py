@@ -361,8 +361,8 @@ def render_certificate_details(cert):
     st.json({
         "Serial Number": cert.serial_number,
         "Thumbprint": cert.thumbprint,
-        "Issuer": eval(cert.issuer) if cert.issuer else {},
-        "Subject": eval(cert.subject) if cert.subject else {},
+        "Issuer": cert.issuer,  # Already returns a dict from hybrid_property
+        "Subject": cert.subject,  # Already returns a dict from hybrid_property
         "Key Usage": cert.key_usage,
         "Signature Algorithm": cert.signature_algorithm
     })

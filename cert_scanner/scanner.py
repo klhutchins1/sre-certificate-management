@@ -110,8 +110,19 @@ class CertificateScanner:
         
     def _process_certificate(self, cert_binary: bytes, address: str, port: int) -> CertificateInfo:
         """Process raw certificate data into CertificateInfo"""
-        x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert_binary)
-        
+        try:
+            x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert_binary)
+        except OpenSSL.crypto.Error as e:
+            # Handle OpenSSL errors more robustly
+            error_msg = str(e)
+            if e.args and isinstance(e.args[0], list) and e.args[0]:
+                # Try to get a more specific error message if available
+                error_details = e.args[0][0]
+                if len(error_details) >= 3:
+                    error_msg = error_details[2]
+            self.logger.error(f"Error loading certificate: {error_msg}")
+            return None
+            
         # Get IP addresses
         ip_addresses = self._get_ip_addresses(address, port)
         
@@ -122,6 +133,14 @@ class CertificateScanner:
         common_name = self._extract_common_name(x509)
         issuer = self._extract_name_dict(x509.get_issuer())
         subject = self._extract_name_dict(x509.get_subject())
+        
+        # Extract key usage
+        key_usage = None
+        for i in range(x509.get_extension_count()):
+            ext = x509.get_extension(i)
+            if ext.get_short_name() == b'keyUsage':
+                key_usage = str(ext)
+                break
         
         # Get dates
         valid_from = datetime.strptime(
@@ -145,7 +164,8 @@ class CertificateScanner:
             issuer=issuer,
             subject=subject,
             valid_from=valid_from,
-            version=x509.get_version()
+            version=x509.get_version(),
+            key_usage=key_usage
         )
         
     def _extract_san(self, x509cert) -> List[str]:

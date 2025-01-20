@@ -60,8 +60,8 @@ def certificate(session):
         common_name="test.com",
         valid_from=datetime.now(),
         valid_until=datetime.now(),
-        issuer={"CN": "Test CA"},
-        subject={"CN": "test.com"},
+        issuer={"CN": "Test CA", "O": "Test Org"},
+        subject={"CN": "test.com", "O": "Test Company"},
         san=["test.com", "www.test.com"],
         key_usage="Digital Signature, Key Encipherment",
         signature_algorithm="sha256WithRSAEncryption",
@@ -70,6 +70,74 @@ def certificate(session):
     session.add(cert)
     session.commit()
     return cert
+
+@pytest.fixture
+def certificate_scan(session, certificate):
+    """Create a test certificate scan"""
+    scan = CertificateScan(
+        certificate=certificate,
+        scan_date=datetime.now(),
+        status="Valid",
+        port=443
+    )
+    session.add(scan)
+    session.commit()
+    return scan
+
+@pytest.fixture
+def multiple_certificates(session):
+    """Create multiple test certificates"""
+    certs = []
+    for i in range(3):
+        cert = Certificate(
+            serial_number=f"123456{i}",
+            thumbprint=f"abc123{i}",
+            common_name=f"test{i}.com",
+            valid_from=datetime.now(),
+            valid_until=datetime.now() + timedelta(days=365),
+            issuer={"CN": "Test CA", "O": "Test Org"},
+            subject={"CN": f"test{i}.com", "O": "Test Company"},
+            san=[f"test{i}.com", f"www.test{i}.com"],
+            key_usage="Digital Signature",
+            signature_algorithm="sha256WithRSAEncryption",
+            sans_scanned=False
+        )
+        certs.append(cert)
+        session.add(cert)
+    session.commit()
+    return certs
+
+@pytest.fixture
+def multiple_certificate_scans(session, multiple_certificates):
+    """Create multiple test certificate scans"""
+    scans = []
+    for cert in multiple_certificates:
+        scan = CertificateScan(
+            certificate=cert,
+            scan_date=datetime.now(),
+            status="Valid",
+            port=443
+        )
+        scans.append(scan)
+        session.add(scan)
+    session.commit()
+    return scans
+
+@pytest.fixture
+def certificate_tracking(session, certificate):
+    """Create a test certificate tracking entry"""
+    tracking = CertificateTracking(
+        certificate=certificate,
+        change_number="CHG001",
+        planned_change_date=datetime.now(),
+        notes="Initial entry",
+        status="Pending",
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
+    session.add(tracking)
+    session.commit()
+    return tracking
 
 def test_host_creation(session, host):
     """Test creating a host"""
@@ -380,4 +448,46 @@ def test_certificate_json_fields_none_values(session):
     # Test that the raw columns are None
     assert cert._issuer is None
     assert cert._subject is None
-    assert cert._san is None 
+    assert cert._san is None
+
+def test_certificate_basic_info(session, certificate):
+    """Test basic certificate information"""
+    assert certificate.serial_number == "123456"
+    assert certificate.thumbprint == "abc123"
+    assert certificate.common_name == "test.com"
+    assert isinstance(certificate.valid_from, datetime)
+    assert isinstance(certificate.valid_until, datetime)
+    assert certificate.issuer == {"CN": "Test CA", "O": "Test Org"}
+    assert certificate.subject == {"CN": "test.com", "O": "Test Company"}
+    assert certificate.san == ["test.com", "www.test.com"]
+
+def test_host_basic_info(session, host):
+    """Test basic host information"""
+    assert host.name == "test-server"
+    assert host.host_type == HOST_TYPE_SERVER
+    assert host.environment == ENV_PRODUCTION
+    assert isinstance(host.last_seen, datetime)
+
+def test_certificate_scan_basic_info(session, certificate_scan):
+    """Test basic certificate scan information"""
+    assert certificate_scan.certificate is not None
+    assert isinstance(certificate_scan.scan_date, datetime)
+    assert certificate_scan.status == "Valid"
+    assert certificate_scan.port == 443
+
+def test_multiple_certificate_scans(session, multiple_certificate_scans, multiple_certificates):
+    """Test multiple certificate scans"""
+    assert len(multiple_certificate_scans) == 3
+    for scan in multiple_certificate_scans:
+        assert scan.certificate in multiple_certificates
+        assert scan.status == "Valid"
+        assert scan.port == 443
+
+def test_certificate_tracking_basic_info(session, certificate_tracking):
+    """Test basic certificate tracking information"""
+    assert certificate_tracking.certificate is not None
+    assert certificate_tracking.change_number == "CHG001"
+    assert isinstance(certificate_tracking.planned_change_date, datetime)
+    assert certificate_tracking.status == "Pending"
+    assert isinstance(certificate_tracking.created_at, datetime)
+    assert isinstance(certificate_tracking.updated_at, datetime) 

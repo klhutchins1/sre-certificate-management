@@ -77,9 +77,32 @@ def init_database(db_path=None):
         else:
             db_path = Path(db_path)
         
-        # Ensure the database directory exists
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+        # Validate the path format and characters
+        try:
+            # Check for invalid characters in the path
+            invalid_chars = '<>:"|?*'
+            if any(char in str(db_path) for char in invalid_chars):
+                raise Exception(f"Invalid database path: Path contains invalid characters")
+            
+            # Try to get the absolute path to validate it
+            db_path = db_path.absolute()
+        except Exception as e:
+            raise Exception(f"Invalid database path: {db_path} - {str(e)}")
+
+        # Check if we have write permissions to the parent directory
+        parent_dir = db_path.parent
+        if parent_dir.exists():
+            if not parent_dir.is_dir():
+                raise Exception(f"Invalid database path: {parent_dir} is not a directory")
+            if not os.access(parent_dir, os.W_OK):
+                raise Exception(f"No write permission for database directory: {parent_dir}")
+        else:
+            # Only try to create directories if we have a valid path
+            try:
+                parent_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                raise Exception(f"Cannot create database directory at {parent_dir}: {str(e)}")
+
         # If database exists but is corrupted or empty, remove it
         if db_path.exists():
             try:
@@ -91,16 +114,11 @@ def init_database(db_path=None):
             except Exception as e:
                 logger.warning(f"Removing invalid or corrupted database: {str(e)}")
                 try:
-                    # Close any existing connections
-                    test_engine.dispose()
-                except:
-                    pass
-                # Remove the corrupted file
-                try:
-                    db_path.unlink()
+                    db_path.unlink()  # Remove the corrupted file
                 except Exception as e:
                     logger.error(f"Failed to remove corrupted database: {str(e)}")
                     raise
+                raise Exception(f"Database at {db_path} is corrupted.")  # Raise an exception if the database is corrupted
         
         # Create new database engine
         logger.info(f"Using database at: {db_path}")
@@ -149,22 +167,26 @@ def reset_database(engine):
         return False
 
 def check_database():
-    """Check if the database exists and is properly initialized"""
+    """Check if the database exists and is initialized."""
     try:
-        if not os.path.exists(DB_PATH):
-            logger.warning("Database file does not exist")
+        settings = Settings()
+        db_path = Path(settings.get("paths.database", "data/certificates.db"))
+        
+        # Check if file exists and is a valid SQLite database
+        if not db_path.exists():
             return False
             
-        engine = create_engine(f'sqlite:///{DB_PATH}', echo=False)
-        with engine.connect() as conn:
-            # Try to query the database
-            result = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [row[0] for row in result]
-            logger.info(f"Found tables: {tables}")
+        # Try to connect to verify it's a valid database
+        try:
+            engine = create_engine(f"sqlite:///{db_path}")
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            engine.dispose()
             return True
-    except Exception as e:
-        logger.error(f"Database check failed: {str(e)}")
-        return False 
+        except Exception:
+            return False
+    except Exception:
+        return False
 
 class SessionManager:
     """Context manager for database sessions"""
@@ -188,6 +210,10 @@ def backup_database(engine, backup_dir):
     try:
         # Get the database path from the engine URL
         db_path = engine.url.database
+        
+        # Check if the backup directory exists
+        if not os.path.exists(backup_dir):
+            raise Exception("Failed to create database backup: Backup directory does not exist.")
         
         # Create backup directory if it doesn't exist
         os.makedirs(backup_dir, exist_ok=True)

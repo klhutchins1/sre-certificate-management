@@ -1,0 +1,18 @@
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+
+[server]
+runOnSave = true
+enableCORS = false
+enableXsrfProtection = true
+
+[ui]
+hideTopBar = true

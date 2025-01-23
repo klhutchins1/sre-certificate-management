@@ -24,6 +24,138 @@ from cert_scanner.views.historyView import render_history_view
 from cert_scanner.views.searchView import render_search_view
 from cert_scanner.views.settingsView import render_settings_view
 
+# Configure page at module level (must be first Streamlit command)
+#st.set_page_config(
+#    page_title="Certificate Manager",
+#    page_icon="🔐",
+#   layout="wide",  # Force wide mode
+#   initial_sidebar_state="expanded",
+#   menu_items=None  # Completely disable menu items
+#)
+
+# Force wide mode programmatically
+st.markdown("""
+    <script>
+        // Force wide mode in local storage
+        localStorage.setItem('stWideModeEnabled', 'true');
+        
+        // Force wide mode through UI
+        const observer = new MutationObserver(function(mutations) {
+            // Force wide mode in local storage again
+            localStorage.setItem('stWideModeEnabled', 'true');
+            
+            // Find and click the wide mode button if needed
+            const layoutButton = document.querySelector('button[data-testid="baseButton-header-layoutButton"]');
+            const wideModeCheckbox = document.querySelector('input[name="wideMode"]');
+            
+            if (layoutButton && !layoutButton.classList.contains('wide')) {
+                layoutButton.click();
+            }
+            
+            if (wideModeCheckbox && !wideModeCheckbox.checked) {
+                wideModeCheckbox.checked = true;
+                wideModeCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
+        
+        observer.observe(document.body, { childList: true, subtree: true });
+        
+        // Prevent wide mode from being disabled
+        document.addEventListener('change', function(e) {
+            if (e.target.name === 'wideMode' && !e.target.checked) {
+                e.preventDefault();
+                e.target.checked = true;
+                localStorage.setItem('stWideModeEnabled', 'true');
+            }
+        }, true);
+    </script>
+""", unsafe_allow_html=True)
+
+# Hide all Streamlit UI elements and force light mode
+st.markdown("""
+    <style>
+        /* Force light mode */
+        .stApp {
+            background-color: #FFFFFF;
+            color: #262730;
+        }
+        
+        /* Force wide mode */
+        .stApp > header + div {
+            max-width: none !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }
+        
+        /* Force wide mode for all containers */
+        .element-container, .stBlock {
+            width: 100% !important;
+            max-width: none !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+        
+        /* Force wide mode for dataframes */
+        .stDataFrame {
+            width: 100% !important;
+            max-width: none !important;
+        }
+        
+        /* Hide layout toggle button */
+        button[data-testid="baseButton-header-layoutButton"] {
+            display: none !important;
+        }
+        
+        .stApp > div[data-testid="stDecoration"] {
+            display: none !important;
+        }
+        
+        /* Hide main menu button */
+        #MainMenu {display: none !important;}
+        
+        /* Hide header */
+        header {display: none !important;}
+        
+        /* Hide footer */
+        footer {display: none !important;}
+        
+        /* Hide hamburger menu */
+        [data-testid="collapsedControl"] {display: none !important;}
+        
+        /* Hide toolbar */
+        div[data-testid="stToolbar"] {display: none !important;}
+        div[data-testid="stDecoration"] {display: none !important;}
+        div[data-testid="stStatusWidget"] {display: none !important;}
+        
+        /* Hide deploy button */
+        button[title="Deploy"] {display: none !important;}
+        
+        /* Remove top padding from sidebar */
+        section[data-testid="stSidebarUserContent"] {padding-top: 0rem;}
+        
+        /* Remove extra padding from main content */
+        .main > div {padding-top: 1rem;}
+        .reportview-container {margin-top: -2em;}
+        
+        /* Hide all Streamlit branding elements */
+        .stDeployButton {display: none !important;}
+        .stToolbar {display: none !important;}
+        .stApp > header {display: none !important;}
+        .stApp > footer {display: none !important;}
+        
+        /* Force light mode for specific elements */
+        .stMarkdown, .stButton, .stSelectbox {
+            color: #262730 !important;
+        }
+        
+        /* Ensure wide mode for all blocks */
+        div[data-testid="stBlock"] {
+            max-width: none !important;
+            width: 100% !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
 __all__ = ['main']  # Explicitly declare what should be exported
 
 # Configure logging
@@ -33,66 +165,9 @@ logger = logging.getLogger(__name__)
 # Lock for thread-safe initialization
 init_lock = threading.Lock()
 
-# Configure page at module level (must be first Streamlit command)
-st.set_page_config(
-    page_title="Certificate Manager",
-    page_icon="🔐",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+
 
 # Add CSS for consistent layout
-st.markdown("""
-    <style>
-        /* Main container and header */
-        [data-testid="stAppViewContainer"] {
-            width: 100vw;
-            padding: 0;
-        }
-        
-        [data-testid="stHeader"] {
-            display: none;
-        }
-        
-        /* Sidebar */
-        [data-testid="stSidebar"] {
-            width: 250px;
-            position: fixed;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            overflow: auto;
-        }
-        
-        [data-testid="stSidebarContent"] {
-            padding: 2rem 1rem;
-        }
-        
-        /* Main content area */
-        [data-testid="stMainBlockContainer"] {
-            margin-left: 250px;
-            width: calc(100vw - 250px);
-            padding: 2rem;
-            max-width: none;
-        }
-        
-        /* Navigation styling */
-        div.row-widget.stRadio > div {
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-        
-        div.row-widget.stRadio > div[role="radiogroup"] > label {
-            padding: 0.5rem 1rem;
-            width: 100%;
-            cursor: pointer;
-        }
-        
-        div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
-            background-color: rgba(151, 166, 195, 0.15);
-        }
-    </style>
-""", unsafe_allow_html=True)
 
 def init_session_state():
     """Initialize session state variables"""

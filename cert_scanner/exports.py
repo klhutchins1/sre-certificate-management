@@ -6,6 +6,9 @@ from sqlalchemy.orm import Session
 from .settings import Settings
 from .models import Certificate, Host, CertificateBinding
 from fpdf import FPDF
+import logging
+
+logger = logging.getLogger(__name__)
 
 def export_certificates_to_csv(session: Session, output_path: str = None) -> str:
     """Export certificates to a CSV file.
@@ -84,24 +87,41 @@ def export_hosts_to_csv(session: Session, output_path: str = None) -> str:
     # Prepare data for export
     data = []
     for host in hosts:
-        # Create a row for each binding
-        for binding in host.certificate_bindings:
-            cert = binding.certificate
+        # If host has no bindings, create a basic row
+        if not host.certificate_bindings:
             for ip in host.ip_addresses:
-                if binding.host_ip_id == ip.id:
-                    row = {
-                        'Hostname': host.name,
-                        'IP Address': ip.ip_address,
-                        'Port': binding.port,
-                        'Platform': binding.platform or 'Unknown',
-                        'Certificate Serial': cert.serial_number,
-                        'Certificate Common Name': cert.common_name,
-                        'Certificate Status': 'Valid' if cert.valid_until > datetime.now() else 'Expired',
-                        'Certificate Valid From': cert.valid_from.strftime('%Y-%m-%d'),
-                        'Certificate Valid Until': cert.valid_until.strftime('%Y-%m-%d'),
-                        'Last Seen': binding.last_seen.strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    data.append(row)
+                row = {
+                    'Hostname': host.name,
+                    'IP Address': ip.ip_address,
+                    'Port': None,
+                    'Platform': 'Unknown',
+                    'Certificate Serial': None,
+                    'Certificate Common Name': None,
+                    'Certificate Status': 'No Certificate',
+                    'Certificate Valid From': None,
+                    'Certificate Valid Until': None,
+                    'Last Seen': host.last_seen.strftime('%Y-%m-%d %H:%M:%S') if host.last_seen else None
+                }
+                data.append(row)
+        else:
+            # Create a row for each binding
+            for binding in host.certificate_bindings:
+                cert = binding.certificate
+                for ip in host.ip_addresses:
+                    if binding.host_ip_id == ip.id:
+                        row = {
+                            'Hostname': host.name,
+                            'IP Address': ip.ip_address,
+                            'Port': binding.port,
+                            'Platform': binding.platform or 'Unknown',
+                            'Certificate Serial': cert.serial_number,
+                            'Certificate Common Name': cert.common_name,
+                            'Certificate Status': 'Valid' if cert.valid_until > datetime.now() else 'Expired',
+                            'Certificate Valid From': cert.valid_from.strftime('%Y-%m-%d'),
+                            'Certificate Valid Until': cert.valid_until.strftime('%Y-%m-%d'),
+                            'Last Seen': binding.last_seen.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        data.append(row)
     
     # Create DataFrame
     df = pd.DataFrame(data)
@@ -124,43 +144,69 @@ def export_hosts_to_csv(session: Session, output_path: str = None) -> str:
     return output_path
 
 def create_timeline_chart(certificates):
-    """Create a timeline chart for certificates using plotly."""
-    data = []
-    
-    for cert in certificates:
-        data.append(dict(
-            Task=cert.common_name,
-            Start=cert.valid_from,
-            Finish=cert.valid_until,
-            Status='Valid' if cert.valid_until > datetime.now() else 'Expired'
-        ))
-    
-    colors = {'Valid': 'rgb(0, 255, 0)', 'Expired': 'rgb(255, 0, 0)'}
-    
-    fig = ff.create_gantt(
-        data,
-        colors=colors,
-        index_col='Status',
-        show_colorbar=True,
-        group_tasks=True,
-        showgrid_x=True,
-        showgrid_y=True
-    )
-    
-    # Update layout
-    fig.update_layout(
-        title='Certificate Timeline',
-        xaxis_title='Date',
-        height=400,
-        font=dict(size=10)
-    )
-    
-    # Save as PNG for inclusion in PDF
-    img_path = 'exports/temp_timeline.png'
-    Path(img_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.write_image(img_path)
-    
-    return img_path
+    """Create a timeline chart for certificates using matplotlib."""
+    if not certificates:
+        return None
+        
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.dates import DateFormatter
+        import matplotlib
+        matplotlib.use('Agg')  # Use non-interactive backend
+        
+        now = datetime.now()
+        
+        # Prepare data
+        names = []
+        start_dates = []
+        end_dates = []
+        colors = []
+        
+        for cert in certificates:
+            if not cert.valid_from or not cert.valid_until:
+                continue
+                
+            names.append(cert.common_name)
+            start_dates.append(cert.valid_from)
+            end_dates.append(cert.valid_until)
+            colors.append('green' if cert.valid_until > now else 'red')
+        
+        if not names:
+            return None
+            
+        # Create figure
+        plt.figure(figsize=(10, max(5, len(names) * 0.5)))
+        
+        # Plot horizontal lines for each certificate
+        for i in range(len(names)):
+            plt.hlines(y=i, xmin=start_dates[i], xmax=end_dates[i], 
+                      color=colors[i], linewidth=4, label=names[i])
+            
+        # Customize the plot
+        plt.yticks(range(len(names)), names)
+        plt.xlabel('Date')
+        plt.title('Certificate Timeline')
+        
+        # Format x-axis dates
+        plt.gca().xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
+        plt.gcf().autofmt_xdate()  # Rotate and align the tick labels
+        
+        # Add grid
+        plt.grid(True, axis='x', linestyle='--', alpha=0.7)
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save as PNG
+        img_path = 'exports/temp_timeline.png'
+        Path(img_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(img_path, dpi=300, bbox_inches='tight')
+        plt.close()  # Close the figure to free memory
+        
+        return img_path
+    except Exception as e:
+        logger.error(f"Failed to create timeline chart: {str(e)}")
+        return None
 
 def export_certificates_to_pdf(session: Session, output_path: str = None) -> str:
     """Export certificates to a PDF file using fpdf2."""
@@ -170,7 +216,11 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     certificates = session.query(Certificate).all()
     
     # Create timeline chart
-    timeline_path = create_timeline_chart(certificates)
+    timeline_path = None
+    try:
+        timeline_path = create_timeline_chart(certificates)
+    except Exception as e:
+        logger.error(f"Failed to create timeline chart: {str(e)}")
     
     # Create PDF object
     pdf = FPDF()
@@ -191,16 +241,15 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     pdf.cell(0, 8, f'Expired Certificates: {sum(1 for c in certificates if c.valid_until <= datetime.now())}', ln=True)
     pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True)
     
-    # Add timeline chart
-    if Path(timeline_path).exists():
-        pdf.add_page()
-        pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 10, 'Certificate Timeline', ln=True)
+    # Add timeline chart if available
+    if timeline_path and Path(timeline_path).exists():
         try:
+            pdf.add_page()
+            pdf.set_font('helvetica', 'B', 14)
+            pdf.cell(0, 10, 'Certificate Timeline', ln=True)
             pdf.image(timeline_path, x=10, w=190)
         except Exception as e:
-            pdf.set_font('helvetica', '', 12)
-            pdf.cell(0, 10, f'Error adding timeline: {str(e)}', ln=True)
+            logger.error(f"Failed to add timeline to PDF: {str(e)}")
     
     # Add certificate details
     for cert in certificates:
@@ -246,12 +295,19 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     # Ensure output directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     
-    # Save PDF
-    pdf.output(output_path)
-    
-    # Clean up temporary files
-    if Path(timeline_path).exists():
-        Path(timeline_path).unlink()
+    try:
+        # Save PDF
+        pdf.output(output_path)
+    except Exception as e:
+        logger.error(f"Failed to save PDF: {str(e)}")
+        raise
+    finally:
+        # Clean up temporary files
+        if timeline_path and Path(timeline_path).exists():
+            try:
+                Path(timeline_path).unlink()
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary timeline file: {str(e)}")
     
     return output_path
 

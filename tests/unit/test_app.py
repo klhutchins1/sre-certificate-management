@@ -215,36 +215,29 @@ def test_main_preserves_session(mock_init_db, mock_sidebar, mock_settings, mock_
     # Verify init_database wasn't called again
     mock_init_db.assert_not_called() 
 
-@patch('streamlit.set_page_config')
-def test_page_configuration(mock_set_page_config):
-    """Test that page configuration is set correctly"""
-    # Force module reload to trigger module-level code
-    import importlib
-    import cert_scanner.app
-    importlib.reload(cert_scanner.app)
-    
-    # Verify page config was called with correct parameters
-    mock_set_page_config.assert_called_once_with(
-        page_title="Certificate Manager",
-        page_icon="🔐",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-
 @patch('streamlit.markdown')
-def test_css_styling(mock_markdown):
-    """Test that CSS styling is applied"""
+def test_styling_and_layout(mock_markdown):
+    """Test that styling and layout JavaScript/CSS is applied"""
     # Force module reload to trigger module-level code
     import importlib
     import cert_scanner.app
     importlib.reload(cert_scanner.app)
+
+    # Verify markdown was called twice - once for JavaScript and once for CSS
+    assert mock_markdown.call_count == 2
     
-    # Verify markdown was called with CSS content
-    mock_markdown.assert_called_once()
-    css_content = mock_markdown.call_args[0][0]
-    assert 'stAppViewContainer' in css_content
-    assert 'stSidebar' in css_content
-    assert mock_markdown.call_args[1].get('unsafe_allow_html') is True
+    # Verify first call was for JavaScript (contains localStorage)
+    first_call = mock_markdown.call_args_list[0]
+    assert 'localStorage' in first_call[0][0]
+    assert 'stWideModeEnabled' in first_call[0][0]
+    assert first_call[1]['unsafe_allow_html'] == True
+    
+    # Verify second call was for CSS (contains style tag)
+    second_call = mock_markdown.call_args_list[1]
+    assert '<style>' in second_call[0][0]
+    assert '.stApp' in second_call[0][0]
+    assert 'max-width: none' in second_call[0][0]
+    assert second_call[1]['unsafe_allow_html'] == True
 
 @patch('streamlit.sidebar')
 @patch('streamlit.title')

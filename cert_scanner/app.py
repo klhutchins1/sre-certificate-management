@@ -24,15 +24,6 @@ from cert_scanner.views.historyView import render_history_view
 from cert_scanner.views.searchView import render_search_view
 from cert_scanner.views.settingsView import render_settings_view
 
-# Configure page at module level (must be first Streamlit command)
-#st.set_page_config(
-#    page_title="Certificate Manager",
-#    page_icon="🔐",
-#   layout="wide",  # Force wide mode
-#   initial_sidebar_state="expanded",
-#   menu_items=None  # Completely disable menu items
-#)
-
 # Force wide mode programmatically
 st.markdown("""
     <script>

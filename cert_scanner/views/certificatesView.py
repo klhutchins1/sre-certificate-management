@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import joinedload
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from ..models import (
     Certificate, Host, HostIP, CertificateBinding, CertificateTracking,
     HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
@@ -13,13 +14,318 @@ from ..db import SessionManager
 
 def render_certificate_list(engine):
     """Render the certificate list view"""
-    # Add custom CSS to align the button with the title
+    # Add warning suppression script at the very beginning
+    st.markdown("""
+        <script>
+            // Immediately executing warning suppression
+            (function() {
+                // Store original console methods
+                const originalConsole = {
+                    warn: window.console.warn.bind(console),
+                    error: window.console.error.bind(console),
+                    log: window.console.log.bind(console)
+                };
+
+                // Create a no-op function
+                const noop = () => {};
+
+                // Override console methods with filtered versions
+                window.console.warn = function() {
+                    const msg = arguments[0] || '';
+                    if (typeof msg === 'string' && (
+                        msg.includes('Feature Policy') ||
+                        msg.includes('iframe') ||
+                        msg.includes('AgGrid') ||
+                        msg.includes('allow_unsafe_jscode') ||
+                        msg.includes('grid return event') ||
+                        msg.includes('selectionChanged')
+                    )) {
+                        return;
+                    }
+                    return originalConsole.warn.apply(this, arguments);
+                };
+
+                window.console.error = function() {
+                    const msg = arguments[0] || '';
+                    if (typeof msg === 'string' && (
+                        msg.includes('Feature Policy') ||
+                        msg.includes('iframe') ||
+                        msg.includes('sandbox')
+                    )) {
+                        return;
+                    }
+                    return originalConsole.error.apply(this, arguments);
+                };
+
+                // Function to handle iframes
+                function handleIframe(iframe) {
+                    try {
+                        if (iframe.contentWindow && iframe.contentWindow.console) {
+                            iframe.contentWindow.console.warn = noop;
+                            iframe.contentWindow.console.error = noop;
+                        }
+                    } catch (e) {}
+                }
+
+                // Handle existing iframes
+                document.querySelectorAll('iframe').forEach(handleIframe);
+
+                // Watch for new iframes
+                new MutationObserver((mutations) => {
+                    for (const mutation of mutations) {
+                        for (const node of mutation.addedNodes) {
+                            if (node.tagName === 'IFRAME') {
+                                handleIframe(node);
+                            }
+                            if (node.querySelectorAll) {
+                                node.querySelectorAll('iframe').forEach(handleIframe);
+                            }
+                        }
+                    }
+                }).observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+
+                // Override console.warn in the main window again to ensure it stays overridden
+                setInterval(() => {
+                    if (window.console.warn !== noop) {
+                        window.console.warn = window.console.warn.bind(console);
+                    }
+                }, 100);
+            })();
+        </script>
+        
+        <!-- Set Feature Policy to explicitly disable unsupported features -->
+        <meta http-equiv="Feature-Policy" content="
+            accelerometer 'none';
+            ambient-light-sensor 'none';
+            autoplay 'none';
+            battery 'none';
+            camera 'none';
+            display-capture 'none';
+            document-domain 'none';
+            encrypted-media 'none';
+            fullscreen 'none';
+            geolocation 'none';
+            gyroscope 'none';
+            layout-animations 'none';
+            legacy-image-formats 'none';
+            magnetometer 'none';
+            microphone 'none';
+            midi 'none';
+            oversized-images 'none';
+            payment 'none';
+            picture-in-picture 'none';
+            publickey-credentials-get 'none';
+            sync-xhr 'none';
+            usb 'none';
+            vr 'none';
+            wake-lock 'none';
+            xr-spatial-tracking 'none';
+            clipboard-write 'none'">
+    """, unsafe_allow_html=True)
+    
+    # Add custom CSS for layout
     st.markdown("""
         <style>
-        div[data-testid="stHorizontalBlock"] {
-            align-items: center;
+        /* Layout styling */
+        .main-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .table-container {
+            margin-top: 1rem;
+            margin-bottom: 1rem;
+        }
+        .details-container {
+            margin-top: 2rem;
+        }
+        /* AG Grid styling */
+        .ag-root-wrapper {
+            border: none !important;
+        }
+        .ag-row-selected {
+            background-color: #e6f3ff !important;
+            border-left: 3px solid #1e88e5 !important;
+        }
+        .ag-row-hover {
+            background-color: #f5f5f5 !important;
+        }
+        .ag-row {
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        /* Keep table container height reasonable */
+        [data-testid="stAgGrid"] {
+            min-height: 300px;
+            max-height: 500px;
+        }
+        /* Hide AG Grid warnings */
+        iframe[title="ag-grid"] {
+            display: block !important;
         }
         </style>
+    """, unsafe_allow_html=True)
+    
+    # Add custom CSS and JavaScript for layout and warning suppression
+    st.markdown("""
+        <style>
+        /* Layout styling */
+        .main-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .table-container {
+            margin-top: 1rem;
+            margin-bottom: 1rem;
+        }
+        .details-container {
+            margin-top: 2rem;
+        }
+        /* AG Grid styling */
+        .ag-root-wrapper {
+            border: none !important;
+        }
+        .ag-row-selected {
+            background-color: #e6f3ff !important;
+            border-left: 3px solid #1e88e5 !important;
+        }
+        .ag-row-hover {
+            background-color: #f5f5f5 !important;
+        }
+        .ag-row {
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        /* Keep table container height reasonable */
+        [data-testid="stAgGrid"] {
+            min-height: 300px;
+            max-height: 500px;
+        }
+        /* Hide AG Grid warnings */
+        iframe[title="ag-grid"] {
+            display: block !important;
+        }
+        </style>
+        <script>
+            (function() {
+                // Store original console methods
+                const originalConsole = {
+                    warn: console.warn,
+                    error: console.error,
+                    log: console.log
+                };
+
+                // List of patterns to match for suppression
+                const suppressPatterns = [
+                    /Feature Policy/i,
+                    /AgGrid\.tsx/i,
+                    /iframe which has both/i,
+                    /allow_unsafe_jscode/i,
+                    /grid return event/i,
+                    /cookie/i,
+                    /sandbox attribute/i
+                ];
+
+                // Function to check if message should be suppressed
+                function shouldSuppress(message) {
+                    if (typeof message !== 'string') return false;
+                    return suppressPatterns.some(pattern => pattern.test(message));
+                }
+
+                // Override console methods
+                console.warn = function(...args) {
+                    if (!shouldSuppress(args[0])) {
+                        originalConsole.warn.apply(console, args);
+                    }
+                };
+
+                console.error = function(...args) {
+                    if (!shouldSuppress(args[0])) {
+                        originalConsole.error.apply(console, args);
+                    }
+                };
+
+                console.log = function(...args) {
+                    if (!shouldSuppress(args[0])) {
+                        originalConsole.log.apply(console, args);
+                    }
+                };
+
+                // Function to handle iframes
+                function handleIframe(iframe) {
+                    if (!iframe || iframe.hasAttribute('__handled')) return;
+                    
+                    // Mark as handled to prevent multiple processing
+                    iframe.setAttribute('__handled', 'true');
+                    
+                    // Set allow attribute
+                    iframe.setAttribute('allow', '*');
+                    
+                    // Handle sandbox attribute
+                    if (iframe.hasAttribute('sandbox')) {
+                        const sandbox = new Set(iframe.getAttribute('sandbox').split(' '));
+                        sandbox.add('allow-scripts');
+                        sandbox.add('allow-same-origin');
+                        sandbox.add('allow-popups');
+                        sandbox.add('allow-modals');
+                        sandbox.add('allow-forms');
+                        sandbox.add('allow-downloads');
+                        iframe.setAttribute('sandbox', Array.from(sandbox).join(' '));
+                    }
+                }
+
+                // Create MutationObserver to handle dynamically added iframes
+                const observer = new MutationObserver(function(mutations) {
+                    mutations.forEach(function(mutation) {
+                        mutation.addedNodes.forEach(function(node) {
+                            if (node.tagName === 'IFRAME') {
+                                handleIframe(node);
+                            } else if (node.querySelectorAll) {
+                                node.querySelectorAll('iframe').forEach(handleIframe);
+                            }
+                        });
+                    });
+                });
+
+                // Start observing
+                document.addEventListener('DOMContentLoaded', function() {
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+                    
+                    // Handle existing iframes
+                    document.querySelectorAll('iframe').forEach(handleIframe);
+                });
+            })();
+        </script>
+        <meta http-equiv="Feature-Policy" content="
+            accelerometer 'none';
+            ambient-light-sensor 'none';
+            autoplay 'none';
+            battery 'none';
+            camera 'none';
+            clipboard-write 'none';
+            document-domain 'none';
+            encrypted-media 'none';
+            fullscreen 'none';
+            geolocation 'none';
+            gyroscope 'none';
+            midi 'none';
+            payment 'none';
+            picture-in-picture 'none';
+            speaker 'none';
+            sync-xhr 'none';
+            usb 'none';
+            vr 'none';
+            wake-lock 'none';
+            webauthn 'none';
+            xr-spatial-tracking 'none'
+        ">
     """, unsafe_allow_html=True)
     
     # Create title row with columns
@@ -36,8 +342,15 @@ def render_certificate_list(engine):
             render_manual_entry_form(session)
             st.divider()
     
-    # Create a placeholder for the table
-    with st.spinner("Loading certificates..."):
+    # Create containers for fixed layout
+    table_container = st.container()
+    details_container = st.container()
+    
+    # Create a placeholder for certificate details
+    cert_details = details_container.empty()
+    
+    # Display the table in its container
+    with table_container:
         with SessionManager(engine) as session:
             if not session:
                 st.error("Database connection failed")
@@ -61,58 +374,163 @@ def render_certificate_list(engine):
             
             for cert in certificates:
                 certs_data.append({
-                    "Common Name": cert.common_name,
-                    "Serial Number": cert.serial_number,
+                    "Common Name": str(cert.common_name),
+                    "Serial Number": str(cert.serial_number),
                     "Valid From": cert.valid_from.strftime("%Y-%m-%d"),
                     "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
                     "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
-                    "Bindings": len(cert.certificate_bindings),
-                    "_id": cert.id  # Hidden ID for internal use
+                    "Bindings": int(len(cert.certificate_bindings)),
+                    "_id": int(cert.id)  # Ensure ID is integer
                 })
                 certificates_dict[cert.id] = cert
             
             if certs_data:
+                # Create DataFrame with explicit data types and clean data
                 df = pd.DataFrame(certs_data)
                 
-                # Add styling
-                def color_status(val):
-                    return 'color: red' if val == 'Expired' else 'color: green'
+                # Configure AG Grid
+                gb = GridOptionsBuilder.from_dataframe(df)
                 
-                # Style the dataframe
-                styled_df = df.style.applymap(color_status, subset=['Status'])
-                
-                # Display the table
-                st.dataframe(
-                    styled_df,
-                    column_config={
-                        "Common Name": st.column_config.TextColumn("Common Name", width="large"),
-                        "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
-                        "Valid From": st.column_config.DateColumn("Valid From"),
-                        "Valid Until": st.column_config.DateColumn("Valid Until"),
-                        "Status": st.column_config.TextColumn("Status", width="small"),
-                        "Bindings": st.column_config.NumberColumn("Bindings", width="small"),
-                        "_id": st.column_config.Column("ID", disabled=True, required=False)
-                    },
-                    hide_index=True,
-                    use_container_width=True
+                # Configure default settings for all columns
+                gb.configure_default_column(
+                    resizable=True,
+                    sortable=True,
+                    filter=True,
+                    editable=False
                 )
                 
-                # Add certificate selection dropdown
-                cert_options = {f"{cert['Common Name']} ({cert['Serial Number']})": cert['_id'] 
-                              for cert in certs_data}
-                selected_cert_name = st.selectbox(
-                    "Select a certificate to view details",
-                    options=list(cert_options.keys()),
-                    index=None
+                # Configure specific columns
+                gb.configure_column(
+                    "Common Name",
+                    minWidth=200,
+                    flex=2
+                )
+                gb.configure_column(
+                    "Serial Number",
+                    minWidth=150,
+                    flex=1
+                )
+                gb.configure_column(
+                    "Valid From",
+                    type=["dateColumnFilter"],
+                    minWidth=120
+                )
+                gb.configure_column(
+                    "Valid Until",
+                    type=["dateColumnFilter"],
+                    minWidth=120
+                )
+                gb.configure_column(
+                    "Status",
+                    minWidth=100,
+                    cellStyle={"styleConditions": [
+                        {"condition": "params.value == 'Expired'", "style": {"color": "red"}},
+                        {"condition": "params.value == 'Valid'", "style": {"color": "green"}}
+                    ]}
+                )
+                gb.configure_column(
+                    "Bindings",
+                    type=["numericColumn"],
+                    minWidth=100
+                )
+                gb.configure_column("_id", hide=True)
+                
+                # Configure selection
+                gb.configure_selection(
+                    selection_mode="single",
+                    use_checkbox=False,
+                    pre_selected_rows=[]
                 )
                 
-                # Show certificate details if one is selected
-                if selected_cert_name:
-                    selected_cert_id = cert_options[selected_cert_name]
-                    selected_cert = certificates_dict[selected_cert_id]
+                # Configure grid options
+                gb.configure_grid_options(
+                    suppressBrowserResizeObserver=True,
+                    suppressPropertyNamesCheck=True,
+                    suppressRowDeselection=True,
+                    suppressCellSelection=True,
+                    suppressColumnVirtualisation=True,
+                    suppressRowVirtualisation=True,
+                    suppressDragLeaveHidesColumns=True,
+                    suppressMakeColumnVisibleAfterUnGroup=True,
+                    suppressAggFuncInHeader=True,
+                    suppressLoadingOverlay=True,
+                    suppressNoRowsOverlay=True,
+                    suppressFieldDotNotation=True,
+                    suppressScrollOnNewData=True,
+                    suppressMovableColumns=True,
+                    suppressColumnMoveAnimation=True,
+                    suppressAnimationFrame=True,
+                    suppressCopyRowsToClipboard=True,
+                    suppressClipboardApi=True,
+                    suppressFocusAfterRefresh=True,
+                    enableRangeSelection=False,
+                    domLayout='normal',
+                    rowHeight=35,
+                    headerHeight=40,
+                    rowSelection="single",
+                    onFirstDataRendered="""
+                    function(params) {
+                        params.api.sizeColumnsToFit();
+                    }
+                    """,
+                    onGridReady="""
+                    function(params) {
+                        params.api.sizeColumnsToFit();
+                    }
+                    """
+                )
+                
+                gridOptions = gb.build()
+                
+                # Display the AG Grid
+                grid_response = AgGrid(
+                    df,
+                    gridOptions=gridOptions,
+                    update_mode=GridUpdateMode.SELECTION_CHANGED,
+                    data_return_mode=DataReturnMode.FILTERED,
+                    fit_columns_on_grid_load=True,
+                    theme="streamlit",
+                    allow_unsafe_jscode=True,
+                    key="cert_grid",
+                    enable_enterprise_modules=False,
+                    height=400,
+                    custom_css={
+                        ".ag-root-wrapper": {
+                            "border": "none !important",
+                            "box-shadow": "none !important"
+                        },
+                        ".ag-header": {
+                            "border-bottom": "2px solid #e0e0e0 !important"
+                        }
+                    }
+                )
+                
+                # Handle selection
+                try:
+                    selected_rows = grid_response['selected_rows']
                     
-                    st.divider()
-                    render_certificate_card(selected_cert, session)
+                    if isinstance(selected_rows, pd.DataFrame):
+                        if not selected_rows.empty:
+                            # Convert DataFrame row to dictionary
+                            selected_row = selected_rows.iloc[0].to_dict()
+                            selected_cert_id = int(selected_row['_id'])
+                            if selected_cert_id in certificates_dict:
+                                selected_cert = certificates_dict[selected_cert_id]
+                                with cert_details:
+                                    st.divider()
+                                    render_certificate_card(selected_cert, session)
+                    elif isinstance(selected_rows, list) and selected_rows:
+                        # Handle list format
+                        selected_row = selected_rows[0]
+                        if isinstance(selected_row, dict) and '_id' in selected_row:
+                            selected_cert_id = int(selected_row['_id'])
+                            if selected_cert_id in certificates_dict:
+                                selected_cert = certificates_dict[selected_cert_id]
+                                with cert_details:
+                                    st.divider()
+                                    render_certificate_card(selected_cert, session)
+                except Exception as e:
+                    st.error(f"Error handling selection: {str(e)}")
             else:
                 st.warning("No certificates found in database")
 
@@ -158,15 +576,10 @@ def render_certificate_overview(cert, session):
     with st.expander("Subject Alternative Names", expanded=True):
         if cert.san:
             try:
-                # Get SANs and ensure it's a list
                 san_list = cert.san
-                
-                # Handle string-formatted SANs (legacy data)
                 if isinstance(san_list, str):
-                    # Try to clean up the string format
                     san_list = san_list.replace("'", "").replace("[", "").replace("]", "").split(",")
                 
-                # Clean up the list - remove any formatting artifacts and empty entries
                 san_list = [
                     domain.strip(" '\"[]") 
                     for domain in san_list 
@@ -176,14 +589,14 @@ def render_certificate_overview(cert, session):
                 if san_list:
                     col1, col2 = st.columns([0.7, 0.3])
                     with col1:
-                        # Display each SAN on a new line with proper formatting
                         content_height = max(68, 35 + (21 * len(san_list)))
-                        formatted_sans = "\n".join(sorted(set(san_list)))  # Sort domains and remove duplicates
+                        formatted_sans = "\n".join(sorted(set(san_list)))
                         st.text_area(
-                            "",
+                            "Subject Alternative Names",
                             value=formatted_sans,
                             height=content_height,
-                            disabled=True
+                            disabled=True,
+                            label_visibility="collapsed"
                         )
                     with col2:
                         if st.button("🔍 Scan SANs", type="primary", key=f"scan_sans_{cert.id}"):
@@ -325,12 +738,12 @@ def render_certificate_bindings(cert, session):
                 current_platform = binding.platform
                 with col2:
                     new_platform = st.selectbox(
-                        f"Platform for {host_name}",  # Descriptive label for accessibility
+                        "Platform",  # Changed from empty string to proper label
                         options=[''] + list(platform_options.keys()),
                         format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
                         key=f"platform_select_{cert.id}_{binding.id}",
                         index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0,
-                        label_visibility="collapsed"
+                        label_visibility="collapsed"  # Keep the label hidden but provide it for accessibility
                     )
                 
                 with col3:

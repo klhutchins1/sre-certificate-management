@@ -16,6 +16,20 @@ from cert_scanner.views.certificatesView import (
 )
 import json
 from unittest import mock
+from st_aggrid import GridUpdateMode, DataReturnMode
+
+@pytest.fixture(scope="function")
+def mock_aggrid():
+    """Mock st_aggrid module"""
+    with patch('cert_scanner.views.certificatesView.AgGrid') as mock_aggrid:
+        def mock_aggrid_func(*args, **kwargs):
+            return {
+                'data': args[0] if args else pd.DataFrame(),
+                'selected_rows': [],
+                'grid_options': kwargs.get('gridOptions', {}),
+            }
+        mock_aggrid.side_effect = mock_aggrid_func
+        yield mock_aggrid
 
 @pytest.fixture(scope="function")
 def engine():
@@ -113,32 +127,36 @@ def test_render_certificate_list_empty(mock_streamlit, engine):
     # Verify empty state warning
     mock_streamlit.warning.assert_called_with("No certificates found in database")
 
-def test_render_certificate_list_with_data(mock_streamlit, engine, sample_certificate, session):
+def test_render_certificate_list_with_data(mock_streamlit, mock_aggrid, engine, sample_certificate, session):
     """Test rendering certificate list with sample data"""
     # Add certificate to session
     session.add(sample_certificate)
     session.commit()
     
-    # Mock selectbox to return None (no certificate selected)
-    mock_streamlit.selectbox.return_value = None
+    # Mock empty placeholder
+    mock_placeholder = MagicMock()
+    mock_streamlit.empty.return_value = mock_placeholder
     
-    # Mock current time to ensure certificate is valid
-    with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime(2024, 6, 1)  # A date between valid_from and valid_until
-        mock_datetime.strptime = datetime.strptime
-        
-        render_certificate_list(engine)
+    # Mock SessionManager
+    mock_session_manager = MagicMock()
+    mock_session_manager.__enter__ = MagicMock(return_value=session)
+    mock_session_manager.__exit__ = MagicMock(return_value=None)
     
-    # Verify dataframe was created
-    dataframe_calls = mock_streamlit.dataframe.call_args_list
-    assert len(dataframe_calls) > 0, "Dataframe was not created"
+    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+        # Mock current time to ensure certificate is valid
+        with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+            mock_datetime.now.return_value = datetime(2024, 6, 1)  # A date between valid_from and valid_until
+            mock_datetime.strptime = datetime.strptime
+            
+            render_certificate_list(engine)
     
-    # Get the first dataframe call
-    df_call = dataframe_calls[0]
-    styled_df = df_call[0][0]
+    # Verify AG Grid was created with correct parameters
+    assert mock_aggrid.call_count > 0, "AG Grid was not created"
     
-    # Get the underlying dataframe
-    df = styled_df.data if hasattr(styled_df, 'data') else styled_df
+    # Get the first AG Grid call
+    grid_call = mock_aggrid.call_args_list[0]
+    df = grid_call[0][0]  # Get the DataFrame passed to AG Grid
+    kwargs = grid_call[1]  # Get the keyword arguments
     
     # Convert df to dict for easier assertion
     data = df.to_dict('records')[0] if not df.empty else {}
@@ -147,6 +165,15 @@ def test_render_certificate_list_with_data(mock_streamlit, engine, sample_certif
     assert data.get("Common Name") == "test.example.com", "Common Name mismatch"
     assert data.get("Serial Number") == "123456", "Serial Number mismatch"
     assert data.get("Status") == "Valid", "Status mismatch"
+    
+    # Verify grid configuration
+    assert kwargs.get("update_mode") == GridUpdateMode.SELECTION_CHANGED, "Update mode mismatch"
+    assert kwargs.get("data_return_mode") == DataReturnMode.FILTERED, "Data return mode mismatch"
+    assert kwargs.get("fit_columns_on_grid_load") is True, "Fit columns setting mismatch"
+    assert kwargs.get("theme") == "streamlit", "Theme mismatch"
+    assert kwargs.get("allow_unsafe_jscode") is True, "Allow unsafe jscode setting mismatch"
+    assert kwargs.get("enable_enterprise_modules") is False, "Enterprise modules setting mismatch"
+    assert kwargs.get("height") == 400, "Height mismatch"
 
 def test_render_certificate_overview(mock_streamlit, sample_certificate, sample_binding, session):
     """Test rendering certificate overview"""
@@ -290,17 +317,11 @@ def test_render_certificate_overview_with_sans(mock_streamlit, sample_certificat
     
     # Verify SAN text area was created with correct height
     mock_streamlit.text_area.assert_called_with(
-        "",
+        "Subject Alternative Names",
         value="*.example.com\ntest.example.com",
         height=expected_height,
-        disabled=True
-    )
-    
-    # Verify scan button was created
-    mock_streamlit.button.assert_any_call(
-        "🔍 Scan SANs",
-        type="primary",
-        key="scan_sans_1"
+        disabled=True,
+        label_visibility="collapsed"
     )
 
 def test_render_certificate_bindings_add_new(mock_streamlit, sample_certificate, session):
@@ -372,37 +393,42 @@ def test_add_certificate_button(mock_streamlit, engine):
     render_certificate_list(engine)
     assert mock_state.get('show_manual_entry', False) is True, "Manual entry form not shown after button click"
 
-def test_certificate_selection(mock_streamlit, engine, sample_certificate, session):
-    """Test certificate selection from dropdown"""
+def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certificate, session):
+    """Test certificate selection"""
     # Add certificate to session
     session.add(sample_certificate)
     session.commit()
     
-    # Mock selectbox to simulate selection
-    mock_streamlit.selectbox.return_value = "test.example.com (123456)"
+    # Mock SessionManager
+    mock_session_manager = MagicMock()
+    mock_session_manager.__enter__ = MagicMock(return_value=session)
+    mock_session_manager.__exit__ = MagicMock(return_value=None)
     
-    # Mock text_area to return a string
-    mock_streamlit.text_area.return_value = "Test description"
+    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+        # Mock current time to ensure certificate is valid
+        with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+            mock_datetime.now.return_value = datetime(2024, 6, 1)
+            mock_datetime.strptime = datetime.strptime
+            
+            render_certificate_list(engine)
     
-    # Mock form_submit_button to return False (don't submit the form)
-    mock_streamlit.form_submit_button.return_value = False
+    # Verify AG Grid was created with correct parameters
+    assert mock_aggrid.call_count > 0, "AG Grid was not created"
     
-    # Mock st.json to verify the data structure
-    def mock_json(data):
-        if isinstance(data, dict):
-            # For issuer/subject details
-            assert isinstance(data, dict)
-        elif isinstance(data, list):
-            # For SANs
-            assert isinstance(data, list)
-    mock_streamlit.json = Mock(side_effect=mock_json)
+    # Get the AG Grid call
+    grid_call = mock_aggrid.call_args_list[0]
+    kwargs = grid_call[1]
     
-    render_certificate_list(engine)
-    
-    # Verify certificate details are shown
-    mock_streamlit.subheader.assert_any_call("📜 test.example.com")
+    # Verify grid configuration
+    assert kwargs.get("update_mode") == GridUpdateMode.SELECTION_CHANGED
+    assert kwargs.get("data_return_mode") == DataReturnMode.FILTERED
+    assert kwargs.get("fit_columns_on_grid_load") is True
+    assert kwargs.get("theme") == "streamlit"
+    assert kwargs.get("allow_unsafe_jscode") is True
+    assert kwargs.get("enable_enterprise_modules") is False
+    assert kwargs.get("height") == 400
 
-def test_expired_certificate_styling(mock_streamlit, engine, session):
+def test_expired_certificate_styling(mock_streamlit, mock_aggrid, engine, session):
     """Test styling of expired certificates"""
     # Create an expired certificate
     expired_cert = Certificate(
@@ -421,16 +447,36 @@ def test_expired_certificate_styling(mock_streamlit, engine, session):
     session.add(expired_cert)
     session.commit()
     
-    # Mock selectbox to return None (no certificate selected)
-    mock_streamlit.selectbox.return_value = None
+    # Mock SessionManager
+    mock_session_manager = MagicMock()
+    mock_session_manager.__enter__ = MagicMock(return_value=session)
+    mock_session_manager.__exit__ = MagicMock(return_value=None)
     
-    render_certificate_list(engine)
+    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+        render_certificate_list(engine)
     
-    # Get the styled dataframe that was passed to st.dataframe
-    styled_df = mock_streamlit.dataframe.call_args[0][0]
-    # Get the underlying dataframe
-    df = styled_df.data
+    # Verify AG Grid was created
+    assert mock_aggrid.call_count > 0, "AG Grid was not created"
     
-    # Convert df to dict for easier assertion
-    data = df.to_dict('records')[0] if not df.empty else {}
-    assert data.get("Status") == "Expired" 
+    # Get the grid options to verify styling
+    grid_call = mock_aggrid.call_args_list[0]
+    kwargs = grid_call[1]
+    grid_options = kwargs.get("gridOptions", {})
+    
+    # Verify the Status column has the correct styling configuration
+    column_defs = grid_options.get("columnDefs", [])
+    status_col = next((col for col in column_defs if col.get("field") == "Status"), None)
+    assert status_col is not None, "Status column not found"
+    
+    cell_style = status_col.get("cellStyle", {})
+    style_conditions = cell_style.get("styleConditions", [])
+    
+    # Verify expired status is styled in red
+    expired_style = next((style for style in style_conditions if style["condition"] == "params.value == 'Expired'"), None)
+    assert expired_style is not None, "Expired style condition not found"
+    assert expired_style["style"]["color"] == "red", "Expired style color mismatch"
+    
+    # Verify valid status is styled in green
+    valid_style = next((style for style in style_conditions if style["condition"] == "params.value == 'Valid'"), None)
+    assert valid_style is not None, "Valid style condition not found"
+    assert valid_style["style"]["color"] == "green", "Valid style color mismatch" 

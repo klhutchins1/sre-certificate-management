@@ -28,7 +28,7 @@ showErrorDetails = false
 toolbarMode = "minimal"
 
 [theme]
-base = "light"
+base = "dark"
 primaryColor = "#FF4B4B"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F0F2F6"

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, String
 from ..models import Certificate, Host, HostIP, CertificateBinding
 from ..db import SessionManager
 
@@ -38,7 +38,11 @@ def render_search_view(engine):
         with SessionManager(engine) as session:
             results = perform_search(session, search_query, search_type, status_filter, platform_filter)
             
-            if not results:
+            # Check if there are any actual results
+            if not results or (
+                ('certificates' not in results or not results['certificates']) and 
+                ('hosts' not in results or not results['hosts'])
+            ):
                 st.info("No results found")
                 return
             
@@ -140,8 +144,8 @@ def perform_search(session, query, search_type, status_filter, platform_filter):
             or_(
                 Certificate.common_name.ilike(f"%{query}%"),
                 Certificate.serial_number.ilike(f"%{query}%"),
-                Certificate.subject.ilike(f"%{query}%"),
-                Certificate.san.ilike(f"%{query}%")
+                Certificate._subject.ilike(f"%{query}%"),
+                Certificate._san.ilike(f"%{query}%")
             )
         ).all()
     
@@ -155,7 +159,10 @@ def perform_search(session, query, search_type, status_filter, platform_filter):
         
         # Add platform filter
         if platform_filter != "All":
-            host_query = host_query.join(CertificateBinding).filter(
+            host_query = host_query.join(
+                CertificateBinding,
+                Host.certificate_bindings
+            ).filter(
                 CertificateBinding.platform == platform_filter
             )
         
@@ -163,7 +170,11 @@ def perform_search(session, query, search_type, status_filter, platform_filter):
         if status_filter != "All":
             is_valid = status_filter == "Valid"
             host_query = host_query.join(
-                CertificateBinding, Certificate
+                CertificateBinding,
+                Host.certificate_bindings
+            ).join(
+                Certificate,
+                CertificateBinding.certificate
             ).filter(
                 Certificate.valid_until > now if is_valid else Certificate.valid_until <= now
             )

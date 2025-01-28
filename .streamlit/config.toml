@@ -7,7 +7,7 @@ showErrorDetails = false
 toolbarMode = "minimal"
 
 [theme]
-base = "light"
+base = "dark"
 
 [server]
 runOnSave = true

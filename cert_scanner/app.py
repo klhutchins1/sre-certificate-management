@@ -62,14 +62,9 @@ st.markdown("""
     </script>
 """, unsafe_allow_html=True)
 
-# Hide all Streamlit UI elements and force light mode
+# Hide all Streamlit UI elements 
 st.markdown("""
     <style>
-        /* Force light mode */
-        .stApp {
-            background-color: #FFFFFF;
-            color: #262730;
-        }
         
         /* Force wide mode */
         .stApp > header + div {
@@ -134,10 +129,6 @@ st.markdown("""
         .stApp > header {display: none !important;}
         .stApp > footer {display: none !important;}
         
-        /* Force light mode for specific elements */
-        .stMarkdown, .stButton, .stSelectbox {
-            color: #262730 !important;
-        }
         
         /* Ensure wide mode for all blocks */
         div[data-testid="stBlock"] {

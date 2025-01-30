@@ -106,37 +106,48 @@ internal.server.local:444"""
                     else:
                         hostname = parsed.path
                     
+                    port = 443  # Default port
+                    
                     # Split hostname and port if present
                     if ':' in hostname:
                         try:
-                            hostname, port_str = hostname.rsplit(':', 1)
+                            # Split on the last colon to handle IPv6 addresses correctly
+                            parts = hostname.rsplit(':', 1)
+                            if len(parts) != 2:
+                                st.error(f"Invalid format in {entry}: Could not parse hostname and port")
+                                st.error("Please enter at least one valid hostname to scan")
+                                validation_errors = True
+                                continue
+                                
+                            hostname, port_str = parts
+                            port_str = port_str.strip()  # Remove any whitespace
                             
-                            # First check if the port string is negative (starts with -)
+                            # Check for negative sign explicitly
                             if port_str.startswith('-'):
-                                print(f"DEBUG: Invalid port {port_str} - negative")  # Debug output
+                                print(f"DEBUG: Negative port detected: {port_str}")
                                 st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+                                st.error("Please enter at least one valid hostname to scan")
                                 validation_errors = True
                                 continue
                             
-                            # Then validate that the port is a valid number
+                            # First try to convert the port string to an integer
                             try:
                                 port = int(port_str)
-                                # Check for port range
-                                if port < 1:
-                                    print(f"DEBUG: Invalid port {port} - negative or zero")  # Debug output
-                                    st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
-                                    validation_errors = True
-                                    continue
-                                elif port > 65535:
-                                    print(f"DEBUG: Invalid port {port} - above maximum")  # Debug output
-                                    st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
-                                    validation_errors = True
-                                    continue
+                                print(f"DEBUG: Parsed port {port} from {entry}")  # Debug output
                                 
-                                print(f"DEBUG: Port {port} is valid")  # Debug output
+                                # Then validate the port range
+                                if port < 1 or port > 65535:
+                                    print(f"DEBUG: Invalid port {port} - outside valid range")  # Debug output
+                                    st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+                                    st.error("Please enter at least one valid hostname to scan")
+                                    validation_errors = True
+                                    continue
+                                else:
+                                    print(f"DEBUG: Port {port} is valid")  # Debug output
                             except ValueError:
                                 print(f"DEBUG: Failed to parse port from {entry}")  # Debug output
                                 st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
+                                st.error("Please enter at least one valid hostname to scan")
                                 validation_errors = True
                                 continue
                         except Exception as e:
@@ -145,8 +156,6 @@ internal.server.local:444"""
                             st.error("Please enter at least one valid hostname to scan")
                             validation_errors = True
                             continue
-                    else:
-                        port = 443
                     
                     # Validate hostname is not empty after parsing
                     if not hostname:

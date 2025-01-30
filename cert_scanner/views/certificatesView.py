@@ -424,8 +424,32 @@ def render_certificate_list(engine):
                     "Status",
                     minWidth=100,
                     cellStyle={"styleConditions": [
-                        {"condition": "params.value == 'Expired'", "style": {"color": "red"}},
-                        {"condition": "params.value == 'Valid'", "style": {"color": "green"}}
+                        {
+                            "condition": "params.value == 'Expired'",
+                            "style": {
+                                "background-color": "#dc3545",
+                                "color": "white",
+                                "font-weight": "500",
+                                "border-radius": "20px",
+                                "padding": "2px 8px",
+                                "display": "flex",
+                                "justify-content": "center",
+                                "align-items": "center"
+                            }
+                        },
+                        {
+                            "condition": "params.value == 'Valid'",
+                            "style": {
+                                "background-color": "#198754",
+                                "color": "white",
+                                "font-weight": "500",
+                                "border-radius": "20px",
+                                "padding": "2px 8px",
+                                "display": "flex",
+                                "justify-content": "center",
+                                "align-items": "center"
+                            }
+                        }
                     ]}
                 )
                 gb.configure_column(

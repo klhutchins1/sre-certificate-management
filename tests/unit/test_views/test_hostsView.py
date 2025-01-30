@@ -6,7 +6,8 @@ import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from cert_scanner.models import Base, Certificate, Host, HostIP, CertificateBinding
-from cert_scanner.views.hostsView import render_hosts_view
+from cert_scanner.views.hostsView import render_hosts_view, render_binding_details
+from cert_scanner.constants import platform_options
 
 @pytest.fixture(scope="function")
 def engine():
@@ -46,6 +47,9 @@ def mock_streamlit():
                 tab.__exit__ = MagicMock(return_value=None)
             return tabs
         mock_st.tabs.side_effect = mock_tabs
+        
+        # Mock AgGrid
+        mock_st.AgGrid = MagicMock(return_value={'selected_rows': []})
         
         # Mock session state
         mock_st.session_state = MagicMock()
@@ -114,13 +118,8 @@ def test_render_hosts_view_empty(mock_streamlit, engine):
 
 def test_render_hosts_view_with_data(mock_streamlit, engine, sample_data):
     """Test rendering hosts view with sample data"""
-    # Mock filter selections
-    mock_streamlit.selectbox.side_effect = [
-        "All",          # Platform filter
-        "All",          # Status filter
-        "All",          # Port filter
-        None           # IP:Port selection
-    ]
+    # Mock AgGrid to return no selection
+    mock_streamlit.AgGrid.return_value = {'selected_rows': []}
     
     render_hosts_view(engine)
     
@@ -134,32 +133,87 @@ def test_render_hosts_view_with_data(mock_streamlit, engine, sample_data):
     mock_cols[0].metric.assert_called_once_with("Total IPs", 1)
     mock_cols[1].metric.assert_called_once_with("Total Hosts", 1)
     
-    # Verify dataframe was created
-    mock_streamlit.dataframe.assert_called()
+    # Verify session was stored in session state
+    mock_streamlit.session_state.__setitem__.assert_called_with('session', mock_streamlit.session_state.get.return_value)
+    
+    # Verify AgGrid was called
+    mock_streamlit.AgGrid.assert_called_once()
 
-def test_host_details_display(mock_streamlit, engine, sample_data):
-    """Test displaying host details when IP:Port is selected"""
-    # Mock filter and selection values
-    mock_streamlit.selectbox.side_effect = [
-        "All",          # Platform filter
-        "All",          # Status filter
-        "All",          # Port filter
-        f"{sample_data['binding'].host_ip.ip_address}:{sample_data['binding'].port}"  # IP:Port selection
-    ]
+def test_host_selection_handling(mock_streamlit, engine, sample_data):
+    """Test handling of host selection in AG Grid"""
+    # Mock grid response with both data and selection
+    mock_streamlit.AgGrid.return_value = {
+        'data': pd.DataFrame([{
+            '_id': sample_data['binding'].id,
+            'IP Address': sample_data['binding'].host_ip.ip_address,
+            'Port': sample_data['binding'].port,
+            'Platform': 'F5'
+        }]),
+        'selected_rows': [{
+            '_id': sample_data['binding'].id,
+            'IP Address': sample_data['binding'].host_ip.ip_address,
+            'Port': sample_data['binding'].port
+        }]
+    }
     
     render_hosts_view(engine)
     
     # Verify binding details were displayed
-    mock_streamlit.subheader.assert_any_call(
-        f"Binding Details: {sample_data['binding'].host_ip.ip_address}:{sample_data['binding'].port}"
-    )
+    mock_streamlit.subheader.assert_called_with(f"🔗 {sample_data['binding'].host.name}")
     
-    # Verify metrics
-    mock_streamlit.metric.assert_any_call("Platform", "F5")
-    mock_streamlit.metric.assert_any_call("Status", "Valid")
+    # Verify tabs were created for details
+    mock_streamlit.tabs.assert_called_with(["Overview", "Certificate Details"])
+    
+    # Verify divider was added before details
+    mock_streamlit.divider.assert_called()
+
+def test_binding_details_render(mock_streamlit, sample_data):
+    """Test rendering of binding details"""
+    render_binding_details(sample_data['binding'])
+    
+    # Verify subheader was set
+    mock_streamlit.subheader.assert_called_with(f"🔗 {sample_data['binding'].host.name}")
     
     # Verify tabs were created
-    mock_streamlit.tabs.assert_called_with(["Certificate Details", "History"])
+    mock_streamlit.tabs.assert_called_with(["Overview", "Certificate Details"])
+    
+    # Verify markdown was called with binding details
+    mock_streamlit.markdown.assert_any_call("""
+                **IP Address:** 192.168.1.1  
+                **Port:** 443  
+                **Platform:** F5  
+                **Last Seen:** {}
+            """.format(sample_data['binding'].last_seen.strftime('%Y-%m-%d %H:%M')))
+
+def test_ag_grid_configuration(mock_streamlit, engine, sample_data):
+    """Test AG Grid configuration"""
+    render_hosts_view(engine)
+    
+    # Get the AgGrid call arguments
+    grid_call = mock_streamlit.AgGrid.call_args
+    
+    assert grid_call is not None
+    kwargs = grid_call[1]
+    
+    # Verify grid configuration
+    assert kwargs['update_mode'] == 'SELECTION_CHANGED'
+    assert kwargs['data_return_mode'] == 'FILTERED'
+    assert kwargs['fit_columns_on_grid_load'] is True
+    assert kwargs['theme'] == 'streamlit'
+    assert kwargs['allow_unsafe_jscode'] is True
+    assert kwargs['key'] == 'host_grid'
+    assert kwargs['enable_enterprise_modules'] is False
+    assert kwargs['height'] == 400
+
+def test_error_handling_in_selection(mock_streamlit, engine, sample_data):
+    """Test error handling in selection processing"""
+    # Mock AgGrid to return invalid data to trigger error
+    mock_streamlit.AgGrid.return_value = {'selected_rows': [{'_id': 'invalid'}]}
+    
+    render_hosts_view(engine)
+    
+    # Verify error was displayed
+    mock_streamlit.error.assert_called()
 
 def test_filter_functionality(mock_streamlit, engine, sample_data):
     """Test filter functionality in hosts view"""
@@ -185,4 +239,95 @@ def test_filter_functionality(mock_streamlit, engine, sample_data):
     mock_streamlit.selectbox.assert_any_call(
         'Filter by Port',
         ['All', 443]
-    ) 
+    )
+
+def test_platform_update(mock_streamlit, engine, sample_data):
+    """Test platform update functionality in binding details"""
+    # Mock session state to return a session
+    mock_session = MagicMock()
+    mock_streamlit.session_state.get.return_value = mock_session
+    
+    # Mock selectbox to return a new platform value
+    mock_streamlit.selectbox.return_value = "Akamai"
+    
+    # Mock button click
+    mock_streamlit.button.return_value = True
+    
+    # Render binding details
+    render_binding_details(sample_data['binding'])
+    
+    # Verify platform selection was created
+    mock_streamlit.selectbox.assert_any_call(
+        "Platform",
+        options=[''] + list(platform_options.keys()),
+        format_func=mock_streamlit.selectbox.call_args[1]['format_func'],
+        key=f"platform_select_{sample_data['binding'].id}",
+        index=0
+    )
+    
+    # Verify update button was created and clicked
+    mock_streamlit.button.assert_called_with(
+        "Update Platform",
+        key=f"update_platform_{sample_data['binding'].id}",
+        type="primary"
+    )
+    
+    # Verify session commit was called
+    mock_session.commit.assert_called_once()
+    
+    # Verify success message was shown inline
+    mock_streamlit.success.assert_called_with("✅ Platform updated successfully!")
+
+def test_inline_platform_update(mock_streamlit, engine, sample_data):
+    """Test inline platform update functionality in AG Grid"""
+    # Mock grid response with updated platform
+    original_df = pd.DataFrame([{
+        '_id': sample_data['binding'].id,
+        'Platform': 'F5',
+        'Hostname': sample_data['binding'].host.name
+    }])
+    
+    updated_df = pd.DataFrame([{
+        '_id': sample_data['binding'].id,
+        'Platform': 'Akamai',
+        'Hostname': sample_data['binding'].host.name
+    }])
+    
+    mock_streamlit.AgGrid.return_value = {
+        'data': updated_df,
+        'selected_rows': []
+    }
+    
+    render_hosts_view(engine)
+    
+    # Verify success message was shown inline
+    mock_streamlit.success.assert_called_with(f"✅ Platform updated for {sample_data['binding'].host.name}")
+    
+    # Verify platform was updated in database
+    with Session(engine) as session:
+        binding = session.query(CertificateBinding).get(sample_data['binding'].id)
+        assert binding.platform == 'Akamai'
+
+def test_inline_platform_update_error(mock_streamlit, engine, sample_data):
+    """Test error handling for inline platform update"""
+    # Mock grid response with invalid binding ID
+    updated_df = pd.DataFrame([{
+        '_id': 99999,  # Invalid ID
+        'Platform': 'Akamai',
+        'Hostname': 'Invalid Host'
+    }])
+    
+    mock_streamlit.AgGrid.return_value = {
+        'data': updated_df,
+        'selected_rows': []
+    }
+    
+    render_hosts_view(engine)
+    
+    # Verify error message was shown
+    mock_streamlit.error.assert_called()
+    
+    # Verify platform was not updated in database
+    with Session(engine) as session:
+        binding = session.query(CertificateBinding).get(sample_data['binding'].id)
+        assert binding.platform == 'F5'  # Original platform value 

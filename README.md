@@ -85,10 +85,21 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 ### Managing Hosts
 
 1. Access "Hosts" page
-2. View hosts by IP address
-3. Select an IP to see:
-   - Associated hostnames
-   - Certificates using this IP
+2. View hosts in interactive AG Grid table with:
+   - Sortable columns
+   - Built-in filtering
+   - Real-time search
+   - Color-coded status indicators
+3. Select a host to see:
+   - Detailed host information
+   - Associated certificates
+   - Certificate status and details
+4. Features:
+   - Modern, responsive grid interface
+   - Advanced filtering capabilities
+   - Quick access to certificate details
+   - Color-coded status indicators
+   - Efficient data handling
 
 ### Dashboard
 
@@ -183,8 +194,9 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 
 ### User Interface
 
-- [x] Web-based interface
-- [x] Certificate list view with filtering and sorting
+- [x] Web-based interface with modern AG Grid tables
+- [x] Certificate list view with advanced filtering and sorting
+- [x] Host management with interactive grid interface
 - [x] Detailed certificate view
 - [x] Infrastructure view
 - [x] Scanning interface

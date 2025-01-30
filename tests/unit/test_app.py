@@ -205,15 +205,18 @@ def test_main_preserves_session(mock_init_db, mock_sidebar, mock_settings, mock_
     st.session_state.current_view = "Dashboard"
     st.session_state.engine = mock_db_engine
     
+    # Store original scanner object id
+    original_scanner_id = id(test_scanner)
+    
     # Run main
     main()
     
     # Verify session values were preserved
-    assert st.session_state.scanner is test_scanner
+    assert id(st.session_state.scanner) == original_scanner_id, "Scanner object was replaced"
     assert st.session_state.selected_cert == "test_cert"
     assert st.session_state.engine is mock_db_engine
     # Verify init_database wasn't called again
-    mock_init_db.assert_not_called() 
+    mock_init_db.assert_not_called()
 
 @patch('streamlit.markdown')
 def test_styling_and_layout(mock_markdown):

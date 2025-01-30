@@ -1,5 +1,9 @@
 import streamlit as st
 import os
+import sys
+
+# Add the current directory to Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Create .streamlit directory if it doesn't exist
 os.makedirs(".streamlit", exist_ok=True)

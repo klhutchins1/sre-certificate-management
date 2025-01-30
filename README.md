@@ -7,12 +7,14 @@ A comprehensive web-based system for tracking and managing SSL/TLS certificates 
 ### Standard Installation
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/yourusername/SRE-CertificateManagement.git
 cd SRE-CertificateManagement
 ```
 
 2. Create and activate a virtual environment:
+
 ```bash
 # Windows
 python -m venv venv
@@ -24,11 +26,13 @@ source venv/bin/activate
 ```
 
 3. Install requirements:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 4. Run the application:
+
 ```bash
 streamlit run run.py
 ```
@@ -36,6 +40,7 @@ streamlit run run.py
 ### Offline Installation
 
 1. On a machine with internet access:
+
 ```bash
 # Create requirements folder
 mkdir requirements_offline
@@ -50,6 +55,7 @@ pip download -r requirements.txt
 ```
 
 2. On the offline machine:
+
 ```bash
 # Extract/copy files
 # Create and activate virtual environment as above
@@ -341,8 +347,6 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 - [ ] Scheduled automatic backups
 - [ ] Backup verification
 - [ ] Restore testing
-- [ ] Backup rotation policies
-- [ ] Remote backup storage support
 
 ## Development Approach
 
@@ -369,33 +373,13 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 1. Performance optimization
 2. Additional integrations
 3. Advanced certificate validation
-
-## Similar Existing Solutions
-
-### Commercial Solutions
-
-- CertificateTools.com
-  - Enterprise focused
-  - Expensive licensing
-  - More features than needed
-- KeyManager Plus
-  - Enterprise grade
-  - Complex deployment
-  - Extensive feature set
-
-### Open Source Alternatives
-
-- XCA
-  - Desktop only
-  - Limited scanning
-  - No automation
-- Let's Encrypt Certificate Manager
-  - Limited to LE certificates
-  - No external scanning
-
-### Why Build Custom
-
-- Specific requirements for scanning and tracking
-- Need for simple, focused functionality
-- Cost-effective solution
-- Integration with existing tools and processes 
+4. History page does not need Scan Trends
+5. Scan button color should be green
+6. Scan button should be disabled when scanning is in progress
+7. Scan results should be organized better
+8. When scanning is in progress, the site should show a loading spinner sooner and stay present longer
+9. History page should show correct host instead of unknown host.
+10. Hosts page should be using ag-grid
+11. Hosts page should use color for valid and invalid certificates
+12. Dashboard data graph should be sized correctly when there are a lot of certificates.
+13. Need a Change planning page, to help build change tickets.

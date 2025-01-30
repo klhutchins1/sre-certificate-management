@@ -73,7 +73,12 @@ internal.server.local:444"""
               - 8080: Alternative HTTP
             """)
         
-        if st.button("Start Scan"):
+        # Create a button and store its state
+        scan_button_clicked = st.button("Start Scan")
+        
+        # Only process if button is clicked
+        if scan_button_clicked:
+            print("DEBUG: Scan button clicked")  # Debug output
             # Clear previous results
             st.session_state.scan_results = {
                 "success": [],
@@ -81,8 +86,14 @@ internal.server.local:444"""
                 "warning": []
             }
             
+            # Check for empty input
+            if not scan_input.strip():
+                st.error("Please enter at least one hostname to scan")
+                return
+            
             entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
             scan_targets = []
+            validation_errors = False
             
             # Parse hostnames and ports
             for entry in entries:
@@ -97,15 +108,42 @@ internal.server.local:444"""
                     
                     # Split hostname and port if present
                     if ':' in hostname:
-                        hostname, port = hostname.rsplit(':', 1)
                         try:
-                            port = int(port)
-                            # Validate port number
-                            if port < 1 or port > 65535:
+                            hostname, port_str = hostname.rsplit(':', 1)
+                            
+                            # First check if the port string is negative (starts with -)
+                            if port_str.startswith('-'):
+                                print(f"DEBUG: Invalid port {port_str} - negative")  # Debug output
                                 st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+                                validation_errors = True
                                 continue
-                        except ValueError:
-                            st.error(f"Invalid port number in {entry}: '{port}' is not a valid number")
+                            
+                            # Then validate that the port is a valid number
+                            try:
+                                port = int(port_str)
+                                # Check for port range
+                                if port < 1:
+                                    print(f"DEBUG: Invalid port {port} - negative or zero")  # Debug output
+                                    st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+                                    validation_errors = True
+                                    continue
+                                elif port > 65535:
+                                    print(f"DEBUG: Invalid port {port} - above maximum")  # Debug output
+                                    st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+                                    validation_errors = True
+                                    continue
+                                
+                                print(f"DEBUG: Port {port} is valid")  # Debug output
+                            except ValueError:
+                                print(f"DEBUG: Failed to parse port from {entry}")  # Debug output
+                                st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
+                                validation_errors = True
+                                continue
+                        except Exception as e:
+                            print(f"DEBUG: Error validating port: {str(e)}")  # Debug output
+                            st.error(f"Error validating port in {entry}: {str(e)}")
+                            st.error("Please enter at least one valid hostname to scan")
+                            validation_errors = True
                             continue
                     else:
                         port = 443
@@ -113,6 +151,8 @@ internal.server.local:444"""
                     # Validate hostname is not empty after parsing
                     if not hostname:
                         st.error(f"Invalid entry: {entry} - Hostname cannot be empty")
+                        st.error("Please enter at least one valid hostname to scan")
+                        validation_errors = True
                         continue
                     
                     # Remove any remaining slashes or spaces
@@ -120,9 +160,16 @@ internal.server.local:444"""
                     
                     scan_targets.append((hostname, port))
                 except Exception as e:
+                    print(f"DEBUG: Exception while parsing {entry}: {str(e)}")  # Additional debug
                     st.error(f"Error parsing {entry}: Please check the format")
+                    validation_errors = True
                     continue
             
+            if validation_errors:
+                print("DEBUG: Validation errors found, showing final error message")  # Additional debug
+                st.error("Please enter at least one valid hostname to scan")
+                return
+                
             if scan_targets:
                 # Create containers for progress
                 progress_container = st.empty()
@@ -132,104 +179,167 @@ internal.server.local:444"""
                 
                 for i, (hostname, port) in enumerate(scan_targets):
                     with st.spinner(f'Scanning {hostname}:{port}...'):
-                        cert_info = st.session_state.scanner.scan_certificate(hostname, port)
-                        if cert_info:
-                            st.session_state.scan_results["success"].append(f"{hostname}:{port}")
-                            # Save to database
+                        try:
+                            cert_info = st.session_state.scanner.scan_certificate(hostname, port)
+                            if cert_info:
+                                st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                # Save to database
+                                with Session(engine) as session:
+                                    try:
+                                        # Create or update certificate
+                                        cert = session.query(Certificate).filter_by(
+                                            serial_number=cert_info.serial_number
+                                        ).first()
+                                        
+                                        if not cert:
+                                            cert = Certificate(
+                                                serial_number=cert_info.serial_number,
+                                                thumbprint=cert_info.thumbprint,
+                                                common_name=cert_info.common_name,
+                                                valid_from=cert_info.valid_from,
+                                                valid_until=cert_info.expiration_date,
+                                                issuer=str(cert_info.issuer),
+                                                subject=str(cert_info.subject),
+                                                san=str(cert_info.san),
+                                                key_usage=cert_info.key_usage,
+                                                signature_algorithm=cert_info.signature_algorithm
+                                            )
+                                            session.add(cert)
+                                        
+                                        # Create or update host
+                                        host = session.query(Host).filter_by(
+                                            name=cert_info.hostname
+                                        ).first()
+                                        
+                                        if not host:
+                                            host = Host(
+                                                name=cert_info.hostname,
+                                                host_type=HOST_TYPE_SERVER,  # Default type
+                                                environment=ENV_PRODUCTION,  # Default environment
+                                                last_seen=datetime.now()
+                                            )
+                                            session.add(host)
+                                        else:
+                                            host.last_seen = datetime.now()
+                                        
+                                        # Create or update bindings for each IP address
+                                        for ip in cert_info.ip_addresses:
+                                            # Create or update HostIP
+                                            host_ip = session.query(HostIP).filter_by(
+                                                host_id=host.id,
+                                                ip_address=ip
+                                            ).first()
+                                            
+                                            if not host_ip:
+                                                host_ip = HostIP(
+                                                    host_id=host.id,
+                                                    ip_address=ip,
+                                                    last_seen=datetime.now()
+                                                )
+                                                session.add(host_ip)
+                                            else:
+                                                host_ip.last_seen = datetime.now()
+                                            
+                                            # Check for existing binding
+                                            binding = session.query(CertificateBinding).filter_by(
+                                                host_id=host.id,
+                                                host_ip_id=host_ip.id,
+                                                port=cert_info.port
+                                            ).first()
+                                            
+                                            if binding:
+                                                # Update existing binding
+                                                binding.certificate_id = cert.id
+                                                binding.last_seen = datetime.now()
+                                            else:
+                                                # Create new binding
+                                                binding = CertificateBinding(
+                                                    host_id=host.id,
+                                                    host_ip_id=host_ip.id,
+                                                    certificate_id=cert.id,
+                                                    port=cert_info.port,
+                                                    binding_type='IP',
+                                                    last_seen=datetime.now()
+                                                )
+                                                session.add(binding)
+                                        
+                                        # Create scan record
+                                        scan = CertificateScan(
+                                            certificate=cert,
+                                            scan_date=datetime.now(),
+                                            status='Valid',
+                                            port=cert_info.port
+                                        )
+                                        session.add(scan)
+                                        
+                                        session.commit()
+                                    except Exception as e:
+                                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
+                                        session.rollback()
+                            else:
+                                st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
+                                # Record failed scan
+                                with Session(engine) as session:
+                                    try:
+                                        # Create or get host for failed scan
+                                        host = session.query(Host).filter_by(name=hostname).first()
+                                        if not host:
+                                            host = Host(
+                                                name=hostname,
+                                                host_type=HOST_TYPE_SERVER,
+                                                environment=ENV_PRODUCTION,
+                                                last_seen=datetime.now()
+                                            )
+                                            session.add(host)
+                                            session.flush()
+
+                                        # Create scan record for failed attempt
+                                        scan = CertificateScan(
+                                            scan_date=datetime.now(),
+                                            status='Failed',
+                                            port=port,
+                                            host_id=host.id
+                                        )
+                                        session.add(scan)
+                                        session.commit()
+                                    except Exception as e:
+                                        logger.error(f"Failed to record failed scan: {str(e)}")
+                                        session.rollback()
+                        except ConnectionError as e:
+                            error_msg = f"Connection error scanning {hostname}:{port} - {str(e)}"
+                            st.error(error_msg)
+                            st.session_state.scan_results["error"].append(error_msg)
+                            # Record failed scan
                             with Session(engine) as session:
                                 try:
-                                    # Create or update certificate
-                                    cert = session.query(Certificate).filter_by(
-                                        serial_number=cert_info.serial_number
-                                    ).first()
-                                    
-                                    if not cert:
-                                        cert = Certificate(
-                                            serial_number=cert_info.serial_number,
-                                            thumbprint=cert_info.thumbprint,
-                                            common_name=cert_info.common_name,
-                                            valid_from=cert_info.valid_from,
-                                            valid_until=cert_info.expiration_date,
-                                            issuer=str(cert_info.issuer),
-                                            subject=str(cert_info.subject),
-                                            san=str(cert_info.san),
-                                            key_usage=cert_info.key_usage,
-                                            signature_algorithm=cert_info.signature_algorithm
-                                        )
-                                        session.add(cert)
-                                    
-                                    # Create or update host
-                                    host = session.query(Host).filter_by(
-                                        name=cert_info.hostname
-                                    ).first()
-                                    
+                                    # Create or get host for failed scan
+                                    host = session.query(Host).filter_by(name=hostname).first()
                                     if not host:
                                         host = Host(
-                                            name=cert_info.hostname,
-                                            host_type=HOST_TYPE_SERVER,  # Default type
-                                            environment=ENV_PRODUCTION,  # Default environment
+                                            name=hostname,
+                                            host_type=HOST_TYPE_SERVER,
+                                            environment=ENV_PRODUCTION,
                                             last_seen=datetime.now()
                                         )
                                         session.add(host)
-                                    else:
-                                        host.last_seen = datetime.now()
-                                    
-                                    # Create or update bindings for each IP address
-                                    for ip in cert_info.ip_addresses:
-                                        # Create or update HostIP
-                                        host_ip = session.query(HostIP).filter_by(
-                                            host_id=host.id,
-                                            ip_address=ip
-                                        ).first()
-                                        
-                                        if not host_ip:
-                                            host_ip = HostIP(
-                                                host_id=host.id,
-                                                ip_address=ip,
-                                                last_seen=datetime.now()
-                                            )
-                                            session.add(host_ip)
-                                        else:
-                                            host_ip.last_seen = datetime.now()
-                                        
-                                        # Check for existing binding
-                                        binding = session.query(CertificateBinding).filter_by(
-                                            host_id=host.id,
-                                            host_ip_id=host_ip.id,
-                                            port=cert_info.port
-                                        ).first()
-                                        
-                                        if binding:
-                                            # Update existing binding
-                                            binding.certificate_id = cert.id
-                                            binding.last_seen = datetime.now()
-                                        else:
-                                            # Create new binding
-                                            binding = CertificateBinding(
-                                                host_id=host.id,
-                                                host_ip_id=host_ip.id,
-                                                certificate_id=cert.id,
-                                                port=cert_info.port,
-                                                binding_type='IP',
-                                                last_seen=datetime.now()
-                                            )
-                                            session.add(binding)
-                                    
-                                    # Create scan record
+                                        session.flush()
+
+                                    # Create scan record for failed attempt
                                     scan = CertificateScan(
-                                        certificate=cert,
                                         scan_date=datetime.now(),
-                                        status='Valid',
-                                        port=cert_info.port
+                                        status='Failed',
+                                        port=port,
+                                        host_id=host.id
                                     )
                                     session.add(scan)
-                                    
                                     session.commit()
                                 except Exception as e:
-                                    st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
+                                    logger.error(f"Failed to record failed scan: {str(e)}")
                                     session.rollback()
-                        else:
-                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
+                        except Exception as e:
+                            error_msg = f"Error scanning {hostname}:{port} - {str(e)}"
+                            st.error(error_msg)
+                            st.session_state.scan_results["error"].append(error_msg)
                             # Record failed scan
                             with Session(engine) as session:
                                 try:
@@ -265,7 +375,7 @@ internal.server.local:444"""
                 if 'scan_targets' in st.session_state:
                     del st.session_state.scan_targets
             else:
-                st.warning("Please enter at least one hostname to scan")
+                st.error("Please enter at least one valid hostname to scan")
     
     with col2:
         st.subheader("Recent Scans")
@@ -330,19 +440,32 @@ def render_scan_results():
     if st.session_state.scan_results["success"]:
         st.markdown("### ✅ Successful Scans")
         for scan in st.session_state.scan_results["success"]:
-            scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-            st.markdown(
-                f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
-                f"(🕒 {scan_time} • <span style='color:green'>Valid</span>)</span>",
-                unsafe_allow_html=True
-            )
+            if isinstance(scan, str):
+                st.markdown(scan)
+            else:
+                scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
+                st.markdown(f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
+                          f"(🕒 {scan_time} • <span style='color:green'>Valid</span>)</span>",
+                          unsafe_allow_html=True)
     
     if st.session_state.scan_results["error"]:
         st.markdown("### ❌ Failed Scans")
         for scan in st.session_state.scan_results["error"]:
-            scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-            st.markdown(
-                f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
-                f"(🕒 {scan_time} • <span style='color:red'>Failed</span>)</span>",
-                unsafe_allow_html=True
-            )
+            if isinstance(scan, str):
+                st.markdown(scan)
+            else:
+                scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
+                st.markdown(f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
+                          f"(🕒 {scan_time} • <span style='color:red'>Failed</span>)</span>",
+                          unsafe_allow_html=True)
+    
+    if st.session_state.scan_results["warning"]:
+        st.markdown("### ⚠️ Warnings")
+        for scan in st.session_state.scan_results["warning"]:
+            if isinstance(scan, str):
+                st.markdown(scan)
+            else:
+                scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
+                st.markdown(f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
+                          f"(🕒 {scan_time} • <span style='color:orange'>Warning</span>)</span>",
+                          unsafe_allow_html=True)

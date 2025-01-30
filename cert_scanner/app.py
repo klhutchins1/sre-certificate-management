@@ -3,8 +3,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 import logging
 import threading
-from cert_scanner.scanner import CertificateScanner, CertificateInfo
-from cert_scanner.models import (
+from .scanner import CertificateScanner, CertificateInfo
+from .models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
     HOST_TYPE_SERVER, HOST_TYPE_LOAD_BALANCER, HOST_TYPE_CDN, HOST_TYPE_VIRTUAL,
     ENV_PRODUCTION, ENV_STAGING, ENV_DEVELOPMENT, ENV_INTERNAL, ENV_EXTERNAL,
@@ -14,15 +14,15 @@ from cert_scanner.models import (
 from sqlalchemy.orm import Session
 import plotly.express as px
 from urllib.parse import urlparse
-from cert_scanner.constants import platform_options
-from cert_scanner.db import init_database, get_session
-from cert_scanner.views.dashboardView import render_dashboard
-from cert_scanner.views.certificatesView import render_certificate_list
-from cert_scanner.views.hostsView import render_hosts_view
-from cert_scanner.views.scannerView import render_scan_interface
-from cert_scanner.views.historyView import render_history_view
-from cert_scanner.views.searchView import render_search_view
-from cert_scanner.views.settingsView import render_settings_view
+from .constants import platform_options
+from .db import init_database, get_session
+from .views.dashboardView import render_dashboard
+from .views.certificatesView import render_certificate_list
+from .views.hostsView import render_hosts_view
+from .views.scannerView import render_scan_interface
+from .views.historyView import render_history_view
+from .views.searchView import render_search_view
+from .views.settingsView import render_settings_view
 
 # Force wide mode programmatically
 st.markdown("""

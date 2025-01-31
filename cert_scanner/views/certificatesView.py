@@ -1,16 +1,253 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from sqlalchemy.orm import Session
-from sqlalchemy.orm import joinedload
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
-from ..models import (
-    Certificate, Host, HostIP, CertificateBinding, CertificateTracking,
-    HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
-    ENV_INTERNAL
-)
+from sqlalchemy.orm import Session, joinedload
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
+from ..models import Certificate, CertificateBinding, Host, HostIP, HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, ENV_INTERNAL
 from ..constants import platform_options
 from ..db import SessionManager
+
+def render_certificates_view(engine):
+    """Render the certificates management view"""
+    st.title("Certificates")
+    
+    # Create metrics columns
+    col1, col2, col3 = st.columns(3)
+    
+    with Session(engine) as session:
+        # Get all certificates with bindings
+        certificates = session.query(Certificate).options(
+            joinedload(Certificate.certificate_bindings)
+            .joinedload(CertificateBinding.host)
+        ).all()
+        
+        if not certificates:
+            st.warning("No certificates found")
+            return
+        
+        # Calculate metrics
+        total_certs = len(certificates)
+        expired_certs = len([c for c in certificates if c.valid_until < datetime.now()])
+        active_bindings = len(set(
+            binding.id 
+            for cert in certificates 
+            for binding in cert.certificate_bindings
+        ))
+        
+        # Display metrics
+        col1.metric("Total Certificates", total_certs)
+        col2.metric("Expired Certificates", expired_certs)
+        col3.metric("Active Bindings", active_bindings)
+        
+        st.divider()
+        
+        # Convert to DataFrame for display
+        cert_data = []
+        for cert in certificates:
+            binding_count = len(cert.certificate_bindings)
+            platform_count = len(set(b.platform for b in cert.certificate_bindings))
+            
+            cert_data.append({
+                'Common Name': cert.common_name,
+                'Issuer': cert.issuer.get('CN', 'Unknown'),
+                'Valid From': cert.valid_from,
+                'Valid Until': cert.valid_until,
+                'Status': 'Valid' if cert.valid_until > datetime.now() else 'Expired',
+                'Bindings': binding_count,
+                'Platforms': platform_count,
+                'Serial Number': cert.serial_number,
+                '_id': cert.id
+            })
+        
+        if cert_data:
+            df = pd.DataFrame(cert_data)
+            
+            # Configure AG Grid
+            gb = GridOptionsBuilder.from_dataframe(df)
+            
+            # Configure default settings
+            gb.configure_default_column(
+                resizable=True,
+                sortable=True,
+                filter=True,
+                editable=False
+            )
+            
+            # Configure specific columns
+            gb.configure_column(
+                "Common Name",
+                minWidth=250,
+                flex=2
+            )
+            gb.configure_column(
+                "Issuer",
+                minWidth=200,
+                flex=1
+            )
+            gb.configure_column(
+                "Status",
+                minWidth=120,
+                cellStyle=JsCode("""
+                function(params) {
+                    return {
+                        'background-color': params.value === 'Expired' ? '#dc3545' : '#198754',
+                        'color': 'white',
+                        'font-weight': '500',
+                        'border-radius': '20px',
+                        'padding': '2px 8px',
+                        'display': 'flex',
+                        'justify-content': 'center',
+                        'align-items': 'center'
+                    };
+                }
+                """)
+            )
+            
+            # Configure date columns
+            for date_col in ["Valid From", "Valid Until"]:
+                gb.configure_column(
+                    date_col,
+                    type=["dateColumnFilter"],
+                    minWidth=150,
+                    valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
+                    cellStyle=JsCode("""
+                    function(params) {
+                        if (params.colDef.field === 'Valid Until' && params.data.Status === 'Expired') {
+                            return {
+                                'background-color': '#dc3545',
+                                'color': 'white',
+                                'font-weight': '500',
+                                'border-radius': '20px',
+                                'padding': '2px 8px',
+                                'display': 'flex',
+                                'justify-content': 'center',
+                                'align-items': 'center'
+                            };
+                        }
+                        return null;
+                    }
+                    """)
+                )
+            
+            # Configure numeric columns
+            for num_col in ["Bindings", "Platforms"]:
+                gb.configure_column(
+                    num_col,
+                    type=["numericColumn"],
+                    minWidth=120
+                )
+            
+            # Configure serial number column
+            gb.configure_column(
+                "Serial Number",
+                minWidth=200,
+                flex=1
+            )
+            
+            # Hide ID column
+            gb.configure_column("_id", hide=True)
+            
+            # Configure selection
+            gb.configure_selection(
+                selection_mode="single",
+                use_checkbox=False,
+                pre_selected_rows=[]
+            )
+            
+            # Configure grid options
+            gb.configure_grid_options(
+                animateRows=True,
+                enableRangeSelection=True,
+                suppressAggFuncInHeader=True,
+                suppressMovableColumns=True,
+                rowHeight=35,
+                headerHeight=40
+            )
+            
+            gridOptions = gb.build()
+            
+            # Display the AG Grid
+            grid_response = AgGrid(
+                df,
+                gridOptions=gridOptions,
+                update_mode=GridUpdateMode.MODEL_CHANGED,
+                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                fit_columns_on_grid_load=True,
+                theme="streamlit",
+                allow_unsafe_jscode=True,
+                key="cert_grid",
+                height=500
+            )
+            
+            # Handle selection
+            try:
+                selected_rows = grid_response['selected_rows']
+                if selected_rows:
+                    selected_row = selected_rows[0]
+                    selected_cert = next((c for c in certificates if c.id == selected_row['_id']), None)
+                    if selected_cert:
+                        st.divider()
+                        render_certificate_details(selected_cert)
+            except Exception as e:
+                st.error(f"Error handling selection: {str(e)}")
+        else:
+            st.info("No certificate data available")
+
+def render_certificate_details(cert):
+    """Render detailed view of a certificate"""
+    st.subheader(f"🔐 {cert.common_name}")
+    
+    # Create tabs for different sections
+    tab1, tab2, tab3 = st.tabs(["Overview", "Technical Details", "Bindings"])
+    
+    with tab1:
+        is_valid = cert.valid_until > datetime.now()
+        status_color = "#198754" if is_valid else "#dc3545"
+        status_text = "Valid" if is_valid else "Expired"
+        
+        st.markdown(f"""
+            **Status:** <span style="background-color: {status_color}; color: white; font-weight: 500; padding: 2px 8px; border-radius: 20px">{status_text}</span>  
+            **Valid From:** {cert.valid_from.strftime('%Y-%m-%d')}  
+            **Valid Until:** {cert.valid_until.strftime('%Y-%m-%d')}  
+            **Issuer:** {cert.issuer.get('CN', 'Unknown')}  
+            **Serial Number:** {cert.serial_number}  
+            **Thumbprint:** {cert.thumbprint}
+        """, unsafe_allow_html=True)
+    
+    with tab2:
+        st.json({
+            "Subject": cert.subject,
+            "Issuer": cert.issuer,
+            "Key Usage": cert.key_usage,
+            "Signature Algorithm": cert.signature_algorithm,
+            "Subject Alternative Names": cert.san
+        })
+    
+    with tab3:
+        if cert.certificate_bindings:
+            # Group bindings by platform
+            platform_bindings = {}
+            for binding in cert.certificate_bindings:
+                platform = binding.platform or 'Unknown'
+                if platform not in platform_bindings:
+                    platform_bindings[platform] = []
+                platform_bindings[platform].append(binding)
+            
+            # Display bindings by platform
+            for platform, bindings in platform_bindings.items():
+                with st.expander(f"{platform_options.get(platform, platform)} ({len(bindings)} bindings)", expanded=True):
+                    for binding in bindings:
+                        st.markdown(f"""
+                            **Host:** {binding.host.name}  
+                            **IP:** {binding.host_ip.ip_address if binding.host_ip else 'N/A'}  
+                            **Port:** {binding.port}  
+                            **Site Name:** {binding.site_name or 'Default'}  
+                            **Application:** {binding.application.name if binding.application else 'N/A'}  
+                            **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
+                        """)
+                        st.divider()
+        else:
+            st.info("No bindings found for this certificate")
 
 def render_certificate_list(engine):
     """Render the certificate list view"""
@@ -630,7 +867,7 @@ def render_certificate_overview(cert, session):
                             cert.sans_scanned = True
                             session.commit()
                             # Navigate to scan view
-                            st.session_state.current_view = "Scan"
+                            st.session_state.current_view = "Scanner"
                             st.rerun()
                 else:
                     st.info("No Subject Alternative Names")
@@ -675,6 +912,81 @@ def render_certificate_bindings(cert, session):
         /* Add space above button row */
         .stButton {
             margin-top: 1rem !important;
+        }
+        /* Binding container styling */
+        .binding-container {
+            padding: 0.3rem 0 !important;
+        }
+        /* Binding title styling */
+        .binding-title {
+            font-size: 1.1rem !important;
+            font-weight: 500 !important;
+            color: rgba(255, 255, 255, 0.95) !important;
+            margin-bottom: 0.4rem !important;
+            letter-spacing: 0.3px !important;
+        }
+        /* Binding info styling */
+        .binding-info {
+            display: flex !important;
+            align-items: center !important;
+            gap: 1.5rem !important;
+            font-size: 0.9rem !important;
+            color: rgba(255, 255, 255, 0.9) !important;
+            padding-left: 0.5rem !important;
+        }
+        .binding-info-item {
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 0.3rem !important;
+        }
+        .binding-info-label {
+            font-size: 0.85rem !important;
+            color: rgba(255, 255, 255, 0.6) !important;
+        }
+        .binding-info-value {
+            font-size: 0.9rem !important;
+            color: rgba(255, 255, 255, 0.9) !important;
+        }
+        /* Platform section styling */
+        .platform-section {
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 0.5rem !important;
+            margin-left: 0.5rem !important;
+        }
+        /* Compact the selectbox */
+        div[data-testid="stSelectbox"] {
+            display: inline-block !important;
+            width: auto !important;
+            min-width: 150px !important;
+            margin: 0 !important;
+        }
+        div[data-testid="stSelectbox"] > div {
+            min-height: unset !important;
+        }
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+            height: 1.8rem !important;
+            min-height: unset !important;
+            background-color: rgba(255, 255, 255, 0.05) !important;
+        }
+        /* Success notification styling */
+        div[data-testid="stMarkdown"] + div[data-testid="element-container"] {
+            display: inline-flex !important;
+            margin-left: 0.5rem !important;
+        }
+        .stAlert {
+            padding: 0.1rem 0.4rem !important;
+            min-height: unset !important;
+        }
+        .stAlert > div {
+            padding: 0.1rem !important;
+            min-height: unset !important;
+        }
+        /* Binding separator */
+        .binding-separator {
+            height: 1px !important;
+            background-color: rgba(255, 255, 255, 0.1) !important;
+            margin: 0.5rem 0 1rem 0 !important;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -747,51 +1059,82 @@ def render_certificate_bindings(cert, session):
             # Create a container for each binding
             binding_container = st.container()
             with binding_container:
-                st.markdown(f"#### 🔗 {host_name}")
-                if binding.binding_type == BINDING_TYPE_IP:
-                    st.caption(f"IP: {ip_address}, Port: {port}")
-                else:
-                    st.caption(f"Type: {binding.binding_type}")
+                st.markdown(
+                    f"""
+                    <div class="binding-container">
+                        <div class="binding-title">🔗 {host_name}</div>
+                        <div class="binding-info">
+                            <div class="binding-info-item">
+                                <span class="binding-info-label">IP:</span>
+                                <span class="binding-info-value">{ip_address if binding.binding_type == BINDING_TYPE_IP else 'N/A'}</span>
+                            </div>
+                            <div class="binding-info-item">
+                                <span class="binding-info-label">Port:</span>
+                                <span class="binding-info-value">{port if binding.binding_type == BINDING_TYPE_IP else 'N/A'}</span>
+                            </div>
+                            <div class="binding-info-item">
+                                <span class="binding-info-label">Site:</span>
+                                <span class="binding-info-value">{binding.site_name or 'Default'}</span>
+                            </div>
+                            <div class="binding-info-item">
+                                <span class="binding-info-label">App:</span>
+                                <span class="binding-info-value">{binding.application.name if binding.application else 'N/A'}</span>
+                            </div>
+                            <div class="binding-info-item">
+                                <span class="binding-info-label">Type:</span>
+                                <span class="binding-info-value">{binding.binding_type}</span>
+                            </div>
+                            <div class="binding-info-item">
+                                <span class="binding-info-label">Seen:</span>
+                                <span class="binding-info-value">{binding.last_seen.strftime('%Y-%m-%d %H:%M')}</span>
+                            </div>
+                            <div class="platform-section">
+                                <span class="binding-info-label">Platform:</span>
+                                <div style="display: inline-block;">
+                    """, 
+                    unsafe_allow_html=True
+                )
                 
-                # Create columns for platform selection with adjusted widths
-                col1, col2, col3 = st.columns([0.15, 0.3, 0.15])
-                
-                with col1:
-                    st.markdown("**Platform:**")
-                
+                # Platform selection
                 current_platform = binding.platform
-                with col2:
-                    new_platform = st.selectbox(
-                        "Platform",  # Changed from empty string to proper label
-                        options=[''] + list(platform_options.keys()),
-                        format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                        key=f"platform_select_{cert.id}_{binding.id}",
-                        index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0,
-                        label_visibility="collapsed"  # Keep the label hidden but provide it for accessibility
-                    )
+                new_platform = st.selectbox(
+                    "Platform",
+                    options=[''] + list(platform_options.keys()),
+                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
+                    key=f"platform_select_{cert.id}_{binding.id}",
+                    index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0,
+                    label_visibility="collapsed"
+                )
                 
-                with col3:
-                    if new_platform != current_platform:
-                        if st.button("Update", key=f"update_platform_{cert.id}_{binding.id}", type="primary"):
-                            binding.platform = new_platform
-                            session.commit()
-                            st.success("Platform updated!")
-                            st.rerun()
+                # Handle platform change and notification
+                notification_key = f"platform_update_{cert.id}_{binding.id}"
                 
-                # Show current binding details
-                if binding.binding_type == BINDING_TYPE_IP:
-                    details = f"""
-                        **Port:** {binding.port}  
-                        **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
-                    """
-                else:
-                    details = f"""
-                        **Binding Type:** {binding.binding_type}  
-                        **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
-                    """
-                st.markdown(details)
+                if new_platform != current_platform:
+                    binding.platform = new_platform
+                    session.commit()
+                    st.session_state[notification_key] = {
+                        'timestamp': datetime.now(),
+                        'platform': new_platform,
+                        'host': host_name
+                    }
                 
-                st.divider()  # Add a visual separator between bindings
+                # Show notification if active
+                if notification_key in st.session_state:
+                    notification = st.session_state[notification_key]
+                    if (datetime.now() - notification['timestamp']).total_seconds() < 5:
+                        st.success("Platform saved", icon="✅")
+                    else:
+                        del st.session_state[notification_key]
+                
+                st.markdown("""
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="binding-separator"></div>
+                    """, 
+                    unsafe_allow_html=True
+                )
 
 def render_certificate_details(cert):
     """Render the certificate details tab"""

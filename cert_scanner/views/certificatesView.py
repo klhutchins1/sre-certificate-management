@@ -126,39 +126,31 @@ def render_certificate_list(engine):
                 type=["dateColumnFilter"],
                 minWidth=120,
                 valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
-                cellStyle=JsCode("""
+                cellClass=JsCode("""
                 function(params) {
-                    if (!params.data) return null;
-                    return params.data.Status === 'Expired' ? {
-                        'color': '#dc3545',
-                        'font-weight': '500'
-                    } : null;
+                    if (!params.data) return ['ag-date-cell'];
+                    if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
+                    return ['ag-date-cell'];
                 }
                 """)
             )
             gb.configure_column(
                 "Status",
                 minWidth=100,
-                cellStyle=JsCode("""
+                cellClass=JsCode("""
                 function(params) {
-                    if (!params.data) return null;
-                    return {
-                        'background-color': params.value === 'Expired' ? '#dc3545' : '#198754',
-                        'color': 'white',
-                        'font-weight': '500',
-                        'border-radius': '20px',
-                        'padding': '2px 8px',
-                        'display': 'flex',
-                        'justify-content': 'center',
-                        'align-items': 'center'
-                    };
+                    if (!params.data) return [];
+                    if (params.value === 'Expired') return ['ag-status-expired'];
+                    if (params.value === 'Valid') return ['ag-status-valid'];
+                    return [];
                 }
                 """)
             )
             gb.configure_column(
                 "Bindings",
                 type=["numericColumn"],
-                minWidth=100
+                minWidth=100,
+                cellClass='ag-numeric-cell'
             )
             gb.configure_column("_id", hide=True)
             
@@ -222,7 +214,7 @@ def render_certificate_list(engine):
                 st.error(f"Error handling selection: {str(e)}")
             
             # Add spacing after grid
-            st.markdown("<div style='margin-bottom: 2rem;'></div>", unsafe_allow_html=True)
+            st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
 
 def render_certificate_card(cert, session):
     """Render a single certificate card with details"""
@@ -246,12 +238,14 @@ def render_certificate_overview(cert, session):
     """Render the certificate overview tab"""
     col1, col2 = st.columns(2)
     with col1:
+        is_valid = cert.valid_until > datetime.now()
+        status_class = "cert-valid" if is_valid else "cert-expired"
         st.markdown(f"""
             **Common Name:** {cert.common_name}  
             **Valid From:** {cert.valid_from.strftime('%Y-%m-%d')}  
             **Valid Until:** {cert.valid_until.strftime('%Y-%m-%d')}  
-            **Status:** {"Valid" if cert.valid_until > datetime.now() else "Expired"}
-        """)
+            **Status:** <span class='cert-status {status_class}'>{"Valid" if is_valid else "Expired"}</span>
+        """, unsafe_allow_html=True)
     with col2:
         # Safely get bindings data
         bindings = getattr(cert, 'certificate_bindings', []) or []

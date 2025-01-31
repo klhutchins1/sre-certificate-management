@@ -402,16 +402,16 @@ internal.server.local:444"""
                 .all()
             
             if recent_scans:
-                st.markdown("<div style='font-size:0.9em'>", unsafe_allow_html=True)
+                st.markdown("<div class='text-small'>", unsafe_allow_html=True)
                 for scan in recent_scans:
                     scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
                     if scan.certificate:
                         cert_name = scan.certificate.common_name
-                        status_color = "green" if scan.status == 'Valid' else "red"
+                        status_class = "text-success" if scan.status == 'Valid' else "text-danger"
                         st.markdown(
                             f"**{cert_name}** "
-                            f"<span style='color:gray'>"
-                            f"(🕒 {scan_time} • <span style='color:{status_color}'>{scan.status}</span>)</span>",
+                            f"<span class='text-muted'>"
+                            f"(🕒 {scan_time} • <span class='{status_class}'>{scan.status}</span>)</span>",
                             unsafe_allow_html=True
                         )
                     else:
@@ -420,8 +420,8 @@ internal.server.local:444"""
                         host_info = f"{host.name}:{scan.port}" if host else "Unknown Host"
                         st.markdown(
                             f"**{host_info}** "
-                            f"<span style='color:gray'>"
-                            f"(🕒 {scan_time} • <span style='color:red'>Failed</span>)</span>",
+                            f"<span class='text-muted'>"
+                            f"(🕒 {scan_time} • <span class='text-danger'>Failed</span>)</span>",
                             unsafe_allow_html=True
                         )
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -459,8 +459,8 @@ def render_scan_results():
                 st.markdown(scan)
             else:
                 scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
-                          f"(🕒 {scan_time} • <span style='color:green'>Valid</span>)</span>",
+                st.markdown(f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
+                          f"(🕒 {scan_time} • <span class='text-success'>Valid</span>)</span>",
                           unsafe_allow_html=True)
     
     if st.session_state.scan_results["error"]:
@@ -470,8 +470,8 @@ def render_scan_results():
                 st.markdown(scan)
             else:
                 scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
-                          f"(🕒 {scan_time} • <span style='color:red'>Failed</span>)</span>",
+                st.markdown(f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
+                          f"(🕒 {scan_time} • <span class='text-danger'>Failed</span>)</span>",
                           unsafe_allow_html=True)
     
     if st.session_state.scan_results["warning"]:
@@ -481,6 +481,6 @@ def render_scan_results():
                 st.markdown(scan)
             else:
                 scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(f"<span style='font-family: monospace'>{scan.hostname}:{scan.port} "
-                          f"(🕒 {scan_time} • <span style='color:orange'>Warning</span>)</span>",
+                st.markdown(f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
+                          f"(🕒 {scan_time} • <span class='text-warning'>Warning</span>)</span>",
                           unsafe_allow_html=True)

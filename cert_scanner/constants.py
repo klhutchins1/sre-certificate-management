@@ -33,14 +33,14 @@ HOST_TYPES = [
 
 # Environments
 ENV_PRODUCTION = 'Production'
-ENV_STAGING = 'Staging'
+ENV_CERT = 'Cert'
 ENV_DEVELOPMENT = 'Development'
 ENV_INTERNAL = 'Internal'
 ENV_EXTERNAL = 'External'
 
 ENVIRONMENTS = [
     ENV_PRODUCTION,
-    ENV_STAGING,
+    ENV_CERT,
     ENV_DEVELOPMENT,
     ENV_INTERNAL,
     ENV_EXTERNAL

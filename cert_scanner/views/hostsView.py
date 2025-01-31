@@ -343,25 +343,13 @@ def render_hosts_view(engine):
                 "Certificate",
                 minWidth=200,
                 flex=2,
-                cellStyle=JsCode("""
+                cellClass=JsCode("""
                 function(params) {
-                    if (!params.data) return null;
-                    if (params.data.Status === 'Expired') {
-                        return {
-                            'color': '#dc3545',
-                            'font-weight': '500'
-                        };
-                    }
+                    if (!params.data) return [];
                     if (params.data.Status === 'No Certificate') {
-                        return {
-                            'color': '#6c757d',
-                            'font-style': 'italic'
-                        };
+                        return ['ag-cert-cell-none'];
                     }
-                    return {
-                        'color': '#198754',
-                        'font-weight': '500'
-                    };
+                    return [];
                 }
                 """)
             )
@@ -375,38 +363,25 @@ def render_hosts_view(engine):
                 cellEditorParams={
                     'values': [''] + list(platform_options.keys())
                 },
-                valueFormatter="value === '' ? 'Unknown' : value"
+                valueFormatter="value === '' ? 'Unknown' : value",
+                cellClass=JsCode("""
+                function(params) {
+                    if (!params.value) return ['ag-platform-cell-unknown'];
+                    return [];
+                }
+                """)
             )
             
             # Configure status column
             gb.configure_column(
                 "Status",
                 minWidth=100,
-                cellStyle=JsCode("""
+                cellClass=JsCode("""
                 function(params) {
-                    if (!params.data) return null;
-                    if (params.value === 'No Certificate') {
-                        return {
-                            'background-color': '#6c757d',
-                            'color': 'white',
-                            'font-weight': '500',
-                            'border-radius': '20px',
-                            'padding': '2px 8px',
-                            'display': 'flex',
-                            'justify-content': 'center',
-                            'align-items': 'center'
-                        };
-                    }
-                    return {
-                        'background-color': params.value === 'Expired' ? '#dc3545' : '#198754',
-                        'color': 'white',
-                        'font-weight': '500',
-                        'border-radius': '20px',
-                        'padding': '2px 8px',
-                        'display': 'flex',
-                        'justify-content': 'center',
-                        'align-items': 'center'
-                    };
+                    if (!params.data) return [];
+                    if (params.value === 'Expired') return ['ag-status-expired'];
+                    if (params.value === 'Valid') return ['ag-status-valid'];
+                    return [];
                 }
                 """)
             )
@@ -417,13 +392,11 @@ def render_hosts_view(engine):
                 type=["dateColumnFilter"],
                 minWidth=120,
                 valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
-                cellStyle=JsCode("""
+                cellClass=JsCode("""
                 function(params) {
-                    if (!params.data) return null;
-                    return params.data.Status === 'Expired' ? {
-                        'color': '#dc3545',
-                        'font-weight': '500'
-                    } : null;
+                    if (!params.data) return ['ag-date-cell'];
+                    if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
+                    return ['ag-date-cell'];
                 }
                 """)
             )
@@ -431,7 +404,8 @@ def render_hosts_view(engine):
                 "Last Seen",
                 type=["dateColumnFilter"],
                 minWidth=150,
-                valueFormatter="value ? new Date(value).toLocaleString() : ''"
+                valueFormatter="value ? new Date(value).toLocaleString() : ''",
+                cellClass='ag-date-cell'
             )
             
             # Hide ID column
@@ -519,406 +493,227 @@ def render_hosts_view(engine):
                 st.error(f"Error handling selection: {str(e)}")
                 
             # Add spacing after grid
-            st.markdown("<div style='margin-bottom: 2rem;'></div>", unsafe_allow_html=True)
+            st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
         else:
             st.warning("No host data available")
 
 def render_binding_details(binding):
-    """Render detailed view of a binding"""
-    st.subheader(f"🔗 {binding.host.name}")
+    """Render detailed information about a certificate binding"""
+    is_valid = binding.certificate.valid_until > datetime.now()
+    status_class = "cert-valid" if is_valid else "cert-expired"
     
-    # Create tabs for different sections
-    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Certificate Details", "Manage Certificates", "Applications"])
+    st.markdown(f"""
+        ### Certificate Details
+        
+        **Current Certificate:** {binding.certificate.common_name}  
+        **Status:** <span class='cert-status {status_class}'>{"Valid" if is_valid else "Expired"}</span>  
+        **Valid Until:** {binding.certificate.valid_until.strftime('%Y-%m-%d')}  
+        **Serial Number:** {binding.certificate.serial_number}  
+        **Thumbprint:** {binding.certificate.thumbprint}
+    """, unsafe_allow_html=True)
     
-    with tab1:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"""
-                **IP Address:** {binding.host_ip.ip_address if binding.host_ip else 'N/A'}  
-                **Port:** {binding.port}  
-                **Site Name:** {binding.site_name or 'Default'}  
-                **Site ID:** {binding.site_id or 'N/A'}
-            """)
-            
-            # Add platform selection
-            current_platform = binding.platform or ''
-            new_platform = st.selectbox(
-                "Platform",
-                options=[''] + list(platform_options.keys()),
-                format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                key=f"platform_select_{binding.id}",
-                index=list([''] + list(platform_options.keys())).index(current_platform)
-            )
-            
-            if new_platform != current_platform:
-                binding.platform = new_platform
-                st.session_state.get('session').commit()
-                st.success("Platform saved", icon="✅")
-                st.rerun()
-            
-            # Add application selection
-            session = st.session_state.get('session')
-            applications = session.query(Application).all()
-            app_options = [('', 'No Application')] + [(str(app.id), f"{app.name} ({app_types.get(app.app_type, app.app_type)})") for app in applications]
-            
-            current_app_id = str(binding.application_id) if binding.application_id else ''
-            new_app_id = st.selectbox(
-                "Application",
-                options=[id for id, _ in app_options],
-                format_func=lambda x: dict(app_options).get(x, 'No Application'),
-                key=f"app_select_{binding.id}",
-                index=[id for id, _ in app_options].index(current_app_id) if current_app_id in [id for id, _ in app_options] else 0
-            )
-            
-            if new_app_id != current_app_id:
-                binding.application_id = int(new_app_id) if new_app_id else None
-                session.commit()
-                st.success("Application saved", icon="✅")
-                st.rerun()
-            
-            st.markdown(f"**Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}")
-        
-        with col2:
-            # Get all certificates for this host
-            host_bindings = (
-                st.session_state.get('session')
-                .query(CertificateBinding)
-                .filter(CertificateBinding.host_id == binding.host_id)
-                .all()
-            )
-            
-            # Display current certificate
-            is_valid = binding.certificate.valid_until > datetime.now()
-            status_color = "#198754" if is_valid else "#dc3545"
-            status_text = "Valid" if is_valid else "Expired"
-            st.markdown(f"""
-                **Current Certificate:** <span style="color: {status_color}; font-weight: 500">{binding.certificate.common_name}</span>  
-                **Status:** <span style="background-color: {status_color}; color: white; font-weight: 500; padding: 2px 8px; border-radius: 20px">{status_text}</span>  
-                **Valid Until:** <span style="color: {status_color if not is_valid else 'inherit'}">{binding.certificate.valid_until.strftime('%Y-%m-%d')}</span>
-            """, unsafe_allow_html=True)
-            
-            # Show other certificates if any
-            other_bindings = [b for b in host_bindings if b.id != binding.id]
-            if other_bindings:
-                st.markdown("### Other Certificates")
-                for b in other_bindings:
-                    is_valid = b.certificate.valid_until > datetime.now()
-                    status_color = "#198754" if is_valid else "#dc3545"
-                    status_text = "Valid" if is_valid else "Expired"
-                    source = "🔒 Manual" if b.manually_added else "🔍 Scanned"
-                    with st.expander(f"{b.certificate.common_name} ({source})", expanded=False):
-                        st.markdown(f"""
-                            **Port:** {b.port or 'N/A'}  
-                            **Platform:** {b.platform or 'Not Set'}  
-                            **Status:** <span style="background-color: {status_color}; color: white; font-weight: 500; padding: 2px 8px; border-radius: 20px">{status_text}</span>  
-                            **Valid Until:** {b.certificate.valid_until.strftime('%Y-%m-%d')}  
-                            **Last Seen:** {b.last_seen.strftime('%Y-%m-%d %H:%M')}
-                        """, unsafe_allow_html=True)
+    # Show binding details
+    st.markdown("""
+        ### Binding Details
+    """)
     
-    with tab2:
-        cert = binding.certificate
-        st.json({
-            "Common Name": cert.common_name,
-            "Serial Number": cert.serial_number,
-            "Thumbprint": cert.thumbprint,
-            "Valid From": cert.valid_from.strftime('%Y-%m-%d'),
-            "Valid Until": cert.valid_until.strftime('%Y-%m-%d'),
-            "Issuer": cert.issuer,
-            "Subject": cert.subject,
-            "Key Usage": cert.key_usage,
-            "Signature Algorithm": cert.signature_algorithm
-        })
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"""
+            **Platform:** {binding.platform or "Not Set"}  
+            **Port:** {binding.port}  
+            **Site Name:** {binding.site_name or "Default"}  
+            **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
+        """)
     
-    with tab3:
-        st.subheader("Add Manual Certificate")
-        with st.form("add_manual_certificate"):
-            # Basic certificate details
-            common_name = st.text_input("Common Name (CN)", 
-                help="The domain name or identifier for the certificate")
-            serial_number = st.text_input("Serial Number", 
-                help="The certificate's serial number")
-            thumbprint = st.text_input("Thumbprint/Fingerprint", 
-                help="SHA-1 or SHA-256 fingerprint of the certificate")
-            
-            # Validity dates
-            col1, col2 = st.columns(2)
-            with col1:
-                valid_from = st.date_input("Valid From", 
-                    help="Certificate validity start date")
-            with col2:
-                valid_until = st.date_input("Valid Until", 
-                    help="Certificate expiration date")
-            
-            # Additional details
-            issuer = st.text_input("Issuer", 
-                help="The certificate issuer's distinguished name")
-            subject = st.text_input("Subject", 
-                help="The certificate subject's distinguished name")
-            
-            # Certificate type and usage
-            col3, col4 = st.columns(2)
-            with col3:
-                cert_type = st.selectbox("Certificate Type", 
-                    options=["Server", "Client", "Code Signing", "Other"],
-                    help="The type of certificate")
-            with col4:
-                key_usage = st.text_input("Key Usage", 
-                    help="Certificate key usage (e.g., Digital Signature, Key Encipherment)")
-            
-            signature_algorithm = st.text_input("Signature Algorithm", 
-                help="The algorithm used to sign the certificate (e.g., sha256RSA)")
-            
-            # Binding details
-            col5, col6 = st.columns(2)
-            with col5:
-                port = st.number_input("Port", min_value=1, max_value=65535, 
-                    help="The port number where this certificate is used (optional)")
-            with col6:
-                platform = st.selectbox("Platform",
-                    options=[''] + list(platform_options.keys()),
-                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                    help="The platform where this certificate is used")
-            
-            notes = st.text_area("Notes", 
-                help="Additional notes about this certificate (optional)")
-            
-            submitted = st.form_submit_button("Add Certificate", type="primary")
-            
-            if submitted:
-                try:
-                    with Session(st.session_state.get('engine')) as session:
-                        # Create new certificate
-                        new_cert = Certificate(
-                            common_name=common_name,
-                            serial_number=serial_number,
-                            thumbprint=thumbprint,
-                            valid_from=datetime.combine(valid_from, datetime.min.time()),
-                            valid_until=datetime.combine(valid_until, datetime.max.time()),
-                            issuer=issuer,
-                            subject=subject,
-                            key_usage=key_usage,
-                            signature_algorithm=signature_algorithm,
-                            notes=notes,
-                            manually_added=True
-                        )
-                        session.add(new_cert)
-                        session.flush()  # Get the new certificate ID
-                        
-                        # Create new binding
-                        new_binding = CertificateBinding(
-                            host_id=binding.host_id,
-                            certificate_id=new_cert.id,
-                            port=port if port > 0 else None,
-                            platform=platform if platform else None,
-                            manually_added=True,
-                            last_seen=datetime.now()
-                        )
-                        session.add(new_binding)
-                        session.commit()
-                        
-                        st.success("✅ Certificate added successfully!")
-                        st.rerun()  # Refresh the page to show the new certificate
-                except Exception as e:
-                    st.error(f"Error adding certificate: {str(e)}")
+    with col2:
+        st.markdown(f"""
+            **Host:** {binding.host.name}  
+            **IP Address:** {binding.host_ip.ip_address if binding.host_ip else "N/A"}  
+            **Environment:** {binding.host.environment}  
+            **Host Type:** {binding.host.host_type}
+        """)
+    
+    # Show certificate history
+    if binding.certificate.scans:
+        st.markdown("### Scan History")
+        scan_data = []
+        for scan in binding.certificate.scans:
+            scan_data.append({
+                "Date": scan.scan_date,
+                "Status": scan.status,
+                "Port": scan.port
+            })
         
-        # Show existing manual certificates
-        st.divider()
-        st.subheader("Manual Certificates")
-        
-        manual_bindings = (
-            st.session_state.get('session')
-            .query(CertificateBinding)
-            .join(Certificate)
-            .filter(
-                CertificateBinding.host_id == binding.host_id,
-                CertificateBinding.manually_added == True
+        if scan_data:
+            df = pd.DataFrame(scan_data)
+            st.dataframe(
+                df,
+                column_config={
+                    "Date": st.column_config.DatetimeColumn(
+                        "Date",
+                        format="DD/MM/YYYY HH:mm"
+                    ),
+                    "Status": st.column_config.TextColumn(
+                        "Status",
+                        width="small"
+                    ),
+                    "Port": st.column_config.NumberColumn(
+                        "Port",
+                        width="small"
+                    )
+                },
+                hide_index=True,
+                use_container_width=True
             )
-            .all()
-        )
-        
-        if manual_bindings:
-            for mb in manual_bindings:
-                with st.expander(f"{mb.certificate.common_name} ({mb.port or 'No Port'})"):
-                    col1, col2, col3 = st.columns([2,1,1])
-                    with col1:
-                        st.markdown(f"**Serial:** {mb.certificate.serial_number}")
-                        st.markdown(f"**Thumbprint:** {mb.certificate.thumbprint}")
-                    with col2:
-                        st.markdown(f"**Valid From:** {mb.certificate.valid_from.strftime('%Y-%m-%d')}")
-                        st.markdown(f"**Valid Until:** {mb.certificate.valid_until.strftime('%Y-%m-%d')}")
-                    with col3:
-                        st.markdown(f"**Platform:** {mb.platform or 'Not Set'}")
-                        if st.button("Delete", key=f"delete_{mb.id}", type="secondary"):
-                            try:
-                                session = st.session_state.get('session')
-                                session.delete(mb)
-                                session.commit()
-                                st.success("Certificate binding deleted successfully!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error deleting certificate: {str(e)}")
-        else:
-            st.info("No manually added certificates found for this host.")
-
-    with tab4:
-        st.subheader("Applications")
-        
-        session = st.session_state.get('session')
-        applications = session.query(Application).all()
-        
-        if not applications:
-            st.info("No applications available. Create applications in the Applications page.")
-            return
-        
-        # Show current application assignment
-        st.markdown("### Current Assignment")
-        if binding.application:
-            st.markdown(f"""
-                **Application:** {binding.application.name}  
-                **Type:** {app_types.get(binding.application.app_type, binding.application.app_type)}  
-                **Suite:** {binding.application.suite.name}  
-                **Description:** {binding.application.description or 'No description'}
-            """)
-        else:
-            st.info("No application assigned to this binding.")
-        
-        # Application assignment
-        st.markdown("### Assign Application")
-        app_options = [('', 'No Application')] + [(str(app.id), f"{app.name} ({app_types.get(app.app_type, app.app_type)}) - {app.suite.name}") for app in applications]
-        
-        current_app_id = str(binding.application_id) if binding.application_id else ''
-        new_app_id = st.selectbox(
-            "Select Application",
-            options=[id for id, _ in app_options],
-            format_func=lambda x: dict(app_options).get(x, 'No Application'),
-            help="Select an application to assign to this binding"
-        )
-        
-        if new_app_id != current_app_id:
-            if st.button("Update Assignment", type="primary"):
-                try:
-                    binding.application_id = int(new_app_id) if new_app_id else None
-                    session.commit()
-                    st.success("✅ Application assignment updated successfully!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error updating application assignment: {str(e)}")
 
 def render_host_details(host):
-    """Render detailed view of a host without certificates"""
+    """Render detailed information about a host"""
     st.subheader(f"🖥️ {host.name}")
     
     # Create tabs for different sections
-    tab1, tab2 = st.tabs(["Overview", "Add Certificate"])
+    tab1, tab2, tab3 = st.tabs(["Overview", "Certificate Bindings", "History"])
     
     with tab1:
         col1, col2 = st.columns(2)
         with col1:
-            # Show host details
             st.markdown(f"""
                 **Host Type:** {host.host_type}  
                 **Environment:** {host.environment}  
-                **Description:** {host.description or 'No description'}
+                **Last Seen:** {host.last_seen.strftime('%Y-%m-%d %H:%M')}
             """)
             
-            # Show IP addresses
-            if host.ip_addresses:
-                st.markdown("### IP Addresses")
-                for ip in host.ip_addresses:
-                    st.markdown(f"- {ip.ip_address}")
-            else:
-                st.info("No IP addresses configured")
+            # Add edit functionality
+            with st.expander("Edit Host"):
+                with st.form("edit_host"):
+                    new_type = st.selectbox("Host Type", 
+                        options=HOST_TYPES,
+                        index=HOST_TYPES.index(host.host_type))
+                    new_env = st.selectbox("Environment",
+                        options=ENVIRONMENTS,
+                        index=ENVIRONMENTS.index(host.environment))
+                    
+                    if st.form_submit_button("Update Host", type="primary"):
+                        try:
+                            session = st.session_state.get('session')
+                            host.host_type = new_type
+                            host.environment = new_env
+                            session.commit()
+                            st.success("✅ Host updated successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error updating host: {str(e)}")
             
-            st.markdown(f"**Last Seen:** {host.last_seen.strftime('%Y-%m-%d %H:%M')}")
+            # Add delete functionality
+            with st.expander("Delete Host", expanded=False):
+                st.warning("⚠️ This action cannot be undone!")
+                if st.button("Delete Host", type="secondary"):
+                    try:
+                        session = st.session_state.get('session')
+                        session.delete(host)
+                        session.commit()
+                        st.success("Host deleted successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting host: {str(e)}")
+        
+        with col2:
+            # Display IP addresses
+            st.markdown("### IP Addresses")
+            for ip in host.ip_addresses:
+                st.markdown(f"""
+                    - {ip.ip_address} (Last seen: {ip.last_seen.strftime('%Y-%m-%d %H:%M')})
+                """)
+            
+            # Display certificate metrics
+            valid_certs = sum(1 for binding in host.certificate_bindings 
+                            if binding.certificate.valid_until > datetime.now())
+            total_certs = len(host.certificate_bindings)
+            
+            st.markdown("### Certificate Status")
+            col3, col4 = st.columns(2)
+            col3.metric("Valid Certificates", valid_certs)
+            col4.metric("Total Certificates", total_certs)
     
     with tab2:
-        st.subheader("Add Manual Certificate")
-        with st.form("add_manual_certificate"):
-            # Basic certificate details
-            common_name = st.text_input("Common Name (CN)", 
-                help="The domain name or identifier for the certificate")
-            serial_number = st.text_input("Serial Number", 
-                help="The certificate's serial number")
-            thumbprint = st.text_input("Thumbprint/Fingerprint", 
-                help="SHA-1 or SHA-256 fingerprint of the certificate")
-            
-            # Validity dates
-            col1, col2 = st.columns(2)
-            with col1:
-                valid_from = st.date_input("Valid From", 
-                    help="Certificate validity start date")
-            with col2:
-                valid_until = st.date_input("Valid Until", 
-                    help="Certificate expiration date")
-            
-            # Additional details
-            issuer = st.text_input("Issuer", 
-                help="The certificate issuer's distinguished name")
-            subject = st.text_input("Subject", 
-                help="The certificate subject's distinguished name")
-            
-            # Certificate type and usage
-            col3, col4 = st.columns(2)
-            with col3:
-                cert_type = st.selectbox("Certificate Type", 
-                    options=["Server", "Client", "Code Signing", "Other"],
-                    help="The type of certificate")
-            with col4:
-                key_usage = st.text_input("Key Usage", 
-                    help="Certificate key usage (e.g., Digital Signature, Key Encipherment)")
-            
-            signature_algorithm = st.text_input("Signature Algorithm", 
-                help="The algorithm used to sign the certificate (e.g., sha256RSA)")
-            
-            # Binding details
-            col5, col6 = st.columns(2)
-            with col5:
-                port = st.number_input("Port", min_value=1, max_value=65535, 
-                    help="The port number where this certificate is used (optional)")
-            with col6:
-                platform = st.selectbox("Platform",
-                    options=[''] + list(platform_options.keys()),
-                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                    help="The platform where this certificate is used")
-            
-            notes = st.text_area("Notes", 
-                help="Additional notes about this certificate (optional)")
-            
-            submitted = st.form_submit_button("Add Certificate", type="primary")
-            
-            if submitted:
-                try:
-                    with Session(st.session_state.get('engine')) as session:
-                        # Create new certificate
-                        new_cert = Certificate(
-                            common_name=common_name,
-                            serial_number=serial_number,
-                            thumbprint=thumbprint,
-                            valid_from=datetime.combine(valid_from, datetime.min.time()),
-                            valid_until=datetime.combine(valid_until, datetime.max.time()),
-                            issuer=issuer,
-                            subject=subject,
-                            key_usage=key_usage,
-                            signature_algorithm=signature_algorithm,
-                            notes=notes,
-                            manually_added=True
-                        )
-                        session.add(new_cert)
-                        session.flush()  # Get the new certificate ID
-                        
-                        # Create new binding
-                        new_binding = CertificateBinding(
-                            host_id=host.id,
-                            port=port if port > 0 else None,
-                            platform=platform if platform else None,
-                            certificate_id=new_cert.id,
-                            manually_added=True,
-                            last_seen=datetime.now()
-                        )
-                        session.add(new_binding)
-                        session.commit()
-                        
-                        st.success("✅ Certificate added successfully!")
-                        st.rerun()  # Refresh the page to show the new certificate
-                except Exception as e:
-                    st.error(f"Error adding certificate: {str(e)}")
+        if host.certificate_bindings:
+            st.markdown("### Certificate Bindings")
+            for binding in host.certificate_bindings:
+                is_valid = binding.certificate.valid_until > datetime.now()
+                status_class = "cert-valid" if is_valid else "cert-expired"
+                
+                with st.expander(f"{binding.certificate.common_name} ({binding.port})", expanded=False):
+                    st.markdown(f"""
+                        **Certificate:** {binding.certificate.common_name}  
+                        **Status:** <span class='cert-status {status_class}'>{"Valid" if is_valid else "Expired"}</span>  
+                        **Port:** {binding.port}  
+                        **Platform:** {binding.platform or "Not Set"}  
+                        **Site Name:** {binding.site_name or "Default"}  
+                        **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
+                    """, unsafe_allow_html=True)
+                    
+                    if st.button("Remove Binding", key=f"remove_{binding.id}", type="secondary"):
+                        try:
+                            session = st.session_state.get('session')
+                            session.delete(binding)
+                            session.commit()
+                            st.success("Binding removed successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error removing binding: {str(e)}")
+        else:
+            st.info("No certificate bindings found for this host")
+    
+    with tab3:
+        st.markdown("### Certificate History")
+        history_data = []
+        for binding in host.certificate_bindings:
+            history_data.append({
+                "Certificate": binding.certificate.common_name,
+                "Valid From": binding.certificate.valid_from,
+                "Valid Until": binding.certificate.valid_until,
+                "Status": "Valid" if binding.certificate.valid_until > datetime.now() else "Expired",
+                "Port": binding.port,
+                "Platform": binding.platform or "Not Set",
+                "Last Seen": binding.last_seen
+            })
+        
+        if history_data:
+            df = pd.DataFrame(history_data)
+            st.dataframe(
+                df,
+                column_config={
+                    "Certificate": st.column_config.TextColumn(
+                        "Certificate",
+                        width="large"
+                    ),
+                    "Valid From": st.column_config.DatetimeColumn(
+                        "Valid From",
+                        format="DD/MM/YYYY"
+                    ),
+                    "Valid Until": st.column_config.DatetimeColumn(
+                        "Valid Until",
+                        format="DD/MM/YYYY"
+                    ),
+                    "Status": st.column_config.TextColumn(
+                        "Status",
+                        width="small"
+                    ),
+                    "Port": st.column_config.NumberColumn(
+                        "Port",
+                        width="small"
+                    ),
+                    "Platform": st.column_config.TextColumn(
+                        "Platform",
+                        width="medium"
+                    ),
+                    "Last Seen": st.column_config.DatetimeColumn(
+                        "Last Seen",
+                        format="DD/MM/YYYY HH:mm"
+                    )
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("No certificate history found for this host")

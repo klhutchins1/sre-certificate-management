@@ -131,14 +131,13 @@ def render_flow_details(app):
         with st.expander(f"Level {order if order != 999 else 'Unordered'}", expanded=True):
             for binding in ordered_bindings[order]:
                 is_valid = binding.certificate.valid_until > datetime.now()
-                status_color = "#198754" if is_valid else "#dc3545"
-                status_text = "Valid" if is_valid else "Expired"
+                status_class = "cert-valid" if is_valid else "cert-expired"
                 
                 st.markdown(f"""
                     ### {platform_options.get(binding.platform, binding.platform)}
                     
-                    **Certificate:** <span style="color: {status_color}; font-weight: 500">{binding.certificate.common_name}</span>  
-                    **Status:** <span style="background-color: {status_color}; color: white; font-weight: 500; padding: 2px 8px; border-radius: 20px">{status_text}</span>  
+                    **Certificate:** {binding.certificate.common_name}  
+                    **Status:** <span class='cert-status {status_class}'>{"Valid" if is_valid else "Expired"}</span>  
                     **Valid Until:** {binding.certificate.valid_until.strftime('%Y-%m-%d')}  
                     **Host:** {binding.host.name}  
                     **IP:** {binding.host_ip.ip_address if binding.host_ip else 'N/A'}  

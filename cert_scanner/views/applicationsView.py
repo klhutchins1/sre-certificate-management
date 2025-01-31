@@ -189,13 +189,10 @@ def render_applications_view(engine):
                 "Valid Certificates",
                 type=["numericColumn"],
                 minWidth=120,
-                cellStyle=JsCode("""
+                cellClass=JsCode("""
                 function(params) {
-                    if (!params.data) return null;
-                    return {
-                        'color': '#198754',
-                        'font-weight': '500'
-                    };
+                    if (!params.data) return ['ag-numeric-cell'];
+                    return ['ag-numeric-cell', 'ag-numeric-cell-positive'];
                 }
                 """)
             )
@@ -204,13 +201,10 @@ def render_applications_view(engine):
                 "Expired Certificates",
                 type=["numericColumn"],
                 minWidth=120,
-                cellStyle=JsCode("""
+                cellClass=JsCode("""
                 function(params) {
-                    if (!params.data) return null;
-                    return params.value > 0 ? {
-                        'color': '#dc3545',
-                        'font-weight': '500'
-                    } : null;
+                    if (!params.data) return ['ag-numeric-cell'];
+                    return params.value > 0 ? ['ag-numeric-cell', 'ag-numeric-cell-negative'] : ['ag-numeric-cell'];
                 }
                 """)
             )
@@ -295,7 +289,7 @@ def render_applications_view(engine):
                 st.error(f"Error handling selection: {str(e)}")
             
             # Add spacing after grid
-            st.markdown("<div style='margin-bottom: 2rem;'></div>", unsafe_allow_html=True)
+            st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
         else:
             st.warning("No application data available")
 
@@ -390,8 +384,7 @@ def render_application_details(application):
             st.markdown("### Certificate Bindings")
             for binding in application.certificate_bindings:
                 is_valid = binding.certificate.valid_until > datetime.now()
-                status_color = "#198754" if is_valid else "#dc3545"
-                status_text = "Valid" if is_valid else "Expired"
+                status_class = "cert-valid" if is_valid else "cert-expired"
                 
                 with st.expander(f"{binding.certificate.common_name} ({binding.host.name})", expanded=False):
                     st.markdown(f"""
@@ -399,7 +392,7 @@ def render_application_details(application):
                         **IP Address:** {binding.host_ip.ip_address if binding.host_ip else 'N/A'}  
                         **Port:** {binding.port or 'N/A'}  
                         **Platform:** {binding.platform or 'Not Set'}  
-                        **Status:** <span style="background-color: {status_color}; color: white; font-weight: 500; padding: 2px 8px; border-radius: 20px">{status_text}</span>  
+                        **Status:** <span class='cert-status {status_class}'>{"Valid" if is_valid else "Expired"}</span>  
                         **Valid Until:** {binding.certificate.valid_until.strftime('%Y-%m-%d')}  
                         **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
                     """, unsafe_allow_html=True)

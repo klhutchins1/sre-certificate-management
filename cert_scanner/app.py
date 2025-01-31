@@ -7,7 +7,7 @@ from .scanner import CertificateScanner, CertificateInfo
 from .models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
     HOST_TYPE_SERVER, HOST_TYPE_LOAD_BALANCER, HOST_TYPE_CDN, HOST_TYPE_VIRTUAL,
-    ENV_PRODUCTION, ENV_STAGING, ENV_DEVELOPMENT, ENV_INTERNAL, ENV_EXTERNAL,
+    ENV_PRODUCTION, ENV_CERT, ENV_DEVELOPMENT, ENV_INTERNAL, ENV_EXTERNAL,
     BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
     PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 )
@@ -20,7 +20,6 @@ from .views.dashboardView import render_dashboard
 from .views.certificatesView import render_certificate_list
 from .views.hostsView import render_hosts_view
 from .views.applicationsView import render_applications_view
-from .views.certificateFlowView import render_certificate_flow_view
 from .views.scannerView import render_scan_interface
 from .views.historyView import render_history_view
 from .views.searchView import render_search_view
@@ -62,7 +61,6 @@ def render_sidebar():
             "Certificates": "🔐 Certificates",
             "Hosts": "💻 Hosts",
             "Applications": "📦 Applications",
-            "Certificate Flow": "🌐 Certificate Flow",
             "Scanner": "🔍 Scanner",
             "Search": "🔎 Search",
             "History": "📋 History",
@@ -115,8 +113,6 @@ def main():
         render_hosts_view(st.session_state.engine)
     elif current_view == "Applications":
         render_applications_view(st.session_state.engine)
-    elif current_view == "Certificate Flow":
-        render_certificate_flow_view(st.session_state.engine)
     elif current_view == "Scanner":
         render_scan_interface(st.session_state.engine)
     elif current_view == "Search":

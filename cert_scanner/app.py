@@ -25,6 +25,7 @@ from .views.scannerView import render_scan_interface
 from .views.historyView import render_history_view
 from .views.searchView import render_search_view
 from .views.settingsView import render_settings_view
+from .static.styles import load_css
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -98,6 +99,9 @@ def main():
     """Main application entry point"""
     # Initialize session state
     init_session_state()
+    
+    # Load CSS styles
+    load_css()
     
     # Get current view from sidebar
     current_view = render_sidebar()

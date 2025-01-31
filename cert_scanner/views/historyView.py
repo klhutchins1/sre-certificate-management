@@ -5,9 +5,15 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from ..models import Certificate, CertificateScan, Host, HostIP, CertificateBinding
 from ..db import SessionManager
+from ..static.styles import load_warning_suppression, load_css
+
 
 def render_history_view(engine):
     """Render the certificate scan history view"""
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
     st.title("Certificate History")
     
     # Create tabs for different history views
@@ -318,17 +324,3 @@ def render_scan_history(engine):
             use_container_width=True
         )
         
-        # Add trend analysis
-        st.subheader("Scan Trends")
-        
-        # Group by date for trend analysis
-        df['Date'] = df['Scan Date'].dt.date
-        daily_scans = df.groupby('Date').size().reset_index(name='Scans')
-        daily_success = df[df['Status'] == 'Valid'].groupby('Date').size().reset_index(name='Successful')
-        
-        # Create trend chart
-        trend_data = pd.merge(daily_scans, daily_success, on='Date', how='left')
-        trend_data['Success Rate'] = (trend_data['Successful'] / trend_data['Scans'] * 100).round(1)
-        
-        # Display trend chart using Streamlit
-        st.line_chart(trend_data.set_index('Date')[['Scans', 'Successful']])

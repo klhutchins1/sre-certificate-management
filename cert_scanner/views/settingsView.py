@@ -16,6 +16,8 @@ from ..exports import (
     export_hosts_to_csv,
     export_hosts_to_pdf
 )
+from ..static.styles import load_warning_suppression, load_css
+
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +243,16 @@ def create_backup():
         return False, f"Failed to create backup: {str(e)}"
 
 def render_settings_view(engine):
-    """Render the settings interface"""
+    """Render the settings interface""" 
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
+    # Create title row with columns
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.title("Settings")
+    
     settings = Settings()
     
     # Create tabs for different settings sections

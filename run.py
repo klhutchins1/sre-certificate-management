@@ -13,7 +13,8 @@ def wide_space_default():
         page_title="Certificate Manager",
         page_icon="🔐",
         layout="wide",  # Force wide mode
-        initial_sidebar_state="expanded"
+        initial_sidebar_state="expanded",
+        menu_items=None  # Completely disable menu items
     )
 
 wide_space_default()

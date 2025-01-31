@@ -5,10 +5,21 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_, String
 from ..models import Certificate, Host, HostIP, CertificateBinding
 from ..db import SessionManager
+from ..static.styles import load_warning_suppression, load_css
+
 
 def render_search_view(engine):
     """Render the certificate search view"""
-    st.title("Search")
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
+    # Create a row for title and button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.title("Search")
+    with col2:
+        st.write("")  # Empty space to maintain layout consistency
     
     # Search input
     search_query = st.text_input(

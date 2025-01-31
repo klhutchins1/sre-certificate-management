@@ -5,9 +5,14 @@ from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 from ..models import Host, HostIP, CertificateBinding, Application, Certificate
 from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
+from ..static.styles import load_warning_suppression, load_css
 
 def render_hosts_view(engine):
     """Render the hosts view"""
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
     # Create a row for title and button
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -153,30 +158,6 @@ def render_hosts_view(engine):
                 };
             })();
         </script>
-    """, unsafe_allow_html=True)
-    
-    # Add custom CSS for AG Grid
-    st.markdown("""
-        <style>
-        .ag-root-wrapper {
-            border: none !important;
-        }
-        .ag-row-selected {
-            background-color: #e6f3ff !important;
-            border-left: 3px solid #1e88e5 !important;
-        }
-        .ag-row-hover {
-            background-color: #f5f5f5 !important;
-        }
-        .ag-row {
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-        [data-testid="stAgGrid"] {
-            min-height: 300px;
-            max-height: 500px;
-        }
-        </style>
     """, unsafe_allow_html=True)
     
     # Create metrics columns

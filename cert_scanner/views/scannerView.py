@@ -6,9 +6,15 @@ from ..models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
     HOST_TYPE_SERVER, ENV_PRODUCTION
 )
+from ..static.styles import load_warning_suppression, load_css
+
 
 def render_scan_interface(engine):
     """Render the certificate scanning interface"""
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
     # Clear transitioning flag if set
     if st.session_state.get('transitioning', False):
         st.session_state.transitioning = False

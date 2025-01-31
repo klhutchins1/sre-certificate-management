@@ -5,10 +5,16 @@ from sqlalchemy.orm import Session
 from ..models import Certificate, Host
 import plotly.express as px
 from ..db import SessionManager
+from ..static.styles import load_warning_suppression, load_css
+
 
 def render_dashboard(engine):
     """Render the main dashboard"""
-    st.title("Certificate Dashboard")
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
+    st.title("Dashboard")
     
     # Create three columns for metrics
     col1, col2, col3 = st.columns([1, 1, 1])

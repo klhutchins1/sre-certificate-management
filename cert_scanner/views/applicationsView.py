@@ -5,9 +5,15 @@ from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 from ..models import Application, CertificateBinding
 from ..constants import APP_TYPES, app_types
+from ..static.styles import load_warning_suppression, load_css
+
 
 def render_applications_view(engine):
     """Render the applications view"""
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
     # Create a row for title and button
     col1, col2 = st.columns([3, 1])
     with col1:

@@ -4,9 +4,15 @@ from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from ..models import Application, CertificateBinding
 from ..constants import platform_options
+from ..static.styles import load_warning_suppression, load_css
+
 
 def render_certificate_flow_view(engine):
     """Render the certificate flow visualization view"""
+    # Load warning suppression script and CSS
+    load_warning_suppression()
+    load_css()
+    
     st.title("Certificate Flow")
     
     with Session(engine) as session:

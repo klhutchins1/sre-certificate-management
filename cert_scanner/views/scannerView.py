@@ -188,111 +188,145 @@ internal.server.local:444"""
             if scan_targets:
                 # Create containers for progress
                 progress_container = st.empty()
+                status_container = st.empty()
                 
                 with progress_container:
                     progress = st.progress(0)
                 
-                for i, (hostname, port) in enumerate(scan_targets):
-                    with st.spinner(f'Scanning {hostname}:{port}...'):
-                        try:
-                            cert_info = st.session_state.scanner.scan_certificate(hostname, port)
-                            if cert_info:
-                                st.session_state.scan_results["success"].append(f"{hostname}:{port}")
-                                # Save to database
-                                with Session(engine) as session:
-                                    try:
-                                        # Create or update certificate
-                                        cert = session.query(Certificate).filter_by(
-                                            serial_number=cert_info.serial_number
-                                        ).first()
-                                        
-                                        if not cert:
-                                            cert = Certificate(
-                                                serial_number=cert_info.serial_number,
-                                                thumbprint=cert_info.thumbprint,
-                                                common_name=cert_info.common_name,
-                                                valid_from=cert_info.valid_from,
-                                                valid_until=cert_info.expiration_date,
-                                                issuer=str(cert_info.issuer),
-                                                subject=str(cert_info.subject),
-                                                san=str(cert_info.san),
-                                                key_usage=cert_info.key_usage,
-                                                signature_algorithm=cert_info.signature_algorithm
-                                            )
-                                            session.add(cert)
-                                        
-                                        # Create or update host
-                                        host = session.query(Host).filter_by(
-                                            name=cert_info.hostname
-                                        ).first()
-                                        
-                                        if not host:
-                                            host = Host(
-                                                name=cert_info.hostname,
-                                                host_type=HOST_TYPE_SERVER,  # Default type
-                                                environment=ENV_PRODUCTION,  # Default environment
-                                                last_seen=datetime.now()
-                                            )
-                                            session.add(host)
-                                        else:
-                                            host.last_seen = datetime.now()
-                                        
-                                        # Create or update bindings for each IP address
-                                        for ip in cert_info.ip_addresses:
-                                            # Create or update HostIP
-                                            host_ip = session.query(HostIP).filter_by(
-                                                host_id=host.id,
-                                                ip_address=ip
+                with status_container:
+                    with st.spinner('Scanning certificates...'):
+                        for i, (hostname, port) in enumerate(scan_targets):
+                            status_container.text(f'Scanning {hostname}:{port}...')
+                            try:
+                                cert_info = st.session_state.scanner.scan_certificate(hostname, port)
+                                if cert_info:
+                                    st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                    # Save to database
+                                    with Session(engine) as session:
+                                        try:
+                                            # Create or update certificate
+                                            cert = session.query(Certificate).filter_by(
+                                                serial_number=cert_info.serial_number
                                             ).first()
                                             
-                                            if not host_ip:
-                                                host_ip = HostIP(
-                                                    host_id=host.id,
-                                                    ip_address=ip,
+                                            if not cert:
+                                                cert = Certificate(
+                                                    serial_number=cert_info.serial_number,
+                                                    thumbprint=cert_info.thumbprint,
+                                                    common_name=cert_info.common_name,
+                                                    valid_from=cert_info.valid_from,
+                                                    valid_until=cert_info.expiration_date,
+                                                    issuer=str(cert_info.issuer),
+                                                    subject=str(cert_info.subject),
+                                                    san=str(cert_info.san),
+                                                    key_usage=cert_info.key_usage,
+                                                    signature_algorithm=cert_info.signature_algorithm
+                                                )
+                                                session.add(cert)
+                                            
+                                            # Create or update host
+                                            host = session.query(Host).filter_by(
+                                                name=cert_info.hostname
+                                            ).first()
+                                            
+                                            if not host:
+                                                host = Host(
+                                                    name=cert_info.hostname,
+                                                    host_type=HOST_TYPE_SERVER,  # Default type
+                                                    environment=ENV_PRODUCTION,  # Default environment
                                                     last_seen=datetime.now()
                                                 )
-                                                session.add(host_ip)
+                                                session.add(host)
                                             else:
-                                                host_ip.last_seen = datetime.now()
+                                                host.last_seen = datetime.now()
                                             
-                                            # Check for existing binding
-                                            binding = session.query(CertificateBinding).filter_by(
-                                                host_id=host.id,
-                                                host_ip_id=host_ip.id,
-                                                port=cert_info.port
-                                            ).first()
-                                            
-                                            if binding:
-                                                # Update existing binding
-                                                binding.certificate_id = cert.id
-                                                binding.last_seen = datetime.now()
-                                            else:
-                                                # Create new binding
-                                                binding = CertificateBinding(
+                                            # Create or update bindings for each IP address
+                                            for ip in cert_info.ip_addresses:
+                                                # Create or update HostIP
+                                                host_ip = session.query(HostIP).filter_by(
+                                                    host_id=host.id,
+                                                    ip_address=ip
+                                                ).first()
+                                                
+                                                if not host_ip:
+                                                    host_ip = HostIP(
+                                                        host_id=host.id,
+                                                        ip_address=ip,
+                                                        last_seen=datetime.now()
+                                                    )
+                                                    session.add(host_ip)
+                                                else:
+                                                    host_ip.last_seen = datetime.now()
+                                                
+                                                # Check for existing binding
+                                                binding = session.query(CertificateBinding).filter_by(
                                                     host_id=host.id,
                                                     host_ip_id=host_ip.id,
-                                                    certificate_id=cert.id,
-                                                    port=cert_info.port,
-                                                    binding_type='IP',
+                                                    port=cert_info.port
+                                                ).first()
+                                                
+                                                if binding:
+                                                    # Update existing binding
+                                                    binding.certificate_id = cert.id
+                                                    binding.last_seen = datetime.now()
+                                                else:
+                                                    # Create new binding
+                                                    binding = CertificateBinding(
+                                                        host_id=host.id,
+                                                        host_ip_id=host_ip.id,
+                                                        certificate_id=cert.id,
+                                                        port=cert_info.port,
+                                                        binding_type='IP',
+                                                        last_seen=datetime.now()
+                                                    )
+                                                    session.add(binding)
+                                            
+                                            # Create scan record
+                                            scan = CertificateScan(
+                                                certificate=cert,
+                                                scan_date=datetime.now(),
+                                                status='Valid',
+                                                port=cert_info.port
+                                            )
+                                            session.add(scan)
+                                            
+                                            session.commit()
+                                        except Exception as e:
+                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
+                                            session.rollback()
+                                else:
+                                    st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
+                                    # Record failed scan
+                                    with Session(engine) as session:
+                                        try:
+                                            # Create or get host for failed scan
+                                            host = session.query(Host).filter_by(name=hostname).first()
+                                            if not host:
+                                                host = Host(
+                                                    name=hostname,
+                                                    host_type=HOST_TYPE_SERVER,
+                                                    environment=ENV_PRODUCTION,
                                                     last_seen=datetime.now()
                                                 )
-                                                session.add(binding)
-                                        
-                                        # Create scan record
-                                        scan = CertificateScan(
-                                            certificate=cert,
-                                            scan_date=datetime.now(),
-                                            status='Valid',
-                                            port=cert_info.port
-                                        )
-                                        session.add(scan)
-                                        
-                                        session.commit()
-                                    except Exception as e:
-                                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
-                                        session.rollback()
-                            else:
-                                st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
+                                                session.add(host)
+                                                session.flush()
+
+                                            # Create scan record for failed attempt
+                                            scan = CertificateScan(
+                                                scan_date=datetime.now(),
+                                                status='Failed',
+                                                port=port,
+                                                host_id=host.id
+                                            )
+                                            session.add(scan)
+                                            session.commit()
+                                        except Exception as e:
+                                            logger.error(f"Failed to record failed scan: {str(e)}")
+                                            session.rollback()
+                            except ConnectionError as e:
+                                error_msg = f"Connection error scanning {hostname}:{port} - {str(e)}"
+                                st.error(error_msg)
+                                st.session_state.scan_results["error"].append(error_msg)
                                 # Record failed scan
                                 with Session(engine) as session:
                                     try:
@@ -320,71 +354,43 @@ internal.server.local:444"""
                                     except Exception as e:
                                         logger.error(f"Failed to record failed scan: {str(e)}")
                                         session.rollback()
-                        except ConnectionError as e:
-                            error_msg = f"Connection error scanning {hostname}:{port} - {str(e)}"
-                            st.error(error_msg)
-                            st.session_state.scan_results["error"].append(error_msg)
-                            # Record failed scan
-                            with Session(engine) as session:
-                                try:
-                                    # Create or get host for failed scan
-                                    host = session.query(Host).filter_by(name=hostname).first()
-                                    if not host:
-                                        host = Host(
-                                            name=hostname,
-                                            host_type=HOST_TYPE_SERVER,
-                                            environment=ENV_PRODUCTION,
-                                            last_seen=datetime.now()
-                                        )
-                                        session.add(host)
-                                        session.flush()
+                            except Exception as e:
+                                error_msg = f"Error scanning {hostname}:{port} - {str(e)}"
+                                st.error(error_msg)
+                                st.session_state.scan_results["error"].append(error_msg)
+                                # Record failed scan
+                                with Session(engine) as session:
+                                    try:
+                                        # Create or get host for failed scan
+                                        host = session.query(Host).filter_by(name=hostname).first()
+                                        if not host:
+                                            host = Host(
+                                                name=hostname,
+                                                host_type=HOST_TYPE_SERVER,
+                                                environment=ENV_PRODUCTION,
+                                                last_seen=datetime.now()
+                                            )
+                                            session.add(host)
+                                            session.flush()
 
-                                    # Create scan record for failed attempt
-                                    scan = CertificateScan(
-                                        scan_date=datetime.now(),
-                                        status='Failed',
-                                        port=port,
-                                        host_id=host.id
-                                    )
-                                    session.add(scan)
-                                    session.commit()
-                                except Exception as e:
-                                    logger.error(f"Failed to record failed scan: {str(e)}")
-                                    session.rollback()
-                        except Exception as e:
-                            error_msg = f"Error scanning {hostname}:{port} - {str(e)}"
-                            st.error(error_msg)
-                            st.session_state.scan_results["error"].append(error_msg)
-                            # Record failed scan
-                            with Session(engine) as session:
-                                try:
-                                    # Create or get host for failed scan
-                                    host = session.query(Host).filter_by(name=hostname).first()
-                                    if not host:
-                                        host = Host(
-                                            name=hostname,
-                                            host_type=HOST_TYPE_SERVER,
-                                            environment=ENV_PRODUCTION,
-                                            last_seen=datetime.now()
+                                        # Create scan record for failed attempt
+                                        scan = CertificateScan(
+                                            scan_date=datetime.now(),
+                                            status='Failed',
+                                            port=port,
+                                            host_id=host.id
                                         )
-                                        session.add(host)
-                                        session.flush()
-
-                                    # Create scan record for failed attempt
-                                    scan = CertificateScan(
-                                        scan_date=datetime.now(),
-                                        status='Failed',
-                                        port=port,
-                                        host_id=host.id
-                                    )
-                                    session.add(scan)
-                                    session.commit()
-                                except Exception as e:
-                                    logger.error(f"Failed to record failed scan: {str(e)}")
-                                    session.rollback()
-                        
-                        with progress_container:
-                            progress.progress((i + 1) / len(scan_targets))
+                                        session.add(scan)
+                                        session.commit()
+                                    except Exception as e:
+                                        logger.error(f"Failed to record failed scan: {str(e)}")
+                                        session.rollback()
+                            
+                            with progress_container:
+                                progress.progress((i + 1) / len(scan_targets))
+                
+                # Clear status container after scanning is complete
+                status_container.empty()
                 
                 # Only clear scan targets after successful scan
                 if 'scan_targets' in st.session_state:

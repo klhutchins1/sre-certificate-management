@@ -285,57 +285,74 @@ def render_settings_view(engine):
     with tabs[1]:  # Scanning
         st.header("Scanning Settings")
         
+        # Rate limit settings
+        st.markdown("""
+        Configure rate limits for certificate scanning. Values represent requests per minute.
+        
+        Examples:
+        - 60 = 1 request per second
+        - 30 = 1 request every 2 seconds
+        - 120 = 2 requests per second
+        """)
+        
+        # Default rate limit
+        default_rate_limit = st.number_input(
+            "Default Rate Limit (requests/minute)",
+            min_value=1,
+            value=int(settings.get("scanning.default_rate_limit", 60)),
+            help="Default rate limit for domains that don't match internal or external patterns"
+        )
+        
+        st.divider()
+        
         # Internal scanning settings
-        st.subheader("Internal Scanning")
+        st.subheader("Internal Domain Settings")
+        st.markdown("""
+        Settings for internal domains (e.g., `.local`, `.lan`, `.internal`, `.corp`).
+        """)
+        
         internal_rate_limit = st.number_input(
-            "Rate Limit (requests/minute)",
+            "Internal Rate Limit (requests/minute)",
             min_value=1,
             value=int(settings.get("scanning.internal.rate_limit", 60)),
-            help="Maximum number of requests per minute for internal scanning"
+            help="Rate limit for internal domains"
         )
-        internal_delay = st.number_input(
-            "Delay Between Requests (seconds)",
-            min_value=0.0,
-            value=float(settings.get("scanning.internal.delay", 2.0)),
-            help="Delay between requests for internal scanning",
-            format="%.1f"
-        )
+        
         internal_domains = st.text_area(
-            "Internal Domains (one per line)",
+            "Custom Internal Domains (one per line)",
             value="\n".join(settings.get("scanning.internal.domains", [])),
-            help="List of internal domains to scan"
+            help="List of custom internal domain patterns (e.g., .internal.company.com)"
         )
         
         # External scanning settings
-        st.subheader("External Scanning")
+        st.subheader("External Domain Settings")
+        st.markdown("""
+        Settings for external domains (e.g., `.com`, `.org`, `.net`).
+        """)
+        
         external_rate_limit = st.number_input(
-            "Rate Limit (requests/minute)",
+            "External Rate Limit (requests/minute)",
             min_value=1,
-            value=int(settings.get("scanning.external.rate_limit", 15)),
-            help="Maximum number of requests per minute for external scanning"
+            value=int(settings.get("scanning.external.rate_limit", 30)),
+            help="Rate limit for external domains"
         )
-        external_delay = st.number_input(
-            "Delay Between Requests (seconds)",
-            min_value=0.0,
-            value=float(settings.get("scanning.external.delay", 5.0)),
-            help="Delay between requests for external scanning",
-            format="%.1f"
-        )
+        
         external_domains = st.text_area(
-            "External Domains (one per line)",
+            "Custom External Domains (one per line)",
             value="\n".join(settings.get("scanning.external.domains", [])),
-            help="List of external domains to scan"
+            help="List of custom external domain patterns"
         )
         
         if st.button("Save Scanning Settings"):
+            # Update rate limits
+            settings.update("scanning.default_rate_limit", default_rate_limit)
+            
             # Update internal scanning settings
             settings.update("scanning.internal.rate_limit", internal_rate_limit)
-            settings.update("scanning.internal.delay", internal_delay)
             settings.update("scanning.internal.domains", [d.strip() for d in internal_domains.split("\n") if d.strip()])
             
             # Update external scanning settings
             settings.update("scanning.external.rate_limit", external_rate_limit)
-            settings.update("scanning.external.delay", external_delay)
             settings.update("scanning.external.domains", [d.strip() for d in external_domains.split("\n") if d.strip()])
             
             if settings.save():

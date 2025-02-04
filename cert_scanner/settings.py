@@ -12,15 +12,14 @@ DEFAULT_CONFIG = {
         "backups": "data/backups"
     },
     "scanning": {
+        "default_rate_limit": 60,  # Default to 1 request per second
         "internal": {
-            "rate_limit": 10,
-            "delay": 2,
-            "domains": []
+            "rate_limit": 60,  # Default to 1 request per second for internal domains
+            "domains": []      # Custom internal domain patterns
         },
         "external": {
-            "rate_limit": 5,
-            "delay": 5,
-            "domains": []
+            "rate_limit": 30,  # Default to 1 request per 2 seconds for external domains
+            "domains": []      # Custom external domain patterns
         }
     },
     "alerts": {

@@ -45,6 +45,11 @@ def render_dashboard(engine):
                 
                 if certs:
                     df = pd.DataFrame(certs, columns=['Certificate', 'Start', 'End'])
+                    # Calculate dynamic height based on number of certificates
+                    min_height = 500  # minimum height in pixels
+                    height_per_cert = 30  # pixels per certificate
+                    chart_height = max(min_height, len(certs) * height_per_cert)
+                    
                     fig = px.timeline(
                         df,
                         x_start='Start',
@@ -58,7 +63,16 @@ def render_dashboard(engine):
                         marker_line_width=2,
                         opacity=0.8
                     )
-                    # Add today's date as a shape instead
+                    # Update layout for better spacing and height
+                    fig.update_layout(
+                        height=chart_height,
+                        yaxis=dict(
+                            automargin=True,
+                            tickmode='linear'  # Ensure all certificates are labeled
+                        ),
+                        margin=dict(l=10, r=10, t=30, b=10)  # Adjust margins
+                    )
+                    # Add today's date as a shape
                     today = datetime.now()
                     fig.add_shape(
                         type="line",

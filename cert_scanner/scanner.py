@@ -5,7 +5,23 @@ import ssl
 import socket
 import logging
 import ipaddress
-from typing import Optional, List, Dict
+import time
+from collections import deque
+from typing import Optional, List, Dict, Set
+from .settings import settings
+
+# Common internal TLDs and subdomains
+INTERNAL_TLDS = {
+    '.local', '.lan', '.internal', '.intranet', '.corp', '.private',
+    '.test', '.example', '.invalid', '.localhost'
+}
+
+# Common external TLDs
+EXTERNAL_TLDS = {
+    '.com', '.org', '.net', '.edu', '.gov', '.mil', '.int',
+    '.io', '.co', '.biz', '.info', '.name', '.mobi', '.app',
+    '.cloud', '.dev', '.ai'
+}
 
 @dataclasses.dataclass
 class CertificateInfo:
@@ -28,6 +44,108 @@ class CertificateInfo:
 class CertificateScanner:
     def __init__(self, logger=None):
         self.logger = logger or logging.getLogger(__name__)
+        
+        # Initialize rate limiting configuration
+        self.default_rate_limit = settings.get('scanning.default_rate_limit', 60)  # Default 60 requests/minute (1/sec)
+        
+        # Initialize domain-specific rate limiting configuration
+        self.internal_domains = set(settings.get('scanning.internal.domains', []))
+        self.external_domains = set(settings.get('scanning.external.domains', []))
+        self.internal_rate_limit = settings.get('scanning.internal.rate_limit', 60)  # Default 1/sec
+        self.external_rate_limit = settings.get('scanning.external.rate_limit', 30)  # Default 1/2sec
+        
+        # Initialize rate limiting state with request timestamps
+        self.request_timestamps = deque(maxlen=max(self.default_rate_limit, 
+                                                 self.internal_rate_limit, 
+                                                 self.external_rate_limit))
+        self.last_scan_time = 0
+    
+    def _get_domain_type(self, domain: str) -> str:
+        """
+        Determine if a domain is internal or external based on TLD and configuration.
+        Returns: 'internal', 'external', or 'custom'
+        """
+        # First check configured domains
+        if self._is_internal_domain(domain):
+            return 'internal'
+        if self._is_external_domain(domain):
+            return 'external'
+            
+        # Then check TLDs
+        domain_lower = domain.lower()
+        for tld in INTERNAL_TLDS:
+            if domain_lower.endswith(tld):
+                return 'internal'
+                
+        for tld in EXTERNAL_TLDS:
+            if domain_lower.endswith(tld):
+                return 'external'
+                
+        # Default to external if no match
+        return 'external'
+    
+    def _is_internal_domain(self, domain: str) -> bool:
+        """Determine if a domain matches configured internal patterns"""
+        return any(
+            domain.endswith(internal_domain) if internal_domain.startswith('.')
+            else domain == internal_domain
+            for internal_domain in self.internal_domains
+        )
+    
+    def _is_external_domain(self, domain: str) -> bool:
+        """Determine if a domain matches configured external patterns"""
+        if self._is_internal_domain(domain):
+            return False
+        if not self.external_domains:
+            return False
+        return any(
+            domain.endswith(external_domain) if external_domain.startswith('.')
+            else domain == external_domain
+            for external_domain in self.external_domains
+        )
+    
+    def _apply_rate_limit(self, domain: str):
+        """Apply rate limiting based on domain type"""
+        current_time = time.time()
+        domain_type = self._get_domain_type(domain)
+        
+        # Determine rate limit based on domain type
+        if domain_type == 'internal':
+            rate_limit = self.internal_rate_limit
+        elif domain_type == 'external':
+            rate_limit = self.external_rate_limit
+        else:
+            rate_limit = self.default_rate_limit
+            
+        # Calculate time per request in seconds
+        time_per_request = 60.0 / rate_limit
+        
+        # Remove timestamps older than our window
+        while self.request_timestamps and current_time - self.request_timestamps[0] > 60:
+            self.request_timestamps.popleft()
+            
+        # If we've hit our rate limit, sleep until we can make another request
+        if len(self.request_timestamps) >= rate_limit:
+            sleep_time = self.request_timestamps[0] + 60 - current_time
+            if sleep_time > 0:
+                self.logger.debug(f"Rate limiting ({domain_type}): sleeping for {sleep_time:.2f} seconds")
+                time.sleep(sleep_time)
+                current_time = time.time()
+                
+                # Clean up old timestamps after sleeping
+                while self.request_timestamps and current_time - self.request_timestamps[0] > 60:
+                    self.request_timestamps.popleft()
+        
+        # Ensure minimum time between requests
+        time_since_last = current_time - self.last_scan_time
+        if time_since_last < time_per_request:
+            sleep_time = time_per_request - time_since_last
+            time.sleep(sleep_time)
+            current_time = time.time()
+        
+        # Update rate limiting state
+        self.request_timestamps.append(current_time)
+        self.last_scan_time = current_time
     
     def _get_base_domain(self, wildcard_domain: str) -> Optional[str]:
         """Extract base domain from wildcard domain.
@@ -58,6 +176,9 @@ class CertificateScanner:
         if address.startswith('*.'):
             self.logger.info(f'Skipping wildcard domain {address}')
             return None
+        
+        # Apply rate limiting before scanning
+        self._apply_rate_limit(address)
             
         try:
             cert_binary = self._get_certificate(address, port)

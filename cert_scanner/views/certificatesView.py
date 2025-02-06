@@ -1,3 +1,27 @@
+"""
+Certificate management view module for the Certificate Management System.
+
+This module provides the Streamlit-based user interface for managing SSL/TLS certificates,
+including:
+- Certificate listing and filtering
+- Detailed certificate information display
+- Certificate binding management
+- Manual certificate entry
+- Certificate tracking and change management
+- Certificate export functionality
+
+The view implements a responsive grid-based interface using AG Grid for certificate
+listing and provides detailed card views for individual certificates. It supports:
+- Real-time certificate status monitoring
+- Interactive platform selection
+- Certificate binding management
+- Change tracking
+- PDF export capabilities
+
+All database operations are handled through SQLAlchemy sessions with proper
+error handling and state management.
+"""
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -217,7 +241,19 @@ def render_certificate_list(engine):
             st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
 
 def render_certificate_card(cert, session):
-    """Render a single certificate card with details"""
+    """
+    Render a detailed certificate information card.
+    
+    Args:
+        cert (Certificate): The certificate object to display
+        session (Session): Database session for related queries
+        
+    The card displays certificate information in tabs:
+    - Overview: Basic certificate information
+    - Bindings: Certificate deployment information
+    - Details: Technical certificate details
+    - Change Tracking: Certificate lifecycle events
+    """
     st.subheader(f"📜 {cert.common_name}")
     
     tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Bindings", "Details", "Change Tracking"])
@@ -235,7 +271,19 @@ def render_certificate_card(cert, session):
         render_certificate_tracking(cert, session)
 
 def render_certificate_overview(cert, session):
-    """Render the certificate overview tab"""
+    """
+    Render the certificate overview tab.
+    
+    Args:
+        cert (Certificate): The certificate object to display
+        session (Session): Database session for related queries
+        
+    Displays:
+    - Basic certificate information (CN, validity dates)
+    - Current status with visual indicators
+    - Binding statistics
+    - Subject Alternative Names with scan capability
+    """
     col1, col2 = st.columns(2)
     with col1:
         is_valid = cert.valid_until > datetime.now()
@@ -300,7 +348,19 @@ def render_certificate_overview(cert, session):
             st.info("No Subject Alternative Names")
 
 def render_certificate_bindings(cert, session):
-    """Render the certificate bindings tab"""
+    """
+    Render the certificate bindings management tab.
+    
+    Args:
+        cert (Certificate): The certificate object to display
+        session (Session): Database session for related queries
+        
+    Features:
+    - Add new bindings with host, IP, and platform information
+    - Display existing bindings with detailed information
+    - Interactive platform selection for each binding
+    - Real-time binding updates
+    """
     # Add new binding section at the top with expander
     with st.expander("➕ Add New Binding", expanded=False):
         with st.form(key=f"binding_form_{cert.id}", clear_on_submit=True):
@@ -447,7 +507,18 @@ def render_certificate_bindings(cert, session):
                 )
 
 def render_certificate_details(cert):
-    """Render the certificate details tab"""
+    """
+    Render the technical certificate details tab.
+    
+    Args:
+        cert (Certificate): The certificate object to display
+        
+    Displays:
+    - Serial number and thumbprint
+    - Issuer and subject information
+    - Key usage flags
+    - Signature algorithm details
+    """
     st.json({
         "Serial Number": cert.serial_number,
         "Thumbprint": cert.thumbprint,
@@ -458,7 +529,19 @@ def render_certificate_details(cert):
     })
 
 def render_certificate_tracking(cert, session):
-    """Render the certificate tracking tab"""
+    """
+    Render the certificate change tracking tab.
+    
+    Args:
+        cert (Certificate): The certificate object to display
+        session (Session): Database session for related queries
+        
+    Features:
+    - Add new change tracking entries
+    - Display change history in tabular format
+    - Track planned changes and current status
+    - Maintain audit trail of certificate lifecycle
+    """
     col1, col2 = st.columns([0.7, 0.3])
     
     with col1:
@@ -562,7 +645,19 @@ def render_certificate_tracking(cert, session):
         st.info("No change entries found for this certificate")
 
 def render_manual_entry_form(session):
-    """Render the manual certificate entry form"""
+    """
+    Render the manual certificate entry form.
+    
+    Args:
+        session (Session): Database session for saving the certificate
+        
+    Features:
+    - Input fields for certificate details
+    - Certificate type selection
+    - Platform selection
+    - Validity period selection
+    - Form validation and error handling
+    """
     with st.form("manual_certificate_entry"):
         st.subheader("Manual Certificate Entry")
         
@@ -614,7 +709,28 @@ def render_manual_entry_form(session):
                                  valid_from, valid_until, platform, session)
 
 def add_host_to_certificate(cert, hostname, ip, port, platform, binding_type, session):
-    """Add a new host binding to a certificate"""
+    """
+    Add a new host binding to a certificate.
+    
+    Args:
+        cert (Certificate): Target certificate for the binding
+        hostname (str): Host name to bind
+        ip (str): Optional IP address for the binding
+        port (int): Port number for IP-based bindings
+        platform (str): Platform identifier
+        binding_type (str): Type of binding (IP, JWT, Client)
+        session (Session): Database session for the operation
+        
+    Creates or updates:
+    - Host record if not exists
+    - Host IP record if provided
+    - Certificate binding with specified parameters
+    
+    Handles:
+    - Duplicate detection
+    - Error handling
+    - Transaction management
+    """
     try:
         # Create or get host
         host = session.query(Host).filter_by(name=hostname).first()
@@ -665,7 +781,25 @@ def add_host_to_certificate(cert, hostname, ip, port, platform, binding_type, se
 
 def save_manual_certificate(cert_type, common_name, serial_number, thumbprint, 
                           valid_from, valid_until, platform, session):
-    """Save a manually entered certificate"""
+    """
+    Save a manually entered certificate to the database.
+    
+    Args:
+        cert_type (str): Type of certificate (SSL/TLS, JWT, Client)
+        common_name (str): Certificate Common Name
+        serial_number (str): Certificate serial number
+        thumbprint (str): Certificate thumbprint/fingerprint
+        valid_from (date): Validity start date
+        valid_until (date): Validity end date
+        platform (str): Platform identifier
+        session (Session): Database session for the operation
+        
+    Handles:
+    - Data validation
+    - Duplicate detection
+    - Error handling
+    - Transaction management
+    """
     try:
         # Create certificate
         cert = Certificate(
@@ -685,11 +819,25 @@ def save_manual_certificate(cert_type, common_name, serial_number, thumbprint,
         session.rollback()
 
 def export_certificates_to_pdf(certificates, filename):
-    """Export one or multiple certificates to PDF.
+    """
+    Export certificate information to PDF format.
     
     Args:
-        certificates: A single Certificate object or a list of Certificate objects
-        filename: The output PDF filename
+        certificates: Single Certificate object or list of Certificate objects
+        filename (str): Output PDF file path
+        
+    Creates a detailed PDF report including:
+    - Certificate overview
+    - Binding information
+    - Technical details
+    - Subject Alternative Names
+    - Current status
+    
+    Features:
+    - Multi-certificate support
+    - Page numbering
+    - Structured sections
+    - Error handling for malformed data
     """
     from fpdf import FPDF
     from datetime import datetime
@@ -788,7 +936,18 @@ def export_certificates_to_pdf(certificates, filename):
     pdf.output(filename)
 
 def render_certificate_scans(cert):
-    """Render the scan history for a certificate"""
+    """
+    Render the scanning history for a certificate.
+    
+    Args:
+        cert (Certificate): The certificate object to display scan history for
+        
+    Displays:
+    - Scan dates and times
+    - Scan results and status
+    - Port information
+    - Historical scan data in tabular format
+    """
     if not cert.scans:
         st.warning("No scan history found for this certificate.")
         return

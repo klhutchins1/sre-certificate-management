@@ -1,17 +1,51 @@
-import pandas as pd
-import plotly.figure_factory as ff
+"""
+Data export module for the Certificate Management System.
+
+This module provides functionality for exporting certificate and host data in various formats:
+- CSV exports with configurable delimiters and encoding
+- PDF reports with charts and detailed information
+- Timeline visualizations of certificate validity periods
+
+Features include:
+- Customizable export formats and options
+- Data aggregation and formatting
+- Visual representations of certificate timelines
+- Comprehensive PDF reports with summaries
+- Configurable CSV exports
+
+The module uses configuration from the settings system and implements proper
+error handling and cleanup for temporary files.
+"""
+
+#------------------------------------------------------------------------------
+# Imports and Configuration
+#------------------------------------------------------------------------------
+
+# Standard library imports
 from datetime import datetime
 from pathlib import Path
-from sqlalchemy.orm import Session
-from .settings import Settings
-from .models import Certificate, Host, CertificateBinding
-from fpdf import FPDF
 import logging
 
+# Third-party imports
+import pandas as pd
+import plotly.figure_factory as ff
+from fpdf import FPDF
+from sqlalchemy.orm import Session
+
+# Local application imports
+from .settings import Settings
+from .models import Certificate, Host, CertificateBinding
+
+# Configure logging
 logger = logging.getLogger(__name__)
 
+#------------------------------------------------------------------------------
+# CSV Export Functions
+#------------------------------------------------------------------------------
+
 def export_certificates_to_csv(session: Session, output_path: str = None) -> str:
-    """Export certificates to a CSV file.
+    """
+    Export certificates to a CSV file.
     
     Args:
         session: Database session
@@ -19,6 +53,16 @@ def export_certificates_to_csv(session: Session, output_path: str = None) -> str
         
     Returns:
         str: Path to the exported CSV file
+        
+    The export includes:
+    - Certificate details (serial number, common name, validity dates)
+    - Associated hosts and IP addresses
+    - Platform information
+    - Current status and last seen timestamps
+    
+    The CSV format is configurable through settings:
+    - Delimiter character
+    - File encoding
     """
     settings = Settings()
     
@@ -70,7 +114,8 @@ def export_certificates_to_csv(session: Session, output_path: str = None) -> str
     return output_path
 
 def export_hosts_to_csv(session: Session, output_path: str = None) -> str:
-    """Export hosts to a CSV file.
+    """
+    Export hosts to a CSV file.
     
     Args:
         session: Database session
@@ -78,6 +123,14 @@ def export_hosts_to_csv(session: Session, output_path: str = None) -> str:
         
     Returns:
         str: Path to the exported CSV file
+        
+    The export includes:
+    - Host information (name, IP addresses)
+    - Associated certificates
+    - Binding details (ports, platforms)
+    - Certificate status and validity dates
+    
+    Handles hosts both with and without certificate bindings.
     """
     settings = Settings()
     
@@ -143,8 +196,28 @@ def export_hosts_to_csv(session: Session, output_path: str = None) -> str:
     
     return output_path
 
+#------------------------------------------------------------------------------
+# Chart Generation
+#------------------------------------------------------------------------------
+
 def create_timeline_chart(certificates):
-    """Create a timeline chart for certificates using matplotlib."""
+    """
+    Create a timeline chart for certificates using matplotlib.
+    
+    Args:
+        certificates: List of Certificate objects to visualize
+        
+    Returns:
+        str: Path to the generated chart image, or None if generation fails
+        
+    Creates a horizontal timeline showing:
+    - Certificate validity periods
+    - Current status (color-coded)
+    - Certificate names
+    
+    The chart is saved as a temporary PNG file and should be cleaned up
+    after use.
+    """
     if not certificates:
         return None
         
@@ -208,8 +281,31 @@ def create_timeline_chart(certificates):
         logger.error(f"Failed to create timeline chart: {str(e)}")
         return None
 
+#------------------------------------------------------------------------------
+# PDF Export Functions
+#------------------------------------------------------------------------------
+
 def export_certificates_to_pdf(session: Session, output_path: str = None) -> str:
-    """Export certificates to a PDF file using fpdf2."""
+    """
+    Export certificates to a PDF file using fpdf2.
+    
+    Args:
+        session: Database session
+        output_path: Optional path for the output file. If not provided, a timestamped filename will be used.
+        
+    Returns:
+        str: Path to the exported PDF file
+        
+    Creates a comprehensive PDF report including:
+    - Summary statistics
+    - Timeline visualization
+    - Detailed certificate information
+    - Binding details
+    - Current status information
+    
+    The report includes proper formatting, page breaks, and sections
+    for better readability.
+    """
     settings = Settings()
     
     # Get certificates with their bindings
@@ -312,7 +408,25 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     return output_path
 
 def export_hosts_to_pdf(session: Session, output_path: str = None) -> str:
-    """Export hosts to a PDF file using fpdf2."""
+    """
+    Export hosts to a PDF file using fpdf2.
+    
+    Args:
+        session: Database session
+        output_path: Optional path for the output file. If not provided, a timestamped filename will be used.
+        
+    Returns:
+        str: Path to the exported PDF file
+        
+    Creates a comprehensive PDF report including:
+    - Host summary statistics
+    - IP address information
+    - Certificate binding details
+    - Current status information
+    
+    The report is organized by host with proper sections and formatting
+    for better readability.
+    """
     settings = Settings()
     
     # Get hosts with their bindings

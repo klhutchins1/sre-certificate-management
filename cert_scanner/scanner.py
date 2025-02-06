@@ -1,6 +1,27 @@
+"""
+Certificate scanning and processing module for the Certificate Management System.
+
+This module provides functionality for scanning and analyzing SSL/TLS certificates,
+including:
+- Certificate discovery and retrieval
+- Certificate parsing and information extraction
+- Rate-limited scanning for different domain types
+- Domain classification (internal/external)
+- Wildcard certificate handling
+- IP address resolution
+
+The module implements intelligent rate limiting based on domain types and
+provides robust error handling for network and certificate processing operations.
+All operations are configurable through the application settings.
+"""
+
+#------------------------------------------------------------------------------
+# Imports and Configuration
+#------------------------------------------------------------------------------
+
+# Standard library imports
 import dataclasses
 from datetime import datetime
-import OpenSSL.crypto
 import ssl
 import socket
 import logging
@@ -8,23 +29,58 @@ import ipaddress
 import time
 from collections import deque
 from typing import Optional, List, Dict, Set
+
+# Third-party imports
+import OpenSSL.crypto
+
+# Local application imports
 from .settings import settings
 
+#------------------------------------------------------------------------------
+# Domain Configuration
+#------------------------------------------------------------------------------
+
 # Common internal TLDs and subdomains
+# Used for automatic domain classification when not explicitly configured
 INTERNAL_TLDS = {
     '.local', '.lan', '.internal', '.intranet', '.corp', '.private',
     '.test', '.example', '.invalid', '.localhost'
 }
 
 # Common external TLDs
+# Used for automatic domain classification when not explicitly configured
 EXTERNAL_TLDS = {
     '.com', '.org', '.net', '.edu', '.gov', '.mil', '.int',
     '.io', '.co', '.biz', '.info', '.name', '.mobi', '.app',
     '.cloud', '.dev', '.ai'
 }
 
+#------------------------------------------------------------------------------
+# Certificate Data Model
+#------------------------------------------------------------------------------
+
 @dataclasses.dataclass
 class CertificateInfo:
+    """
+    Data class representing certificate information.
+    
+    Attributes:
+        hostname (str): The hostname the certificate was retrieved from
+        ip_addresses (List[str]): List of IP addresses the hostname resolves to
+        port (int): Port number the certificate was retrieved from
+        common_name (str): Certificate's Common Name (CN)
+        expiration_date (datetime): Certificate expiration date
+        serial_number (str): Certificate serial number
+        thumbprint (str): SHA1 thumbprint of the certificate
+        san (List[str]): Subject Alternative Names
+        issuer (Dict[str, str]): Certificate issuer information
+        subject (Dict[str, str]): Certificate subject information
+        valid_from (datetime): Certificate validity start date
+        key_usage (Optional[str]): Certificate key usage flags
+        extended_key_usage (Optional[str]): Extended key usage flags
+        signature_algorithm (Optional[str]): Signature algorithm used
+        version (Optional[int]): X.509 version number
+    """
     hostname: str
     ip_addresses: List[str]
     port: int
@@ -40,9 +96,39 @@ class CertificateInfo:
     extended_key_usage: Optional[str] = None
     signature_algorithm: Optional[str] = None
     version: Optional[int] = None
-    
+
+#------------------------------------------------------------------------------
+# Certificate Scanner Implementation
+#------------------------------------------------------------------------------
+
 class CertificateScanner:
+    """
+    Certificate scanning and analysis class.
+    
+    This class provides functionality to:
+    - Scan certificates from network endpoints
+    - Process and extract certificate information
+    - Handle rate limiting for different domain types
+    - Manage domain classification
+    - Process wildcard certificates
+    
+    The scanner implements intelligent rate limiting based on domain type
+    (internal/external) and provides robust error handling for network
+    and certificate processing operations.
+    """
+    
     def __init__(self, logger=None):
+        """
+        Initialize the certificate scanner.
+        
+        Args:
+            logger: Optional logger instance. If not provided, creates a new logger.
+            
+        The scanner initializes with configuration from settings including:
+        - Rate limiting parameters for different domain types
+        - Domain classification rules
+        - Scanning timeouts and retry logic
+        """
         self.logger = logger or logging.getLogger(__name__)
         
         # Initialize rate limiting configuration
@@ -63,7 +149,19 @@ class CertificateScanner:
     def _get_domain_type(self, domain: str) -> str:
         """
         Determine if a domain is internal or external based on TLD and configuration.
-        Returns: 'internal', 'external', or 'custom'
+        
+        Args:
+            domain (str): Domain name to classify
+            
+        Returns:
+            str: Domain classification ('internal', 'external', or 'custom')
+            
+        The classification is determined by:
+        1. Checking against configured internal domains
+        2. Checking against configured external domains
+        3. Checking against known internal TLDs
+        4. Checking against known external TLDs
+        5. Defaulting to 'external' if no match
         """
         # First check configured domains
         if self._is_internal_domain(domain):
@@ -85,7 +183,15 @@ class CertificateScanner:
         return 'external'
     
     def _is_internal_domain(self, domain: str) -> bool:
-        """Determine if a domain matches configured internal patterns"""
+        """
+        Determine if a domain matches configured internal patterns.
+        
+        Args:
+            domain (str): Domain name to check
+            
+        Returns:
+            bool: True if domain matches internal patterns
+        """
         return any(
             domain.endswith(internal_domain) if internal_domain.startswith('.')
             else domain == internal_domain
@@ -93,7 +199,19 @@ class CertificateScanner:
         )
     
     def _is_external_domain(self, domain: str) -> bool:
-        """Determine if a domain matches configured external patterns"""
+        """
+        Determine if a domain matches configured external patterns.
+        
+        Args:
+            domain (str): Domain name to check
+            
+        Returns:
+            bool: True if domain matches external patterns
+            
+        Note:
+            Returns False if domain matches internal patterns, regardless of
+            external pattern matches.
+        """
         if self._is_internal_domain(domain):
             return False
         if not self.external_domains:
@@ -105,7 +223,18 @@ class CertificateScanner:
         )
     
     def _apply_rate_limit(self, domain: str):
-        """Apply rate limiting based on domain type"""
+        """
+        Apply rate limiting based on domain type.
+        
+        Args:
+            domain (str): Domain being scanned
+            
+        This method implements intelligent rate limiting by:
+        1. Determining appropriate rate limit based on domain type
+        2. Maintaining a rolling window of request timestamps
+        3. Enforcing minimum time between requests
+        4. Sleeping when rate limit is reached
+        """
         current_time = time.time()
         domain_type = self._get_domain_type(domain)
         
@@ -148,17 +277,36 @@ class CertificateScanner:
         self.last_scan_time = current_time
     
     def _get_base_domain(self, wildcard_domain: str) -> Optional[str]:
-        """Extract base domain from wildcard domain.
-        Example: *.google.com -> google.com
-                *.google.co.in -> google.co.in
+        """
+        Extract base domain from wildcard domain.
+        
+        Args:
+            wildcard_domain (str): Domain name potentially containing wildcard
+            
+        Returns:
+            Optional[str]: Base domain without wildcard, or None if not a wildcard
+            
+        Examples:
+            *.google.com -> google.com
+            *.google.co.in -> google.co.in
         """
         if wildcard_domain.startswith('*.'):
             return wildcard_domain[2:]
         return None
     
     def _expand_domains(self, domains: List[str]) -> List[str]:
-        """Expand list of domains to include base domains for wildcards.
-        Skips the wildcard domains themselves as they can't be scanned directly."""
+        """
+        Expand list of domains to include base domains for wildcards.
+        
+        Args:
+            domains (List[str]): List of domain names
+            
+        Returns:
+            List[str]: Expanded list with wildcard domains converted to base domains
+            
+        Note:
+            Skips the wildcard domains themselves as they can't be scanned directly.
+        """
         expanded = set()
         for domain in domains:
             if domain.startswith('*.'):
@@ -171,7 +319,21 @@ class CertificateScanner:
         return list(expanded)
     
     def scan_certificate(self, address: str, port: int = 443) -> Optional[CertificateInfo]:
-        """Scan a certificate from given address and port"""
+        """
+        Scan a certificate from given address and port.
+        
+        Args:
+            address (str): Hostname or IP address to scan
+            port (int, optional): Port number to scan. Defaults to 443.
+            
+        Returns:
+            Optional[CertificateInfo]: Certificate information if found and valid
+            
+        Note:
+            - Implements rate limiting based on domain type
+            - Skips wildcard domains
+            - Handles network and certificate processing errors
+        """
         # Skip attempting to scan wildcard domains directly
         if address.startswith('*.'):
             self.logger.info(f'Skipping wildcard domain {address}')
@@ -193,7 +355,19 @@ class CertificateScanner:
             return None
     
     def scan_domains(self, domains: List[str], port: int = 443) -> List[CertificateInfo]:
-        """Scan a list of domains, including base domains for wildcards."""
+        """
+        Scan a list of domains, including base domains for wildcards.
+        
+        Args:
+            domains (List[str]): List of domains to scan
+            port (int, optional): Port number to scan. Defaults to 443.
+            
+        Returns:
+            List[CertificateInfo]: List of valid certificates found
+            
+        Note:
+            Automatically handles wildcard domains by scanning their base domains.
+        """
         expanded_domains = self._expand_domains(domains)
         results = []
         for domain in expanded_domains:
@@ -203,7 +377,21 @@ class CertificateScanner:
         return results
     
     def _get_certificate(self, address: str, port: int) -> Optional[bytes]:
-        """Retrieve raw certificate data"""
+        """
+        Retrieve raw certificate data from network endpoint.
+        
+        Args:
+            address (str): Hostname or IP to connect to
+            port (int): Port number to connect to
+            
+        Returns:
+            Optional[bytes]: Raw certificate data if successful
+            
+        Note:
+            - Uses SSL context with hostname verification disabled
+            - Implements connection timeout
+            - Handles various network errors
+        """
         try:
             context = ssl.create_default_context()
             context.check_hostname = False
@@ -230,7 +418,25 @@ class CertificateScanner:
             return None
         
     def _process_certificate(self, cert_binary: bytes, address: str, port: int) -> CertificateInfo:
-        """Process raw certificate data into CertificateInfo"""
+        """
+        Process raw certificate data into structured information.
+        
+        Args:
+            cert_binary (bytes): Raw certificate data
+            address (str): Address the certificate was retrieved from
+            port (int): Port the certificate was retrieved from
+            
+        Returns:
+            CertificateInfo: Structured certificate information
+            
+        Note:
+            Extracts comprehensive certificate information including:
+            - Basic certificate fields
+            - Subject Alternative Names
+            - Key usage flags
+            - Validity dates
+            - IP address resolution
+        """
         try:
             x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert_binary)
         except OpenSSL.crypto.Error as e:
@@ -290,7 +496,18 @@ class CertificateScanner:
         )
         
     def _extract_san(self, x509cert) -> List[str]:
-        """Extract Subject Alternative Names as list"""
+        """
+        Extract Subject Alternative Names from certificate.
+        
+        Args:
+            x509cert: OpenSSL certificate object
+            
+        Returns:
+            List[str]: List of Subject Alternative Names
+            
+        Note:
+            Only extracts DNS names from the SAN extension.
+        """
         san = []
         for i in range(x509cert.get_extension_count()):
             ext = x509cert.get_extension(i)
@@ -304,7 +521,15 @@ class CertificateScanner:
         return san
         
     def _extract_common_name(self, x509cert) -> Optional[str]:
-        """Extract Common Name from certificate subject"""
+        """
+        Extract Common Name from certificate subject.
+        
+        Args:
+            x509cert: OpenSSL certificate object
+            
+        Returns:
+            Optional[str]: Common Name if found, None otherwise
+        """
         subject = x509cert.get_subject()
         for name, value in subject.get_components():
             if name == b'CN':
@@ -312,7 +537,21 @@ class CertificateScanner:
         return None
         
     def _get_ip_addresses(self, address: str, port: int = 443) -> List[str]:
-        """Get IP addresses for hostname"""
+        """
+        Get IP addresses for hostname.
+        
+        Args:
+            address (str): Hostname or IP address
+            port (int, optional): Port number. Defaults to 443.
+            
+        Returns:
+            List[str]: List of resolved IP addresses
+            
+        Note:
+            - Handles both hostnames and IP addresses
+            - Returns empty list if resolution fails
+            - Removes duplicate IP addresses
+        """
         try:
             # Check if address is already an IP
             ipaddress.ip_address(address)
@@ -331,7 +570,15 @@ class CertificateScanner:
                 return []
         
     def _extract_name_dict(self, x509_name) -> Dict[str, str]:
-        """Convert X509Name to dictionary"""
+        """
+        Convert X509Name to dictionary.
+        
+        Args:
+            x509_name: OpenSSL X509Name object
+            
+        Returns:
+            Dict[str, str]: Dictionary of name components
+        """
         return {
             name.decode(): value.decode() 
             for name, value in x509_name.get_components()

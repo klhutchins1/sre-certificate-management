@@ -1,21 +1,49 @@
+"""
+Main application module for the Certificate Management System.
+
+This module serves as the entry point for the Streamlit-based web application that manages
+SSL/TLS certificates across different environments and platforms. It provides functionality
+for scanning, monitoring, and managing digital certificates, hosts, and their relationships.
+
+The application features multiple views including:
+- Dashboard: Overview of certificate status and metrics
+- Certificates: Detailed certificate management
+- Hosts: Host management and certificate bindings
+- Applications: Application-level certificate usage
+- Scanner: Certificate scanning interface
+- Search: Global search functionality
+- History: Historical certificate data
+- Settings: Application configuration
+"""
+
+# Standard library imports
+import threading
+import logging
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
+
+# Third-party imports
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-import logging
-import threading
+import plotly.express as px
+from sqlalchemy.orm import Session
+
+# Local application imports
 from .scanner import CertificateScanner, CertificateInfo
 from .models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
+    # Host type constants
     HOST_TYPE_SERVER, HOST_TYPE_LOAD_BALANCER, HOST_TYPE_CDN, HOST_TYPE_VIRTUAL,
+    # Environment constants
     ENV_PRODUCTION, ENV_CERT, ENV_DEVELOPMENT, ENV_INTERNAL, ENV_EXTERNAL,
+    # Binding type constants
     BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
+    # Platform constants
     PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 )
-from sqlalchemy.orm import Session
-import plotly.express as px
-from urllib.parse import urlparse
 from .constants import platform_options
 from .db import init_database, get_session
+# View imports
 from .views.dashboardView import render_dashboard
 from .views.certificatesView import render_certificate_list
 from .views.hostsView import render_hosts_view
@@ -26,21 +54,34 @@ from .views.searchView import render_search_view
 from .views.settingsView import render_settings_view
 from .static.styles import load_css
 
-# Configure logging
+# Configure logging for the application
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Lock for thread-safe initialization
+# Thread-safe initialization lock to prevent race conditions
 init_lock = threading.Lock()
 
 def init_session_state():
-    """Initialize session state variables"""
+    """
+    Initialize the Streamlit session state with required variables and objects.
+    
+    This function ensures that all necessary components are initialized only once
+    per session, including:
+    - Certificate scanner instance
+    - Database engine
+    - UI state variables
+    
+    The initialization is thread-safe using a lock mechanism.
+    """
     with init_lock:
         if 'initialized' not in st.session_state:
             logger.info("Initializing session state...")
+            # Initialize the certificate scanner
             st.session_state.scanner = CertificateScanner()
+            # Initialize UI state variables
             st.session_state.selected_cert = None
             st.session_state.current_view = "Dashboard"
+            # Initialize database connection
             logger.info("Initializing database engine...")
             st.session_state.engine = init_database()
             if st.session_state.engine:
@@ -50,12 +91,26 @@ def init_session_state():
             st.session_state.initialized = True
 
 def render_sidebar():
-    """Render the sidebar navigation"""
+    """
+    Render the application's sidebar navigation menu.
+    
+    Creates a sidebar with:
+    - Application title
+    - Navigation options with icons
+    - Version information
+    
+    Returns:
+        str: The currently selected view name
+    
+    Note:
+        Uses Streamlit's radio component for navigation and handles view changes
+        by triggering page reruns when necessary.
+    """
     with st.sidebar:
         st.title("Certificate Manager")
         st.markdown("---")
         
-        # Map pages to their display names with icons
+        # Define mapping of page names to their display versions with icons
         page_mapping = {
             "Dashboard": "📊 Dashboard",
             "Certificates": "🔐 Certificates",
@@ -94,7 +149,18 @@ def render_sidebar():
         return st.session_state.current_view
 
 def main():
-    """Main application entry point"""
+    """
+    Main application entry point and routing function.
+    
+    This function:
+    1. Initializes the session state
+    2. Loads CSS styles
+    3. Renders the sidebar navigation
+    4. Routes to the appropriate view based on user selection
+    
+    The application follows a single-page architecture where views are
+    rendered based on the current navigation state.
+    """
     # Initialize session state
     init_session_state()
     
@@ -104,7 +170,7 @@ def main():
     # Get current view from sidebar
     current_view = render_sidebar()
     
-    # Render the selected view
+    # Route to the appropriate view based on selection
     if current_view == "Dashboard":
         render_dashboard(st.session_state.engine)
     elif current_view == "Certificates":
@@ -122,5 +188,6 @@ def main():
     elif current_view == "Settings":
         render_settings_view(st.session_state.engine)
 
+# Application entry point
 if __name__ == "__main__":
     main() 

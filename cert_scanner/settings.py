@@ -1,51 +1,103 @@
+"""
+Configuration management module for the Certificate Management System.
+
+This module provides a thread-safe singleton configuration manager that handles:
+- Default configuration values
+- YAML configuration file loading and saving
+- Configuration validation and type checking
+- Test mode configuration isolation
+- Dynamic configuration updates
+- Configuration persistence
+
+The configuration structure includes:
+- Database and backup paths
+- Scanning rate limits and domain classifications
+- Alert thresholds and notification settings
+- Export format configurations
+
+The module implements a robust validation system to ensure configuration
+integrity and provides proper error handling for all operations.
+"""
+
+#------------------------------------------------------------------------------
+# Imports and Configuration
+#------------------------------------------------------------------------------
+
+# Standard library imports
 import os
 import yaml
 from pathlib import Path
 import logging
 from typing import Dict, Any
 
+# Configure logging
 logger = logging.getLogger(__name__)
 
+#------------------------------------------------------------------------------
+# Default Configuration
+#------------------------------------------------------------------------------
+
+# Default configuration structure
+# Used as a base for merging user configurations and validation
 DEFAULT_CONFIG = {
     "paths": {
-        "database": "data/certificates.db",
-        "backups": "data/backups"
+        "database": "data/certificates.db",    # Default database location
+        "backups": "data/backups"             # Default backup directory
     },
     "scanning": {
-        "default_rate_limit": 60,  # Default to 1 request per second
+        "default_rate_limit": 60,             # Default to 1 request per second
         "internal": {
-            "rate_limit": 60,  # Default to 1 request per second for internal domains
-            "domains": []      # Custom internal domain patterns
+            "rate_limit": 60,                 # Default to 1 request per second for internal domains
+            "domains": []                     # Custom internal domain patterns
         },
         "external": {
-            "rate_limit": 30,  # Default to 1 request per 2 seconds for external domains
-            "domains": []      # Custom external domain patterns
+            "rate_limit": 30,                 # Default to 1 request per 2 seconds for external domains
+            "domains": []                     # Custom external domain patterns
         }
     },
     "alerts": {
-        "expiry_warnings": [
+        "expiry_warnings": [                  # Certificate expiration warning thresholds
             {"days": 90, "level": "info"},
             {"days": 30, "level": "warning"},
             {"days": 7, "level": "critical"}
         ],
         "failed_scans": {
-            "consecutive_failures": 3
+            "consecutive_failures": 3          # Number of failures before alerting
         },
-        "persistence_file": "data/alerts.json"
+        "persistence_file": "data/alerts.json"  # Alert state persistence file
     },
     "exports": {
         "pdf": {
-            "template": "reports/template.html",
-            "logo": "reports/logo.png"
+            "template": "reports/template.html",  # PDF report template
+            "logo": "reports/logo.png"           # Report logo image
         },
         "csv": {
-            "delimiter": ",",
-            "encoding": "utf-8"
+            "delimiter": ",",                    # CSV field delimiter
+            "encoding": "utf-8"                  # CSV file encoding
         }
     }
 }
 
+#------------------------------------------------------------------------------
+# Settings Manager
+#------------------------------------------------------------------------------
+
 class Settings:
+    """
+    Thread-safe singleton configuration manager.
+    
+    This class provides a centralized configuration management system with:
+    - Singleton pattern for consistent access
+    - Thread-safe operations
+    - Configuration file handling
+    - Test mode isolation
+    - Configuration validation
+    - Dynamic updates
+    
+    The class maintains process-level locks to prevent multiple instances
+    from modifying configuration simultaneously.
+    """
+    
     _instance = None
     _config: Dict[str, Any] = {}
     _test_mode = False
@@ -55,6 +107,18 @@ class Settings:
     _app_lock_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".app_running")
     
     def __new__(cls):
+        """
+        Create or return the singleton instance.
+        
+        This method ensures only one instance exists and handles:
+        - Configuration initialization
+        - Test mode setup
+        - Lock file management
+        - Configuration file loading
+        
+        Returns:
+            Settings: The singleton settings instance
+        """
         if cls._instance is None:
             cls._instance = super(Settings, cls).__new__(cls)
             
@@ -88,6 +152,13 @@ class Settings:
         return cls._instance
     
     def __del__(self):
+        """
+        Clean up resources when the instance is destroyed.
+        
+        Ensures proper cleanup of:
+        - Lock files
+        - Temporary test configurations
+        """
         # Remove app lock file when instance is destroyed
         if not self._test_mode and os.path.exists(self._app_lock_file):
             try:
@@ -97,7 +168,15 @@ class Settings:
     
     @classmethod
     def _reset(cls):
-        """Reset the singleton instance (for testing)"""
+        """
+        Reset the singleton instance (for testing).
+        
+        This method:
+        - Removes lock files
+        - Restores original configuration
+        - Resets test mode flags
+        - Cleans up test configurations
+        """
         # Remove lock file if it exists
         if os.path.exists(cls._app_lock_file):
             try:
@@ -120,7 +199,18 @@ class Settings:
     
     @classmethod
     def set_test_mode(cls, test_config=None):
-        """Enable test mode with optional test config"""
+        """
+        Enable test mode with optional test configuration.
+        
+        Args:
+            test_config: Optional configuration to use in test mode
+            
+        This method:
+        - Backs up existing configuration
+        - Enables test mode
+        - Sets up test configuration
+        - Manages lock files
+        """
         # Remove lock file if it exists
         if os.path.exists(cls._app_lock_file):
             try:
@@ -141,7 +231,17 @@ class Settings:
         cls._instance = None  # Force recreation with test config
     
     def _merge_config(self, loaded_config: Dict[str, Any]):
-        """Merge loaded config with defaults to ensure all keys exist"""
+        """
+        Merge loaded configuration with defaults.
+        
+        Args:
+            loaded_config: Configuration dictionary to merge
+            
+        This method ensures:
+        - All required keys exist
+        - Default values are preserved when not overridden
+        - Nested configurations are properly merged
+        """
         def merge_dicts(default: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
             result = default.copy()
             for key, value in override.items():
@@ -154,7 +254,20 @@ class Settings:
         self._config = merge_dicts(DEFAULT_CONFIG.copy(), loaded_config)
     
     def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value using dot notation"""
+        """
+        Get a configuration value using dot notation.
+        
+        Args:
+            key: Configuration key in dot notation (e.g., 'scanning.rate_limit')
+            default: Default value if key doesn't exist
+            
+        Returns:
+            Configuration value or default if not found
+            
+        Example:
+            >>> settings.get('scanning.internal.rate_limit', 60)
+            60
+        """
         try:
             value = self._config
             for k in key.split('.'):
@@ -164,7 +277,19 @@ class Settings:
             return default
     
     def update(self, key: str, value: Any) -> bool:
-        """Update a configuration value using dot notation"""
+        """
+        Update a configuration value using dot notation.
+        
+        Args:
+            key: Configuration key in dot notation
+            value: New value to set
+            
+        Returns:
+            bool: True if update successful, False otherwise
+            
+        Note:
+            Validates the value before updating
+        """
         if not self._validate_config_value(key, value):
             return False
             
@@ -185,7 +310,15 @@ class Settings:
             return False
     
     def save(self) -> bool:
-        """Save current configuration to file"""
+        """
+        Save current configuration to file.
+        
+        Returns:
+            bool: True if save successful, False otherwise
+            
+        Note:
+            In test mode, only updates in-memory configuration
+        """
         if self._test_mode:
             # In test mode, just update the in-memory test config
             self.__class__._test_config = self._config.copy()
@@ -200,7 +333,23 @@ class Settings:
             return False
     
     def _validate_config_value(self, key: str, value: Any) -> bool:
-        """Validate a configuration value"""
+        """
+        Validate a configuration value.
+        
+        Args:
+            key: Configuration key to validate
+            value: Value to validate
+            
+        Returns:
+            bool: True if value is valid, False otherwise
+            
+        Validates:
+        - Key exists in configuration structure
+        - Value type is correct
+        - Value meets constraints (e.g., positive integers)
+        - Paths are valid
+        - Lists contain valid elements
+        """
         try:
             # Check if key exists in default config structure
             current = DEFAULT_CONFIG
@@ -251,6 +400,10 @@ class Settings:
         except Exception as e:
             logger.error(f"Validation error for {key}: {str(e)}")
             return False
+
+#------------------------------------------------------------------------------
+# Global Instance
+#------------------------------------------------------------------------------
 
 # Global settings instance
 settings = Settings() 

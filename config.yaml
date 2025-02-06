@@ -20,10 +20,10 @@ paths:
   backups: data/backups
   database: data/certificates.db
 scanning:
-  default_rate_limit: 60  # 1 request per second
+  default_rate_limit: 60
   external:
     domains: []
-    rate_limit: 30  # 1 request every 2 seconds
+    rate_limit: 30
   internal:
     domains: []
-    rate_limit: 60  # 1 request per second
+    rate_limit: 60

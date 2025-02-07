@@ -120,46 +120,50 @@ def mock_aggrid():
                     'rowHeight': 35,
                     'headerHeight': 40
                 }
-                
-                # Create MagicMocks for all methods with proper side effects
-                self.configure_default_column = MagicMock(wraps=self._configure_default_column)
-                self.configure_column = MagicMock(wraps=self._configure_column)
-                self.configure_selection = MagicMock(wraps=self._configure_selection)
-                self.configure_grid_options = MagicMock(wraps=self._configure_grid_options)
-                self.build = MagicMock(wraps=self._build)
             
-            def _configure_default_column(self, **kwargs):
+            def configure_default_column(self, **kwargs):
                 self.grid_options['defaultColDef'].update(kwargs)
                 return self
                 
-            def _configure_column(self, field, **kwargs):
+            def configure_column(self, field, **kwargs):
                 col_def = {"field": field, **kwargs}
                 self.grid_options['columnDefs'].append(col_def)
                 return self
                 
-            def _configure_selection(self, **kwargs):
+            def configure_selection(self, **kwargs):
                 self.grid_options.update({
                     'rowSelection': kwargs.get('selection_mode', 'single'),
                     'suppressRowClickSelection': kwargs.get('suppress_row_click_selection', False)
                 })
                 return self
                 
-            def _configure_grid_options(self, **kwargs):
+            def configure_grid_options(self, **kwargs):
                 self.grid_options.update(kwargs)
                 return self
                 
-            def _build(self):
+            def build(self):
                 return self.grid_options
-                
+            
             @classmethod
             def from_dataframe(cls, df):
-                return cls()
+                instance = cls()
+                return instance
         
-        # Create an instance of our mock builder
-        mock_builder = MockGridOptionsBuilder()
+        # Create a mock builder instance
+        mock_builder = MagicMock(spec=MockGridOptionsBuilder())
+        instance = MockGridOptionsBuilder()
+        
+        # Set up the mock to delegate to the real instance
+        for method in ['configure_default_column', 'configure_column', 'configure_selection', 'configure_grid_options', 'build']:
+            mock_method = MagicMock(side_effect=getattr(instance, method))
+            mock_method.return_value = mock_builder
+            setattr(mock_builder, method, mock_method)
+        
+        # Set up build to return grid_options
+        mock_builder.build.return_value = instance.grid_options
         
         # Configure GridOptionsBuilder mock
-        mock_gb.from_dataframe = MagicMock(side_effect=lambda df: MockGridOptionsBuilder())
+        mock_gb.from_dataframe = MagicMock(return_value=mock_builder)
         mock_gb.return_value = mock_builder
         
         # Configure mock JsCode to return the input string

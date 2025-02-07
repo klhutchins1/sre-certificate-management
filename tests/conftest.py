@@ -57,6 +57,10 @@ class MockGridOptionsBuilder:
     def configure_pagination(self, **kwargs):
         return self
     
+    def configure_grid_options(self, **kwargs):
+        self.options.update(kwargs)
+        return self
+    
     def build(self):
         return self.options
 

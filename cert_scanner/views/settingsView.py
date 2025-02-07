@@ -296,12 +296,17 @@ def render_settings_view(engine):
         """)
         
         # Default rate limit
-        default_rate_limit = st.number_input(
-            "Default Rate Limit (requests/minute)",
-            min_value=1,
-            value=int(settings.get("scanning.default_rate_limit", 60)),
-            help="Default rate limit for domains that don't match internal or external patterns"
-        )
+        try:
+            current_default_rate = int(settings.get("scanning.default_rate_limit", 60))
+            default_rate_limit = st.number_input(
+                "Default Rate Limit (requests/minute)",
+                min_value=1,
+                value=max(1, current_default_rate),
+                help="Default rate limit for domains that don't match internal or external patterns"
+            )
+        except ValueError:
+            default_rate_limit = 60
+            st.warning("Invalid default rate limit value, using default: 60")
         
         st.divider()
         
@@ -311,12 +316,17 @@ def render_settings_view(engine):
         Settings for internal domains (e.g., `.local`, `.lan`, `.internal`, `.corp`).
         """)
         
-        internal_rate_limit = st.number_input(
-            "Internal Rate Limit (requests/minute)",
-            min_value=1,
-            value=int(settings.get("scanning.internal.rate_limit", 60)),
-            help="Rate limit for internal domains"
-        )
+        try:
+            current_internal_rate = int(settings.get("scanning.internal.rate_limit", 60))
+            internal_rate_limit = st.number_input(
+                "Internal Rate Limit (requests/minute)",
+                min_value=1,
+                value=max(1, current_internal_rate),
+                help="Rate limit for internal domains"
+            )
+        except ValueError:
+            internal_rate_limit = 60
+            st.warning("Invalid internal rate limit value, using default: 60")
         
         internal_domains = st.text_area(
             "Custom Internal Domains (one per line)",
@@ -330,12 +340,17 @@ def render_settings_view(engine):
         Settings for external domains (e.g., `.com`, `.org`, `.net`).
         """)
         
-        external_rate_limit = st.number_input(
-            "External Rate Limit (requests/minute)",
-            min_value=1,
-            value=int(settings.get("scanning.external.rate_limit", 30)),
-            help="Rate limit for external domains"
-        )
+        try:
+            current_external_rate = int(settings.get("scanning.external.rate_limit", 30))
+            external_rate_limit = st.number_input(
+                "External Rate Limit (requests/minute)",
+                min_value=1,
+                value=max(1, current_external_rate),
+                help="Rate limit for external domains"
+            )
+        except ValueError:
+            external_rate_limit = 30
+            st.warning("Invalid external rate limit value, using default: 30")
         
         external_domains = st.text_area(
             "Custom External Domains (one per line)",
@@ -365,44 +380,65 @@ def render_settings_view(engine):
         
         # Expiry warnings
         st.subheader("Certificate Expiry Warnings")
-        expiry_warnings = settings.get("alerts.expiry_warnings", [])
+        expiry_warnings = settings.get("alerts.expiry_warnings", [
+            {"days": 60, "level": "critical"},
+            {"days": 30, "level": "warning"}
+        ])
         
+        # Initialize updated_warnings list
+        updated_warnings = []
+        
+        # Create inputs for each warning
         for i, warning in enumerate(expiry_warnings):
             col1, col2, col3 = st.columns([2, 2, 1])
             with col1:
-                days = st.number_input(
-                    f"Days before expiry {i+1}",
-                    min_value=1,
-                    value=warning.get("days", 30)
-                )
+                try:
+                    current_days = int(warning.get("days", 30))
+                    days = st.number_input(
+                        f"Days before expiry {i+1}",
+                        min_value=1,
+                        value=max(1, current_days),
+                        key=f"days_{i}"
+                    )
+                except ValueError:
+                    days = 30
+                    st.warning(f"Invalid days value for warning {i+1}, using default: 30")
             with col2:
                 level = st.selectbox(
                     f"Alert level {i+1}",
                     options=["info", "warning", "critical"],
-                    index=["info", "warning", "critical"].index(warning.get("level", "warning"))
+                    index=["info", "warning", "critical"].index(warning.get("level", "warning")),
+                    key=f"level_{i}"
                 )
             with col3:
-                if st.button(f"Remove Warning {i+1}"):
+                if st.button(f"Remove Warning {i+1}", key=f"remove_{i}"):
                     expiry_warnings.pop(i)
-                    settings.update("alerts.expiry_warnings", expiry_warnings)
-                    settings.save()
                     st.rerun()
+            # Add the warning to the updated list
+            updated_warnings.append({"days": int(days), "level": level})
         
         if st.button("Add Expiry Warning"):
             expiry_warnings.append({"days": 30, "level": "warning"})
-            settings.update("alerts.expiry_warnings", expiry_warnings)
-            settings.save()
             st.rerun()
         
         # Failed scan alerts
         st.subheader("Failed Scan Alerts")
-        consecutive_failures = st.number_input(
-            "Consecutive failures before alert",
-            min_value=1,
-            value=settings.get("alerts.failed_scans.consecutive_failures", 3)
-        )
+        try:
+            current_failures = int(settings.get("alerts.failed_scans.consecutive_failures", 3))
+            consecutive_failures = st.number_input(
+                "Consecutive failures before alert",
+                min_value=1,
+                value=max(1, current_failures)
+            )
+        except ValueError:
+            consecutive_failures = 3
+            st.warning("Invalid consecutive failures value, using default: 3")
         
         if st.button("Save Alert Settings"):
+            # Sort warnings by days in descending order
+            updated_warnings.sort(key=lambda x: x["days"], reverse=True)
+            # Update both settings
+            settings.update("alerts.expiry_warnings", updated_warnings)
             settings.update("alerts.failed_scans.consecutive_failures", consecutive_failures)
             if settings.save():
                 st.success("Alert settings updated successfully!")

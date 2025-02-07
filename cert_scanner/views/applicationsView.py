@@ -60,6 +60,11 @@ def render_applications_view(engine):
                             st.error("Application Name is required")
                             return
                         
+                        # Validate name length
+                        if len(app_name) > 255:
+                            st.error("Application Name must be 255 characters or less")
+                            return
+                        
                         # Create application
                         new_app = Application(
                             name=app_name,

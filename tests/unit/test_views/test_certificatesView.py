@@ -21,7 +21,45 @@ from st_aggrid import GridUpdateMode, DataReturnMode
 @pytest.fixture(scope="function")
 def mock_aggrid():
     """Mock st_aggrid module"""
-    with patch('cert_scanner.views.certificatesView.AgGrid') as mock_aggrid:
+    with patch('cert_scanner.views.certificatesView.AgGrid') as mock_aggrid, \
+         patch('cert_scanner.views.certificatesView.GridOptionsBuilder') as mock_gb, \
+         patch('cert_scanner.views.certificatesView.JsCode') as mock_jscode:
+        
+        # Create a mock GridOptionsBuilder that supports all required methods
+        class MockGridOptionsBuilder:
+            def __init__(self):
+                self.column_defs = []
+                self.grid_options = {}
+            
+            def from_dataframe(self, df):
+                return self
+                
+            def configure_default_column(self, **kwargs):
+                self.default_column_options = kwargs
+                
+            def configure_column(self, field, **kwargs):
+                self.column_defs.append({"field": field, **kwargs})
+                
+            def configure_selection(self, **kwargs):
+                self.selection_options = kwargs
+                
+            def configure_grid_options(self, **kwargs):
+                self.grid_options.update(kwargs)
+                
+            def build(self):
+                return {
+                    "columnDefs": self.column_defs,
+                    "defaultColDef": self.default_column_options,
+                    **self.grid_options
+                }
+        
+        # Configure the mock GridOptionsBuilder
+        mock_gb.return_value = MockGridOptionsBuilder()
+        mock_gb.from_dataframe = lambda df: MockGridOptionsBuilder()
+        
+        # Configure mock JsCode to return the input string
+        mock_jscode.side_effect = lambda x: x
+        
         def mock_aggrid_func(*args, **kwargs):
             return {
                 'data': args[0] if args else pd.DataFrame(),
@@ -114,12 +152,27 @@ def sample_binding(sample_certificate):
 
 def test_render_certificate_list_empty(mock_streamlit, engine):
     """Test rendering certificate list when no certificates exist"""
+    # Mock session state
+    mock_state = {}
+    def mock_setitem(key, value):
+        mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
+    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
+    mock_streamlit.session_state.get.side_effect = mock_get
+    
     render_certificate_list(engine)
     
     # Verify title and add button are shown
     mock_streamlit.title.assert_called_with("Certificates")
+    
+    # Verify button was created with correct text and type based on session state
     mock_streamlit.button.assert_called_with(
-        "➕ Add Certificate", 
+        "➕ Add Certificate",
         type="primary",
         use_container_width=True
     )
@@ -168,12 +221,11 @@ def test_render_certificate_list_with_data(mock_streamlit, mock_aggrid, engine, 
     
     # Verify grid configuration
     assert kwargs.get("update_mode") == GridUpdateMode.SELECTION_CHANGED, "Update mode mismatch"
-    assert kwargs.get("data_return_mode") == DataReturnMode.FILTERED, "Data return mode mismatch"
+    assert kwargs.get("data_return_mode") == DataReturnMode.FILTERED_AND_SORTED, "Data return mode mismatch"
     assert kwargs.get("fit_columns_on_grid_load") is True, "Fit columns setting mismatch"
     assert kwargs.get("theme") == "streamlit", "Theme mismatch"
     assert kwargs.get("allow_unsafe_jscode") is True, "Allow unsafe jscode setting mismatch"
-    assert kwargs.get("enable_enterprise_modules") is False, "Enterprise modules setting mismatch"
-    assert kwargs.get("height") == 400, "Height mismatch"
+    assert kwargs.get("height") == 600, "Height mismatch"
 
 def test_render_certificate_overview(mock_streamlit, sample_certificate, sample_binding, session):
     """Test rendering certificate overview"""
@@ -197,7 +249,7 @@ def test_render_certificate_overview(mock_streamlit, sample_certificate, sample_
     assert "**Common Name:** test.example.com" in markdown_text, "Common name not found"
     assert "**Valid From:** 2024-01-01" in markdown_text, "Valid from date not found"
     assert "**Valid Until:** 2025-01-01" in markdown_text, "Valid until date not found"
-    assert "**Status:** Valid" in markdown_text, "Status not found"
+    assert "<span class='cert-status cert-valid'>Valid</span>" in markdown_text, "Status with styling not found"
     assert "**Total Bindings:** 1" in markdown_text, "Total bindings not found"
     assert "**Platforms:** F5" in markdown_text, "Platforms not found"
     assert "**SANs Scanned:** No" in markdown_text, "SANs scanned status not found"
@@ -223,6 +275,11 @@ def test_render_certificate_bindings(mock_streamlit, sample_certificate, sample_
     """Test rendering certificate bindings"""
     # Add binding to certificate
     sample_binding.binding_type = "IP"  # Ensure binding type is IP
+    sample_binding.port = 443
+    sample_binding.host.name = "test.example.com"
+    sample_binding.host_ip.ip_address = "192.168.1.1"
+    sample_binding.platform = "F5"
+    sample_binding.last_seen = datetime(2024, 1, 1, 12, 0)
     sample_certificate.certificate_bindings = [sample_binding]
     session.add(sample_certificate)
     session.commit()
@@ -243,11 +300,19 @@ def test_render_certificate_bindings(mock_streamlit, sample_certificate, sample_
     
     # Verify binding details were displayed
     markdown_calls = [args[0] for args, _ in mock_streamlit.markdown.call_args_list]
-    assert any("🔗 test.example.com" in call for call in markdown_calls), "Binding hostname not found in markdown calls"
+    binding_details = '\n'.join(markdown_calls)
     
-    # Verify IP and port details
-    caption_calls = [args[0] for args, _ in mock_streamlit.caption.call_args_list]
-    assert any(f"IP: {sample_binding.host_ip.ip_address}, Port: {sample_binding.port}" in call for call in caption_calls), "Binding details not found in caption calls"
+    # Check for binding information in the formatted HTML/markdown
+    assert "### Current Bindings" in binding_details, "Bindings header not found"
+    assert '<div class="binding-title">🔗 test.example.com</div>' in binding_details, "Binding hostname not found"
+    assert '<span class="binding-info-label">IP:</span>' in binding_details, "IP label not found"
+    assert '<span class="binding-info-value">192.168.1.1</span>' in binding_details, "IP value not found"
+    assert '<span class="binding-info-label">Port:</span>' in binding_details, "Port label not found"
+    assert '<span class="binding-info-value">443</span>' in binding_details, "Port value not found"
+    assert '<span class="binding-info-label">Type:</span>' in binding_details, "Type label not found"
+    assert '<span class="binding-info-value">IP</span>' in binding_details, "Type value not found"
+    assert '<span class="binding-info-label">Seen:</span>' in binding_details, "Last seen label not found"
+    assert '<span class="binding-info-value">2024-01-01 12:00</span>' in binding_details, "Last seen value not found"
 
 def test_render_certificate_tracking(mock_streamlit, sample_certificate, session):
     """Test rendering certificate tracking"""
@@ -374,24 +439,37 @@ def test_add_certificate_button(mock_streamlit, engine):
     mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
     mock_streamlit.session_state.get.side_effect = mock_get
     
-    # First render - button not clicked
+    # Test initial state (Add Certificate button)
     mock_streamlit.button.return_value = False
     render_certificate_list(engine)
-    assert not mock_state.get('show_manual_entry', False), "Manual entry form shown when button not clicked"
     
-    # Second render - simulate button click
-    mock_streamlit.button.reset_mock()  # Reset the mock to clear previous calls
+    mock_streamlit.button.assert_called_with(
+        "➕ Add Certificate",
+        type="primary",
+        use_container_width=True
+    )
     
-    # Configure button to return True only for the add certificate button
-    def mock_button(*args, **kwargs):
-        if args and args[0] == "➕ Add Certificate":
-            mock_setitem('show_manual_entry', True)  # Simulate what the view does
-            return True
-        return False
+    # Test state after clicking Add Certificate
+    mock_streamlit.button.reset_mock()
+    mock_streamlit.button.return_value = True
+    mock_state['show_manual_entry'] = False  # Ensure initial state
     
-    mock_streamlit.button.side_effect = mock_button
     render_certificate_list(engine)
-    assert mock_state.get('show_manual_entry', False) is True, "Manual entry form not shown after button click"
+    
+    # The button click should have toggled the state
+    assert mock_state['show_manual_entry'] is True, "Manual entry form not shown after button click"
+    
+    # Test cancel button state
+    mock_streamlit.button.reset_mock()
+    mock_streamlit.button.return_value = False
+    
+    render_certificate_list(engine)
+    
+    mock_streamlit.button.assert_called_with(
+        "❌ Cancel",
+        type="secondary",
+        use_container_width=True
+    )
 
 def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certificate, session):
     """Test certificate selection"""
@@ -404,6 +482,19 @@ def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certi
     mock_session_manager.__enter__ = MagicMock(return_value=session)
     mock_session_manager.__exit__ = MagicMock(return_value=None)
     
+    # Configure mock_aggrid to return selected row
+    def mock_aggrid_with_selection(*args, **kwargs):
+        return {
+            'data': args[0] if args else pd.DataFrame(),
+            'selected_rows': [{
+                '_id': sample_certificate.id,
+                'Common Name': sample_certificate.common_name,
+                'Status': 'Valid'
+            }],
+            'grid_options': kwargs.get('gridOptions', {})
+        }
+    mock_aggrid.side_effect = mock_aggrid_with_selection
+    
     with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
         # Mock current time to ensure certificate is valid
         with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
@@ -412,21 +503,18 @@ def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certi
             
             render_certificate_list(engine)
     
-    # Verify AG Grid was created with correct parameters
-    assert mock_aggrid.call_count > 0, "AG Grid was not created"
-    
-    # Get the AG Grid call
-    grid_call = mock_aggrid.call_args_list[0]
-    kwargs = grid_call[1]
-    
     # Verify grid configuration
-    assert kwargs.get("update_mode") == GridUpdateMode.SELECTION_CHANGED
-    assert kwargs.get("data_return_mode") == DataReturnMode.FILTERED
-    assert kwargs.get("fit_columns_on_grid_load") is True
-    assert kwargs.get("theme") == "streamlit"
-    assert kwargs.get("allow_unsafe_jscode") is True
-    assert kwargs.get("enable_enterprise_modules") is False
-    assert kwargs.get("height") == 400
+    grid_calls = mock_aggrid.call_args_list
+    assert len(grid_calls) > 0, "AG Grid was not created"
+    
+    grid_options = grid_calls[0][1].get('gridOptions', {})
+    assert grid_options.get('defaultColDef', {}).get('resizable') is True
+    assert grid_options.get('defaultColDef', {}).get('sortable') is True
+    assert grid_options.get('defaultColDef', {}).get('filter') is True
+    
+    # Verify certificate card was rendered for selection
+    mock_streamlit.divider.assert_called()
+    mock_streamlit.subheader.assert_any_call(f"📜 {sample_certificate.common_name}")
 
 def test_expired_certificate_styling(mock_streamlit, mock_aggrid, engine, session):
     """Test styling of expired certificates"""
@@ -455,28 +543,19 @@ def test_expired_certificate_styling(mock_streamlit, mock_aggrid, engine, sessio
     with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
         render_certificate_list(engine)
     
-    # Verify AG Grid was created
-    assert mock_aggrid.call_count > 0, "AG Grid was not created"
+    # Verify AG Grid was created with styling configuration
+    grid_calls = mock_aggrid.call_args_list
+    assert len(grid_calls) > 0, "AG Grid was not created"
     
     # Get the grid options to verify styling
-    grid_call = mock_aggrid.call_args_list[0]
-    kwargs = grid_call[1]
-    grid_options = kwargs.get("gridOptions", {})
+    grid_options = grid_calls[0][1].get('gridOptions', {})
+    column_defs = grid_options.get('columnDefs', [])
     
-    # Verify the Status column has the correct styling configuration
-    column_defs = grid_options.get("columnDefs", [])
+    # Find the Status column configuration
     status_col = next((col for col in column_defs if col.get("field") == "Status"), None)
     assert status_col is not None, "Status column not found"
     
-    cell_style = status_col.get("cellStyle", {})
-    style_conditions = cell_style.get("styleConditions", [])
-    
-    # Verify expired status is styled in red
-    expired_style = next((style for style in style_conditions if style["condition"] == "params.value == 'Expired'"), None)
-    assert expired_style is not None, "Expired style condition not found"
-    assert expired_style["style"]["color"] == "red", "Expired style color mismatch"
-    
-    # Verify valid status is styled in green
-    valid_style = next((style for style in style_conditions if style["condition"] == "params.value == 'Valid'"), None)
-    assert valid_style is not None, "Valid style condition not found"
-    assert valid_style["style"]["color"] == "green", "Valid style color mismatch" 
+    # Verify the cell class function for status styling
+    cell_class = status_col.get("cellClass")
+    assert "ag-status-expired" in cell_class, "Expired status styling not found"
+    assert "ag-status-valid" in cell_class, "Valid status styling not found" 

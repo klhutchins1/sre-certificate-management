@@ -105,6 +105,13 @@ internal.server.local:444"""
             for entry in entries:
                 # Parse URL or hostname:port
                 try:
+                    # Check for negative port in the input string first
+                    if ':-' in entry:
+                        st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+                        st.error("Please enter at least one valid hostname to scan")
+                        validation_errors = True
+                        continue
+
                     # Handle URLs (http://, https://, etc.)
                     parsed = urlparse(entry)
                     if parsed.netloc:
@@ -127,14 +134,6 @@ internal.server.local:444"""
                                 
                             hostname, port_str = parts
                             port_str = port_str.strip()  # Remove any whitespace
-                            
-                            # Check for negative sign explicitly
-                            if port_str.startswith('-'):
-                                print(f"DEBUG: Negative port detected: {port_str}")
-                                st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
-                                st.error("Please enter at least one valid hostname to scan")
-                                validation_errors = True
-                                continue
                             
                             # First try to convert the port string to an integer
                             try:

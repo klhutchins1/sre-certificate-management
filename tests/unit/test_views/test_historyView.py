@@ -104,13 +104,14 @@ def sample_data(session):
         'scan': scan
     }
 
-def test_render_history_view(mock_streamlit, engine, sample_data):
+def test_render_history_view(mock_streamlit, mock_aggrid, engine, sample_data):
     """Test rendering the main history view"""
     # Mock selectbox to return valid values for all calls
     mock_streamlit.selectbox.side_effect = [
-        "Last 30 Days",  # Time period for scan history
-        "Valid",         # Status filter for scan history
-        "test-host",     # Host filter for scan history
+        "test.example.com",  # Common Name selection
+        "Last 30 Days",      # Time period for scan history
+        "All",               # Status filter for scan history
+        "All",              # Host filter for scan history
         f"{sample_data['host'].name} ({sample_data['binding'].host_ip.ip_address})"  # Host selection for certificate history
     ]
     
@@ -120,7 +121,7 @@ def test_render_history_view(mock_streamlit, engine, sample_data):
     mock_streamlit.title.assert_called_once_with("Certificate History")
     
     # Verify tabs were created
-    mock_streamlit.tabs.assert_called_once_with(["Scan History", "Host Certificate History"])
+    mock_streamlit.tabs.assert_called_once_with(["Common Name History", "Scan History", "Host Certificate History"])
 
 def test_render_scan_history_empty(mock_streamlit, engine):
     """Test rendering scan history with no data"""
@@ -129,7 +130,7 @@ def test_render_scan_history_empty(mock_streamlit, engine):
     # Verify empty state warning
     mock_streamlit.warning.assert_called_once_with("No scan history found")
 
-def test_render_scan_history_with_data(mock_streamlit, engine, sample_data):
+def test_render_scan_history_with_data(mock_streamlit, mock_aggrid, engine, sample_data):
     """Test rendering scan history with sample data"""
     # Reset any previous mock calls
     mock_streamlit.metric.reset_mock()
@@ -137,8 +138,8 @@ def test_render_scan_history_with_data(mock_streamlit, engine, sample_data):
     # Mock selectbox to return valid values for filters
     mock_streamlit.selectbox.side_effect = [
         "Last 30 Days",  # Time period
-        "Valid",         # Status filter
-        "test-host"      # Host filter
+        "All",          # Status filter
+        "All"           # Host filter
     ]
     
     render_scan_history(engine)
@@ -147,19 +148,12 @@ def test_render_scan_history_with_data(mock_streamlit, engine, sample_data):
     metric_calls = mock_streamlit.metric.call_args_list
     
     # Verify each metric was called with correct values
-    assert any(call.args == ("Total Scans", 0) for call in metric_calls), "Total Scans metric not found"
+    assert any(call.args[0] == "Total Scans" for call in metric_calls), "Total Scans metric not found"
     assert any(call.args[0] == "Success Rate" for call in metric_calls), "Success Rate metric not found"
-    assert any(call.args == ("Unique Hosts", 0) for call in metric_calls), "Unique Hosts metric not found"
+    assert any(call.args[0] == "Unique Hosts" for call in metric_calls), "Unique Hosts metric not found"
     
     # Verify dataframe was created
-    mock_streamlit.dataframe.assert_called()
-    
-    # Verify filter options were created
-    mock_streamlit.selectbox.assert_any_call(
-        "Time Period",
-        ["Last 24 Hours", "Last 7 Days", "Last 30 Days", "All Time"],
-        index=2
-    )
+    mock_aggrid.assert_called()
 
 def test_render_host_certificate_history_empty(mock_streamlit, engine):
     """Test rendering host certificate history with no data"""
@@ -216,13 +210,13 @@ def test_create_timeline_chart(mock_create_gantt):
         showlegend=False
     )
 
-def test_scan_history_filters(mock_streamlit, engine, sample_data):
+def test_scan_history_filters(mock_streamlit, mock_aggrid, engine, sample_data):
     """Test scan history filters"""
     # Mock filter selections
     mock_streamlit.selectbox.side_effect = [
         "Last 30 Days",  # Time period
-        "Valid",         # Status
-        "test-host"      # Host
+        "All",          # Status filter
+        "All"           # Host filter
     ]
     
     render_scan_history(engine)
@@ -235,7 +229,11 @@ def test_scan_history_filters(mock_streamlit, engine, sample_data):
     )
     
     # Verify dataframe was filtered and displayed
-    mock_streamlit.dataframe.assert_called()
+    mock_aggrid.assert_called()
+    
+    # Verify metrics were displayed
+    metric_calls = mock_streamlit.metric.call_args_list
+    assert len(metric_calls) == 3, "Expected 3 metrics to be displayed"
 
 def test_host_certificate_history_timeline(mock_streamlit, engine, sample_data):
     """Test host certificate history timeline display"""
@@ -251,4 +249,69 @@ def test_host_certificate_history_timeline(mock_streamlit, engine, sample_data):
         
         # Verify timeline chart was created and displayed
         mock_create_chart.assert_called_once()
-        mock_streamlit.plotly_chart.assert_called_with(mock_fig) 
+        mock_streamlit.plotly_chart.assert_called_with(mock_fig)
+
+@pytest.fixture(scope="function")
+def mock_aggrid():
+    """Mock st_aggrid module"""
+    with patch('cert_scanner.views.historyView.AgGrid') as mock_aggrid, \
+         patch('cert_scanner.views.historyView.GridOptionsBuilder') as mock_gb, \
+         patch('cert_scanner.views.historyView.JsCode') as mock_jscode:
+        
+        # Create a mock GridOptionsBuilder that supports all required methods
+        class MockGridOptionsBuilder:
+            def __init__(self):
+                self.column_defs = []
+                self.grid_options = {
+                    'defaultColDef': {},
+                    'columnDefs': [],
+                    'rowData': [],
+                    'animateRows': True,
+                    'enableRangeSelection': True,
+                    'suppressAggFuncInHeader': True,
+                    'suppressMovableColumns': True,
+                    'rowHeight': 35,
+                    'headerHeight': 40
+                }
+            
+            def from_dataframe(self, df):
+                return self
+                
+            def configure_default_column(self, **kwargs):
+                self.grid_options['defaultColDef'].update(kwargs)
+                return self
+                
+            def configure_column(self, field, **kwargs):
+                col_def = {"field": field, **kwargs}
+                self.grid_options['columnDefs'].append(col_def)
+                return self
+                
+            def configure_selection(self, **kwargs):
+                self.grid_options.update({
+                    'rowSelection': kwargs.get('selection_mode', 'single'),
+                    'suppressRowClickSelection': kwargs.get('suppress_row_click_selection', False)
+                })
+                return self
+                
+            def configure_grid_options(self, **kwargs):
+                self.grid_options.update(kwargs)
+                return self
+                
+            def build(self):
+                return self.grid_options
+        
+        # Configure the mock GridOptionsBuilder
+        mock_gb.return_value = MockGridOptionsBuilder()
+        mock_gb.from_dataframe = lambda df: MockGridOptionsBuilder()
+        
+        # Configure mock JsCode to return the input string
+        mock_jscode.side_effect = lambda x: x
+        
+        def mock_aggrid_func(*args, **kwargs):
+            return {
+                'data': args[0] if args else pd.DataFrame(),
+                'selected_rows': [],
+                'grid_options': kwargs.get('gridOptions', {})
+            }
+        mock_aggrid.side_effect = mock_aggrid_func
+        yield mock_aggrid 

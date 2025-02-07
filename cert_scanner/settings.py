@@ -48,10 +48,12 @@ DEFAULT_CONFIG = {
         "default_rate_limit": 60,             # Default to 1 request per second
         "internal": {
             "rate_limit": 60,                 # Default to 1 request per second for internal domains
+            "delay": 0,                       # Default delay between scans in seconds
             "domains": []                     # Custom internal domain patterns
         },
         "external": {
             "rate_limit": 30,                 # Default to 1 request per 2 seconds for external domains
+            "delay": 0,                       # Default delay between scans in seconds
             "domains": []                     # Custom external domain patterns
         }
     },

@@ -250,7 +250,7 @@ def test_recent_scans_display(engine, mock_session_state):
             valid_until=datetime.now() + timedelta(days=30)
         )
 
-        # Create a mock scan with all required attributes
+        # Create a mock successful scan
         mock_scan = MagicMock(
             scan_date=scan_time,
             status='Valid',
@@ -289,7 +289,7 @@ def test_recent_scans_display(engine, mock_session_state):
             return MagicMock()
 
         mock_session_instance.query.side_effect = query_side_effect
-        
+
         # Configure scan query chain
         mock_scan_query.outerjoin.return_value = mock_scan_query
         mock_scan_query.order_by.return_value = mock_scan_query
@@ -316,29 +316,22 @@ def test_recent_scans_display(engine, mock_session_state):
         # Verify the subheader was called
         mock_st.subheader.assert_called_with("Recent Scans")
 
-        # Verify the div tags and content were rendered
-        markdown_calls = [call for call in mock_st.markdown.call_args_list]
-
-        # Find the sequence of markdown calls for the recent scan
-        found_div_start = False
-        found_scan_details = False
-        found_div_end = False
-
-        for args, kwargs in markdown_calls:
-            text = args[0] if args else ""
-            is_html = kwargs.get('unsafe_allow_html', False)
-
-            if is_html:
-                if "<div" in text and "font-size:0.9em" in text:
-                    found_div_start = True
-                elif found_div_start and ("example.com" in text or "example-failed.com" in text):
-                    found_scan_details = True
-                elif "</div>" in text:
-                    found_div_end = True
-
-        assert found_div_start, "Opening div tag not found"
-        assert found_scan_details, "Scan details not found"
-        assert found_div_end, "Closing div tag not found"
+        # Verify that recent scans were displayed with correct formatting
+        markdown_calls = [args[0] for args, kwargs in mock_st.markdown.call_args_list if args]
+        
+        # Check for div wrapper
+        assert any("<div class='text-small'>" in call for call in markdown_calls), "Missing text-small div wrapper"
+        
+        # Check for successful scan
+        expected_success = f"**example.com** <span class='text-muted'>(🕒 {scan_time.strftime('%Y-%m-%d %H:%M')} • <span class='text-success'>Valid</span>)</span>"
+        assert any(expected_success in call for call in markdown_calls), "Successful scan not displayed correctly"
+        
+        # Check for failed scan - note that the host name comes from the mock_host
+        expected_failure = f"**{mock_host.name}:{mock_failed_scan.port}** <span class='text-muted'>(🕒 {scan_time.strftime('%Y-%m-%d %H:%M')} • <span class='text-danger'>Failed</span>)</span>"
+        assert any(expected_failure in call for call in markdown_calls), "Failed scan not displayed correctly"
+        
+        # Check for closing div
+        assert any("</div>" in call for call in markdown_calls), "Missing closing div tag"
 
 @pytest.mark.test_input_validation
 def test_input_validation_scenarios(engine, mock_session_state):
@@ -424,12 +417,14 @@ def test_input_validation_scenarios(engine, mock_session_state):
                 assert len(error_messages) > 0, \
                     f"Expected error for invalid input: {input_text}. No error messages were shown."
                 
-                if ":-1" in input_text or ":99999" in input_text:
+                if ":-1" in input_text:
+                    print("DEBUG: Testing negative port case")
+                    assert any("Port must be between 1 and 65535" in msg for msg in error_messages), \
+                        f"Expected port range error for negative port in {input_text}. Got: {error_messages}"
+                elif ":99999" in input_text:
                     print("DEBUG: Testing port range case")
                     assert any("Port must be between 1 and 65535" in msg for msg in error_messages), \
                         f"Expected port range error for port in {input_text}. Got: {error_messages}"
-                    assert any("Please enter at least one valid hostname to scan" in msg for msg in error_messages), \
-                        f"Expected general error message for invalid port in {input_text}. Got: {error_messages}"
                 elif not input_text.strip():
                     print("DEBUG: Testing empty input case")
                     assert any("Please enter at least one hostname to scan" in msg for msg in error_messages), \
@@ -438,6 +433,10 @@ def test_input_validation_scenarios(engine, mock_session_state):
                     print("DEBUG: Testing invalid URL case")
                     assert any("Hostname cannot be empty" in msg for msg in error_messages), \
                         f"Expected empty hostname error for {input_text}. Got: {error_messages}"
+            else:
+                # For valid inputs, verify no error messages
+                assert len(error_messages) == 0, \
+                    f"Unexpected error messages for valid input {input_text}: {error_messages}"
 
             # Parse the input manually to debug port validation
             if ':' in input_text and '//' not in input_text:

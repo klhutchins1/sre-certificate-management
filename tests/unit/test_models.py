@@ -215,7 +215,7 @@ def test_certificate_binding(session, host, host_ip, certificate):
         port=443,
         binding_type=BINDING_TYPE_IP,
         platform=PLATFORM_F5,
-        service_name="HTTPS",
+        site_name="HTTPS",
         last_seen=datetime.now()
     )
     session.add(binding)
@@ -226,25 +226,37 @@ def test_certificate_binding(session, host, host_ip, certificate):
     assert binding.host_ip.ip_address == "192.168.1.1"
     assert binding.certificate.common_name == "test.com"
     assert binding.port == 443
+    assert binding.binding_type == BINDING_TYPE_IP
+    assert binding.platform == PLATFORM_F5
+    assert binding.site_name == "HTTPS"
 
 def test_certificate_binding_unique_constraint(session, host, host_ip, certificate):
-    """Test that bindings must be unique per host/IP/port"""
+    """Test that bindings must be unique per host/IP/port/site"""
     binding1 = CertificateBinding(
         host=host,
         host_ip=host_ip,
         certificate=certificate,
-        port=443
+        port=443,
+        binding_type=BINDING_TYPE_IP,
+        platform=PLATFORM_F5,
+        site_name="HTTPS",
+        last_seen=datetime.now()
     )
     binding2 = CertificateBinding(
         host=host,
         host_ip=host_ip,
         certificate=certificate,
-        port=443  # Same port
+        port=443,  # Same port
+        binding_type=BINDING_TYPE_IP,
+        platform=PLATFORM_F5,
+        site_name="HTTPS",  # Same site name
+        last_seen=datetime.now()
     )
     session.add(binding1)
     session.add(binding2)
     with pytest.raises(IntegrityError):
         session.commit()
+    session.rollback()
 
 def test_cascade_delete_host(session, host, host_ip, certificate):
     """Test that deleting a host cascades to IPs and bindings"""

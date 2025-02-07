@@ -14,55 +14,66 @@ from pathlib import Path
 from sqlalchemy import text
 from cert_scanner.settings import Settings
 import logging
+import gc
 
 logger = logging.getLogger(__name__)
 
 @pytest.fixture
 def test_db():
     """Create a test database"""
-    # Create a temporary directory for the test database
     temp_dir = tempfile.mkdtemp()
     db_path = os.path.join(temp_dir, "test.db")
-    
-    # Create database URL
-    db_url = f"sqlite:///{db_path}"
-    
-    # Create engine and tables
-    engine = create_engine(db_url)
-    Base.metadata.create_all(engine)
-    
-    yield engine
-    
-    # Cleanup - ensure all connections are closed
-    engine.dispose()
-    
-    # Close any remaining sessions
-    Session.close_all()
-    
-    # Drop tables and dispose engine again
-    Base.metadata.drop_all(engine)
-    engine.dispose()
-    
-    # Add a small delay to ensure file handles are released
-    time.sleep(0.1)
+    engine = None
     
     try:
-        shutil.rmtree(temp_dir)
-    except PermissionError:
-        # If still can't delete, try one more time after a longer delay
-        time.sleep(0.5)
+        # Create database URL
+        db_url = f"sqlite:///{db_path}"
+        
+        # Create engine and initialize database properly
+        engine = create_engine(db_url)
+        Base.metadata.create_all(engine)
+        
+        # Verify database is properly initialized
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        
+        yield engine
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize test database: {str(e)}")
+        raise
+    finally:
         try:
-            shutil.rmtree(temp_dir)
-        except PermissionError:
-            print(f"Warning: Could not delete temporary directory: {temp_dir}")
+            # Cleanup - ensure all connections are closed
+            if engine:
+                engine.dispose()
+            
+            # Close any remaining sessions
+            Session.close_all()
+            
+            # Drop tables if they exist
+            if os.path.exists(db_path):
+                try:
+                    if engine:
+                        Base.metadata.drop_all(engine)
+                except Exception:
+                    pass
+            
+            cleanup_temp_dir(temp_dir)
+            
+        except Exception as e:
+            logger.debug(f"Error during test database cleanup: {str(e)}")
 
 @pytest.fixture
 def test_session(test_db):
     """Create a test session"""
-    session = Session(test_db)
-    yield session
-    # Ensure session is closed
-    session.close()
+    session = None
+    try:
+        session = Session(test_db)
+        yield session
+    finally:
+        if session:
+            session.close()
 
 def test_init_database():
     """Test database initialization"""
@@ -216,17 +227,29 @@ def test_backup_and_restore_database():
     temp_dir = tempfile.mkdtemp()
     db_path = os.path.join(temp_dir, "test_backup.db")
     backup_dir = os.path.join(temp_dir, "backups")
-    os.makedirs(backup_dir)
+    engine = None
     
     try:
+        # Create backup directory first
+        os.makedirs(backup_dir, exist_ok=True)
+        
         # Create and initialize database
         engine = init_database(db_path)
         
         # Add some test data
-        session = get_session(engine)
-        # Add test data here
-        session.commit()
-        session.close()
+        with Session(engine) as session:
+            cert = Certificate(
+                serial_number="backup_test",
+                thumbprint="backup123",
+                common_name="backup.com",
+                valid_from=datetime.now(),
+                valid_until=datetime.now(),
+                issuer="Test CA",
+                subject="CN=backup.com",
+                san="backup.com"
+            )
+            session.add(cert)
+            session.commit()
         
         # Create backup
         backup_path = backup_database(engine, backup_dir)
@@ -235,15 +258,38 @@ def test_backup_and_restore_database():
         # Modify original database
         reset_database(engine)
         
+        # Verify database is empty
+        with Session(engine) as session:
+            assert session.query(Certificate).count() == 0
+        
         # Restore from backup
         assert restore_database(backup_path, engine) is True
         
         # Verify restored data
-        # Add verification logic here
+        with Session(engine) as session:
+            restored_cert = session.query(Certificate).filter_by(serial_number="backup_test").first()
+            assert restored_cert is not None
+            assert restored_cert.thumbprint == "backup123"
+    
     finally:
-        if 'engine' in locals():
+        if engine:
             engine.dispose()
-        shutil.rmtree(temp_dir)
+        Session.close_all()
+        
+        # Add a delay and force garbage collection
+        time.sleep(0.2)
+        gc.collect()
+        
+        if os.path.exists(temp_dir):
+            for retry in range(3):
+                try:
+                    shutil.rmtree(temp_dir)
+                    break
+                except PermissionError:
+                    if retry < 2:
+                        time.sleep(0.5 * (retry + 1))
+                    else:
+                        logger.warning(f"Could not delete temporary directory after {retry + 1} attempts: {temp_dir}")
 
 def test_database_constraints(test_session):
     """Test database constraints and relationships"""
@@ -282,37 +328,35 @@ def test_init_database_corrupted():
     temp_dir = tempfile.mkdtemp()
     db_path = os.path.join(temp_dir, "corrupted.db")
     
-    # Create a corrupted database file
-    with open(db_path, 'w') as f:
-        f.write("corrupted data")
-    
     try:
-        with pytest.raises(Exception):
+        # Create a corrupted database file
+        with open(db_path, 'w') as f:
+            f.write("corrupted data")
+        
+        # Attempt to initialize should raise an exception
+        with pytest.raises(Exception) as exc_info:
             init_database(db_path)
+        
+        # Verify the error message without logging it
+        assert "file is not a database" in str(exc_info.value)
+        
     finally:
-        # Ensure all connections are closed
-        Session.close_all()
-        time.sleep(0.1)  # Allow time for file handles to be released
-
-        # Cleanup
-        try:
-            shutil.rmtree(temp_dir)
-        except Exception as e:
-            print(f"Warning: Could not delete temporary directory: {temp_dir}, Error: {str(e)}")
+        cleanup_temp_dir(temp_dir)
 
 def test_backup_database_failure():
     """Test backup_database when the backup directory cannot be created"""
-    engine = create_engine("sqlite:///:memory:")  # In-memory database for testing
+    engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
 
     # Create a temporary directory and then remove it to simulate a failure
     temp_dir = tempfile.mkdtemp()
     shutil.rmtree(temp_dir)  # Remove the directory to ensure it cannot be created
 
-    with pytest.raises(Exception) as excinfo:
-        backup_database(engine, temp_dir)  # Attempt to back up to the removed directory
+    with pytest.raises(Exception) as exc_info:
+        backup_database(engine, temp_dir)
 
-    assert "Failed to create database backup" in str(excinfo.value)  # Check for specific error message
+    # Verify the error message without logging it
+    assert "Failed to create database backup" in str(exc_info.value)
 
     # Cleanup
     Base.metadata.drop_all(engine)
@@ -323,8 +367,15 @@ def test_restore_database_failure():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception) as exc_info:
         restore_database("/invalid/backup/path", engine)
+
+    # Verify the error message without logging it
+    assert "No such file or directory" in str(exc_info.value)
+
+    # Cleanup
+    Base.metadata.drop_all(engine)
+    engine.dispose()
 
 def test_update_database_schema_add_tables():
     """Test adding missing tables to the database schema"""
@@ -448,6 +499,28 @@ def init_database(db_path=None):
     except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
         raise
+
+def cleanup_temp_dir(temp_dir):
+    """Helper function to clean up temporary directories"""
+    if not os.path.exists(temp_dir):
+        return
+
+    # Close any remaining sessions
+    Session.close_all()
+    
+    # Add a delay and force garbage collection
+    time.sleep(0.2)
+    gc.collect()
+    
+    for retry in range(3):
+        try:
+            shutil.rmtree(temp_dir)
+            break
+        except PermissionError:
+            if retry < 2:
+                time.sleep(0.5 * (retry + 1))
+            else:
+                logger.debug(f"Could not delete temporary directory after {retry + 1} attempts: {temp_dir}")
 
 # Ensure the SessionManager class is correctly implemented
 class SessionManager:

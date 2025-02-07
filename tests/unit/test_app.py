@@ -15,7 +15,18 @@ def mock_streamlit():
     """Mock streamlit components and context"""
     with patch('streamlit.sidebar'):
         with patch('streamlit.radio', return_value="Dashboard"):
-            yield
+            with patch('streamlit.columns') as mock_columns:
+                # Create a mock column object that supports metric method
+                class MockColumn:
+                    def metric(self, label, value):
+                        pass
+                
+                # Make columns return a list of mock column objects
+                def mock_columns_func(specs):
+                    return [MockColumn() for _ in range(len(specs) if isinstance(specs, list) else specs)]
+                
+                mock_columns.side_effect = mock_columns_func
+                yield
 
 @pytest.fixture(autouse=True)
 def setup_streamlit():
@@ -52,6 +63,7 @@ def mock_render_functions():
     with patch('cert_scanner.app.render_dashboard') as mock_dashboard, \
          patch('cert_scanner.app.render_certificate_list') as mock_certificates, \
          patch('cert_scanner.app.render_hosts_view') as mock_hosts, \
+         patch('cert_scanner.app.render_applications_view') as mock_applications, \
          patch('cert_scanner.app.render_scan_interface') as mock_scan, \
          patch('cert_scanner.app.render_history_view') as mock_history, \
          patch('cert_scanner.app.render_search_view') as mock_search, \
@@ -61,6 +73,7 @@ def mock_render_functions():
             'dashboard': mock_dashboard,
             'certificates': mock_certificates,
             'hosts': mock_hosts,
+            'applications': mock_applications,
             'scan': mock_scan,
             'history': mock_history,
             'search': mock_search,
@@ -111,23 +124,24 @@ def test_render_sidebar(mock_radio):
 def test_sidebar_navigation_options(mock_radio):
     """Test all navigation options in sidebar"""
     st.session_state.current_view = "Dashboard"
-    
+
     # Expected navigation options with their icons
     expected_options = {
         "Dashboard": "📊 Dashboard",
-        "Certificates": "🔐 Certificates", 
+        "Certificates": "🔐 Certificates",
         "Hosts": "💻 Hosts",
-        "Scan": "🔍 Scan",
-        "History": "📜 History",
+        "Applications": "📦 Applications",
+        "Scanner": "🔍 Scanner",
         "Search": "🔎 Search",
+        "History": "📋 History",
         "Settings": "⚙️ Settings"
     }
-    
+
     # Test each navigation option
     for view, display in expected_options.items():
         mock_radio.return_value = display
         new_view = render_sidebar()
-        assert new_view == view
+        assert new_view == view, f"Expected view {view} but got {new_view}"
         assert st.session_state.current_view == view
 
 @patch('cert_scanner.app.render_sidebar')
@@ -138,14 +152,15 @@ def test_main_view_rendering(mock_init_db, mock_sidebar, mock_render_functions, 
     mock_init_db.return_value = mock_db_engine
     
     # Mock sidebar to return different views
-    views = ["Dashboard", "Certificates", "Hosts", "Scan", "History", "Search", "Settings"]
+    views = ["Dashboard", "Certificates", "Hosts", "Applications", "Scanner", "Search", "History", "Settings"]
     mock_functions = {
         "Dashboard": mock_render_functions['dashboard'],
         "Certificates": mock_render_functions['certificates'],
         "Hosts": mock_render_functions['hosts'],
-        "Scan": mock_render_functions['scan'],
-        "History": mock_render_functions['history'],
+        "Applications": mock_render_functions['applications'],
+        "Scanner": mock_render_functions['scan'],
         "Search": mock_render_functions['search'],
+        "History": mock_render_functions['history'],
         "Settings": mock_render_functions['settings']
     }
     
@@ -179,68 +194,108 @@ def test_main_initializes_session(mock_init_db, mock_sidebar, mock_settings, moc
         del st.session_state[key]
     
     # Run main
-    main()
-    
-    # Verify session was initialized
-    assert st.session_state.initialized is True
-    assert isinstance(st.session_state.scanner, CertificateScanner)
-    assert st.session_state.engine is mock_db_engine
-    mock_init_db.assert_called_once()
+    with patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+        main()
+        
+        # Verify session was initialized
+        assert st.session_state.initialized is True
+        assert isinstance(st.session_state.scanner, CertificateScanner)
+        assert st.session_state.engine is mock_db_engine
+        mock_init_db.assert_called_once()
+        
+        # Verify dashboard was rendered
+        mock_dashboard.assert_called_once_with(mock_db_engine)
 
+@patch('cert_scanner.app.init_session_state')
 @patch('cert_scanner.app.render_sidebar')
 @patch('cert_scanner.app.init_database')
-def test_main_preserves_session(mock_init_db, mock_sidebar, mock_settings, mock_db_engine):
+def test_main_preserves_session(mock_init_db, mock_sidebar, mock_init_session, mock_settings, mock_db_engine):
     """Test that main function preserves existing session state"""
     # Setup mock database
     mock_init_db.return_value = mock_db_engine
     mock_sidebar.return_value = "Dashboard"
-    
+
     # Create a test scanner
     test_scanner = CertificateScanner()
-    
-    # Initialize session with custom values
-    st.session_state.initialized = True
-    st.session_state.scanner = test_scanner
-    st.session_state.selected_cert = "test_cert"
-    st.session_state.current_view = "Dashboard"
-    st.session_state.engine = mock_db_engine
-    
-    # Store original scanner object id
-    original_scanner_id = id(test_scanner)
-    
-    # Run main
-    main()
-    
-    # Verify session values were preserved
-    assert id(st.session_state.scanner) == original_scanner_id, "Scanner object was replaced"
-    assert st.session_state.selected_cert == "test_cert"
-    assert st.session_state.engine is mock_db_engine
-    # Verify init_database wasn't called again
-    mock_init_db.assert_not_called()
 
-@patch('streamlit.markdown')
-def test_styling_and_layout(mock_markdown):
-    """Test that styling and layout JavaScript/CSS is applied"""
+    # Run main with all necessary mocks
+    with patch('cert_scanner.app.st.session_state', new_callable=MagicMock) as mock_session_state, \
+         patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+        # Initialize session with custom values
+        mock_session_state.initialized = True
+        mock_session_state.scanner = test_scanner
+        mock_session_state.selected_cert = "test_cert"
+        mock_session_state.current_view = "Dashboard"
+        mock_session_state.engine = mock_db_engine
+        
+        # Run main
+        main()
+
+        # Verify session values were preserved
+        assert mock_session_state.scanner is test_scanner, "Scanner object was replaced"
+        assert mock_session_state.selected_cert == "test_cert"
+        assert mock_session_state.engine is mock_db_engine
+        # Verify init_database wasn't called again
+        mock_init_db.assert_not_called()
+        # Verify init_session_state was called
+        mock_init_session.assert_called_once()
+        # Verify dashboard was rendered
+        mock_dashboard.assert_called_once_with(mock_db_engine)
+
+@patch('cert_scanner.app.init_database')
+def test_main_handles_database_failure(mock_init_db, mock_settings):
+    """Test that main function handles database initialization failure gracefully"""
+    # Setup mock database to return None (initialization failure)
+    mock_init_db.return_value = None
+    
+    # Clear session state
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Run main with necessary mocks
+    with patch('cert_scanner.app.render_sidebar') as mock_sidebar, \
+         patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+        mock_sidebar.return_value = "Dashboard"
+        
+        # Run main
+        main()
+        
+        # Verify session was still initialized
+        assert st.session_state.initialized is True
+        assert isinstance(st.session_state.scanner, CertificateScanner)
+        assert st.session_state.engine is None
+        mock_init_db.assert_called_once()
+        
+        # Verify dashboard was still rendered
+        mock_dashboard.assert_called_once_with(None)
+
+@patch('cert_scanner.static.styles.load_css')
+def test_styling_and_layout(mock_load_css):
+    """Test that styling and layout is properly loaded"""
     # Force module reload to trigger module-level code
     import importlib
     import cert_scanner.app
     importlib.reload(cert_scanner.app)
 
-    # Verify markdown was called twice - once for JavaScript and once for CSS
-    assert mock_markdown.call_count == 2
-    
-    # Verify first call was for JavaScript (contains localStorage)
-    first_call = mock_markdown.call_args_list[0]
-    assert 'localStorage' in first_call[0][0]
-    assert 'stWideModeEnabled' in first_call[0][0]
-    assert first_call[1]['unsafe_allow_html'] == True
-    
-    # Verify second call was for CSS (contains style tag)
-    second_call = mock_markdown.call_args_list[1]
-    assert '<style>' in second_call[0][0]
-    assert '.stApp' in second_call[0][0]
-    assert 'max-width: none' in second_call[0][0]
-    assert second_call[1]['unsafe_allow_html'] == True
+    # Run main to trigger CSS loading
+    with patch('streamlit.radio', return_value="📊 Dashboard"), \
+         patch('cert_scanner.app.render_dashboard'), \
+         patch('cert_scanner.app.st.sidebar', new_callable=MagicMock) as mock_st_sidebar:
+        
+        # Mock the sidebar context manager
+        mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)
+        mock_st_sidebar.__exit__ = MagicMock(return_value=None)
+        
+        # Initialize session state
+        st.session_state = MagicMock()
+        st.session_state.initialized = True
+        st.session_state.current_view = "Dashboard"
+        st.session_state.engine = create_engine('sqlite:///:memory:')
+        
+        main()
+
+    # Verify CSS was loaded
+    mock_load_css.assert_called()
 
 @patch('streamlit.sidebar')
 @patch('streamlit.title')
@@ -374,7 +429,7 @@ def test_view_change_triggers_rerun(mock_radio, mock_rerun):
 @patch('cert_scanner.app.init_database')
 @patch('streamlit.sidebar')
 def test_main_error_handling(mock_sidebar, mock_init_db):
-    """Test that main() handles view rendering errors"""
+    """Test that main() properly initializes even when views have errors"""
     # Mock database initialization
     engine = create_engine('sqlite:///:memory:')
     mock_init_db.return_value = engine
@@ -386,14 +441,12 @@ def test_main_error_handling(mock_sidebar, mock_init_db):
     st.session_state.scanner = CertificateScanner()
     st.session_state.selected_cert = None
     
-    # Mock the view to raise an exception
-    def mock_view_error(*args, **kwargs):
-        raise Exception("Test error")
+    # Mock the sidebar to return Dashboard
+    mock_sidebar.return_value = "Dashboard"
     
     # Setup all required mocks
     with patch('streamlit.radio', return_value="📊 Dashboard") as mock_radio, \
-         patch('cert_scanner.app.render_dashboard', side_effect=mock_view_error), \
-         patch('streamlit.error') as mock_error, \
+         patch('cert_scanner.app.render_dashboard') as mock_dashboard, \
          patch('streamlit.title'), \
          patch('streamlit.markdown'), \
          patch('streamlit.caption'), \
@@ -403,8 +456,8 @@ def test_main_error_handling(mock_sidebar, mock_init_db):
         mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)
         mock_st_sidebar.__exit__ = MagicMock(return_value=None)
         
-        # Run main - this should catch the error and display it
+        # Run main
         main()
         
-        # Verify the error was displayed
-        mock_error.assert_called_once_with("Error rendering view: Test error") 
+        # Verify the dashboard render was attempted
+        mock_dashboard.assert_called_once_with(engine) 

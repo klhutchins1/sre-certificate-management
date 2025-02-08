@@ -24,6 +24,8 @@ import threading
 import shutil
 from datetime import datetime
 from pathlib import Path
+import sqlite3
+import random
 
 # Third-party imports
 import streamlit as st
@@ -105,9 +107,34 @@ def update_database_schema(engine):
                         for column_name in missing_columns:
                             column = model_columns[column_name]
                             nullable = 'NOT NULL' if not column.nullable else ''
-                            default = f"DEFAULT {column.default.arg}" if column.default is not None else ''
-                            sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {nullable} {default}"
-                            connection.execute(text(sql.strip()))
+                            
+                            # Handle default values
+                            default = ''
+                            if column.server_default is not None:
+                                # For server_default, use the SQL text directly
+                                default = f"DEFAULT {column.server_default.arg}"
+                            elif column.default is not None:
+                                if isinstance(column.default.arg, str):
+                                    default = f"DEFAULT '{column.default.arg}'"
+                                else:
+                                    default = f"DEFAULT {column.default.arg}"
+                            
+                            # For SQLite, we need to handle NOT NULL with DEFAULT in a specific way
+                            if not column.nullable and default:
+                                # First add the column without NOT NULL
+                                sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {default}"
+                                connection.execute(text(sql.strip()))
+                                
+                                # Then update any NULL values with the default
+                                sql = f"UPDATE {table_name} SET {column_name} = {column.server_default.arg} WHERE {column_name} IS NULL"
+                                connection.execute(text(sql.strip()))
+                                
+                                # Finally add the NOT NULL constraint
+                                # Note: SQLite doesn't support adding NOT NULL constraint after column creation
+                                # We'll need to handle this through application logic
+                            else:
+                                sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {nullable} {default}"
+                                connection.execute(text(sql.strip()))
         
         logger.info("Database schema updated successfully")
         return True
@@ -121,58 +148,48 @@ def update_database_schema(engine):
 #------------------------------------------------------------------------------
 
 def init_database(db_path=None):
-    """
-    Initialize the database connection and create tables if they don't exist.
-    
-    This function performs the following steps:
-    1. Validates and normalizes the database path
-    2. Checks directory permissions
-    3. Validates existing database or creates new one
-    4. Initializes database schema
-    5. Verifies required tables
-    
-    Args:
-        db_path (str, optional): Custom database path. Defaults to None.
-        
-    Returns:
-        SQLAlchemy engine instance
-        
-    Raises:
-        Exception: If database initialization fails
-    """
+    """Initialize the database connection and create tables if they don't exist"""
     try:
         # Get database path from parameter or settings
         if db_path is None:
             settings = Settings()
-            db_path = Path(settings.get("paths.database", "data/certificates.db"))
-        else:
-            db_path = Path(db_path)
+            db_path = settings.get("paths.database", "data/certificates.db")
+            logger.info(f"Got path from settings: {db_path}")
         
-        # Validate path format and characters
-        try:
-            invalid_chars = '<>:"|?*'
-            if any(char in str(db_path) for char in invalid_chars):
-                raise Exception(f"Invalid database path: Path contains invalid characters")
-            
-            db_path = db_path.absolute()
-        except Exception as e:
-            raise Exception(f"Invalid database path: {db_path} - {str(e)}")
-
-        # Verify directory permissions
+        # Convert to Path object without resolving
+        db_path = Path(str(db_path))
+        logger.info(f"Using path: {db_path}")
+        
+        # Check for invalid characters in path first
+        invalid_chars = '<>"|?*'  # Remove ':' from invalid chars since it's valid in Windows paths
+        if any(char in str(db_path) for char in invalid_chars):
+            raise Exception(f"Invalid database path: {db_path}")
+        
+        # Get parent directory and create if it doesn't exist
         parent_dir = db_path.parent
-        if parent_dir.exists():
-            if not parent_dir.is_dir():
-                raise Exception(f"Invalid database path: {parent_dir} is not a directory")
-            if not os.access(parent_dir, os.W_OK):
-                raise Exception(f"No write permission for database directory: {parent_dir}")
-        else:
-            try:
-                parent_dir.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                raise Exception(f"Cannot create database directory at {parent_dir}: {str(e)}")
-
-        # Validate existing database or remove if corrupted
+        logger.info(f"Parent directory: {parent_dir}")
+        try:
+            # Create all parent directories
+            parent_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created parent directory: {parent_dir}")
+        except PermissionError:
+            raise Exception(f"No write permission to create directory: {parent_dir}")
+        except Exception as e:
+            raise Exception(f"Failed to create directory {parent_dir}: {str(e)}")
+        
+        # Verify directory exists and is writable
+        if not parent_dir.is_dir():
+            raise Exception(f"Path exists but is not a directory: {parent_dir}")
+        if not os.access(str(parent_dir), os.W_OK):
+            raise Exception(f"No write permission for database directory: {parent_dir}")
+        
+        # Handle existing database file
         if db_path.exists():
+            logger.info(f"Database file exists at: {db_path}")
+            if not os.access(str(db_path), os.W_OK):
+                raise Exception(f"No write permission for database file: {db_path}")
+            
+            # Validate existing database
             try:
                 test_engine = create_engine(f"sqlite:///{db_path}")
                 with test_engine.connect() as conn:
@@ -184,29 +201,31 @@ def init_database(db_path=None):
                     db_path.unlink()
                 except Exception as e:
                     logger.error(f"Failed to remove corrupted database: {str(e)}")
-                    raise
-                raise Exception(f"Database at {db_path} is corrupted.")
+                    raise Exception(f"Failed to remove corrupted database: {str(e)}")
+        else:
+            logger.info(f"Database file does not exist at: {db_path}")
         
-        # Initialize database engine
-        logger.info(f"Using database at: {db_path}")
+        # Create new database engine
+        logger.info(f"Creating database engine at: {db_path}")
         engine = create_engine(f"sqlite:///{db_path}")
         
-        # Create schema and verify tables
+        # Create tables and update schema
         logger.info("Creating database tables...")
         Base.metadata.create_all(engine)
         
+        # Verify database is functional
         with engine.connect() as conn:
-            tables = inspect(engine).get_table_names()
-            logger.info(f"Created tables: {', '.join(tables)}")
-            
-            required_tables = ['certificates', 'hosts', 'certificate_bindings', 
-                             'certificate_tracking', 'certificate_scans', 'host_ips']
-            missing_tables = [table for table in required_tables if table not in tables]
-            if missing_tables:
-                raise Exception(f"Failed to create tables: {', '.join(missing_tables)}")
+            conn.execute(text("SELECT 1"))
         
-        # Update schema if needed
-        update_database_schema(engine)
+        # Verify file was created
+        if not db_path.exists():
+            logger.error(f"Database file was not created at: {db_path}")
+            # Try to find the file in the current directory
+            current_dir = Path.cwd()
+            logger.info(f"Checking current directory: {current_dir}")
+            for file in current_dir.glob("*.db"):
+                logger.info(f"Found database file: {file}")
+            raise Exception(f"Database file was not created at: {db_path}")
         
         return engine
     except Exception as e:
@@ -298,11 +317,22 @@ def check_database():
         
         if not db_path.exists():
             return False
-            
+        
+        # Try to open and validate the database
         try:
             engine = create_engine(f"sqlite:///{db_path}")
             with engine.connect() as conn:
+                # Check if we can execute a simple query
                 conn.execute(text("SELECT 1"))
+                
+                # Check if required tables exist
+                inspector = inspect(engine)
+                existing_tables = inspector.get_table_names()
+                required_tables = set(Base.metadata.tables.keys())
+                
+                if not required_tables.issubset(set(existing_tables)):
+                    return False
+            
             engine.dispose()
             return True
         except Exception:
@@ -316,39 +346,89 @@ def check_database():
 
 def backup_database(engine, backup_dir):
     """
-    Create a backup of the database.
-    
-    Creates a timestamped copy of the database file in the specified directory.
+    Create a backup of the current database.
     
     Args:
         engine: SQLAlchemy engine instance
-        backup_dir (str): Directory to store the backup
+        backup_dir: Directory to store backup file
         
     Returns:
-        str: Path to the created backup file
+        str: Path to backup file
         
     Raises:
         Exception: If backup operation fails
     """
     try:
-        db_path = engine.url.database
+        # Get source database path from engine and verify it exists
+        source_path = engine.url.database
+        if not os.path.exists(source_path):
+            raise Exception(f"Source database does not exist: {source_path}")
         
-        if not os.path.exists(backup_dir):
-            raise Exception("Failed to create database backup: Backup directory does not exist.")
+        # Convert backup directory to Path and resolve
+        backup_path = Path(str(backup_dir)).resolve()
         
-        os.makedirs(backup_dir, exist_ok=True)
+        # Check if backup directory exists and is writable
+        if backup_path.exists():
+            if not backup_path.is_dir():
+                raise Exception(f"Backup path exists but is not a directory: {backup_path}")
+            if not os.access(str(backup_path), os.W_OK):
+                raise Exception(f"No write permission for backup directory: {backup_path}")
+        else:
+            # Try to create backup directory
+            try:
+                backup_path.mkdir(parents=True, exist_ok=True)
+            except PermissionError:
+                raise Exception(f"No write permission to create backup directory: {backup_path}")
+            except Exception as e:
+                raise Exception(f"Failed to create backup directory: {str(e)}")
+            
+            # Verify directory was created and is writable
+            if not backup_path.is_dir():
+                raise Exception(f"Failed to create backup directory: {backup_path}")
+            if not os.access(str(backup_path), os.W_OK):
+                raise Exception(f"No write permission for created backup directory: {backup_path}")
         
+        # Generate unique backup filename with timestamp and random suffix
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = os.path.join(backup_dir, f"backup_{timestamp}.db")
+        random_suffix = ''.join(random.choices('0123456789abcdef', k=8))
+        backup_file = backup_path / f"database_backup_{timestamp}_{random_suffix}.db"
         
-        with db_lock:
-            shutil.copy2(db_path, backup_path)
+        # Verify we can write to the backup file location
+        try:
+            with open(str(backup_file), 'w') as f:
+                pass
+            backup_file.unlink()
+        except PermissionError:
+            raise Exception(f"No write permission for backup file: {backup_file}")
+        except Exception as e:
+            raise Exception(f"Failed to verify write permission for backup file: {str(e)}")
         
-        logger.info(f"Database backup created at: {backup_path}")
-        return backup_path
+        # Create backup using shutil
+        try:
+            shutil.copy2(source_path, str(backup_file))
+        except PermissionError:
+            raise Exception(f"No write permission for backup file: {backup_file}")
+        except Exception as e:
+            raise Exception(f"Failed to create backup file: {str(e)}")
+        
+        # Verify backup is valid
+        try:
+            backup_engine = create_engine(f"sqlite:///{backup_file}")
+            with backup_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            backup_engine.dispose()
+        except Exception as e:
+            # Clean up invalid backup
+            try:
+                if backup_file.exists():
+                    backup_file.unlink()
+            except Exception:
+                pass
+            raise Exception(f"Failed to verify backup: {str(e)}")
+        
+        return str(backup_file)
     except Exception as e:
-        logger.error(f"Failed to create database backup: {str(e)}")
-        raise
+        raise Exception(f"Failed to create database backup: {str(e)}")
 
 def restore_database(backup_path, engine):
     """
@@ -365,9 +445,17 @@ def restore_database(backup_path, engine):
         
     Raises:
         Exception: If restore operation fails
+        sqlite3.DatabaseError: If backup file is not a valid database
     """
     try:
         db_path = engine.url.database
+        
+        # Validate backup file
+        try:
+            with sqlite3.connect(backup_path) as conn:
+                conn.execute("SELECT 1")
+        except sqlite3.DatabaseError as e:
+            raise sqlite3.DatabaseError(f"Invalid backup file: {str(e)}")
         
         engine.dispose()
         

@@ -19,6 +19,9 @@ def test_wide_space_default(mock_set_page_config):
         # Import the module (this will execute the top-level code)
         import run
         
+        # Call the function
+        run.wide_space_default()
+        
         # Verify page config was called with correct parameters
         mock_set_page_config.assert_called_once_with(
             page_title="Certificate Manager",

@@ -1,3 +1,26 @@
+"""
+Applications View Module
+
+This module provides the Streamlit interface for managing applications in the certificate management system.
+It includes functionality for:
+- Viewing all applications with their certificate bindings
+- Adding new applications
+- Editing existing applications
+- Deleting applications
+- Viewing detailed application information including certificate status
+- Managing certificate bindings
+
+The view supports two display modes:
+1. Group by Application Type
+2. All Applications (flat view)
+
+Key Features:
+- Interactive data grid with sorting and filtering
+- Real-time certificate status monitoring
+- Certificate expiration visualization
+- Detailed application metrics
+"""
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -8,13 +31,31 @@ from ..constants import APP_TYPES, app_types
 from ..static.styles import load_warning_suppression, load_css
 
 
-def render_applications_view(engine):
-    """Render the applications view"""
-    # Load warning suppression script and CSS
+def render_applications_view(engine) -> None:
+    """
+    Render the main applications management interface.
+
+    This function creates a Streamlit interface that allows users to:
+    - View all applications in a sortable/filterable grid
+    - Add new applications
+    - View application details
+    - Edit application information
+    - Delete applications
+    - Monitor certificate status
+
+    Args:
+        engine: SQLAlchemy engine instance for database connections
+
+    Note:
+        The view maintains state using Streamlit's session state for form visibility
+        and success messages. The grid view can be toggled between 'Application Type'
+        and 'All Applications' modes.
+    """
+    # Initialize UI components and styles
     load_warning_suppression()
     load_css()
     
-    # Create a row for title and button
+    # Header section with title and add button
     col1, col2 = st.columns([3, 1])
     with col1:
         st.title("Applications")
@@ -25,17 +66,17 @@ def render_applications_view(engine):
             st.session_state['show_add_app_form'] = not st.session_state.get('show_add_app_form', False)
             st.rerun()
     
-    # Show any pending success messages
+    # Display success messages if any
     if 'success_message' in st.session_state:
         st.success(st.session_state.success_message)
         del st.session_state.success_message
     
-    # Show Add Application form if button was clicked
+    # Application creation form
     if st.session_state.get('show_add_app_form', False):
         with st.form("add_application_form"):
             st.subheader("Add New Application")
             
-            # Application details
+            # Form input fields
             col1, col2 = st.columns(2)
             with col1:
                 app_name = st.text_input("Application Name",
@@ -50,22 +91,22 @@ def render_applications_view(engine):
                 app_owner = st.text_input("Owner",
                     help="Team or individual responsible for this application")
             
+            # Form submission handling
             submitted = st.form_submit_button("Add Application", type="primary")
             
             if submitted:
                 try:
                     with Session(engine) as session:
-                        # Validate required fields
+                        # Input validation
                         if not app_name:
                             st.error("Application Name is required")
                             return
                         
-                        # Validate name length
                         if len(app_name) > 255:
                             st.error("Application Name must be 255 characters or less")
                             return
                         
-                        # Create application
+                        # Create and save new application
                         new_app = Application(
                             name=app_name,
                             app_type=app_type,
@@ -83,7 +124,7 @@ def render_applications_view(engine):
     
     st.divider()
     
-    # Query applications and their related data
+    # Database query and data preparation
     with Session(engine) as session:
         st.session_state['session'] = session
         
@@ -99,7 +140,7 @@ def render_applications_view(engine):
             st.info("No applications found. Use the 'Add Application' button above to create one.")
             return
 
-        # Add view selector
+        # View type selector
         view_type = st.radio(
             "View By",
             ["Application Type", "All Applications"],
@@ -107,14 +148,13 @@ def render_applications_view(engine):
             help="Group applications by their type or view all applications"
         )
         
-        # Calculate metrics
+        # Application metrics calculation and display
         total_apps = len(applications)
         total_bindings = sum(len(app.certificate_bindings) for app in applications)
         valid_certs = sum(1 for app in applications 
                          for binding in app.certificate_bindings 
                          if binding.certificate.valid_until > datetime.now())
         
-        # Display metrics
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Applications", total_apps)
         col2.metric("Certificate Bindings", total_bindings)
@@ -122,7 +162,7 @@ def render_applications_view(engine):
         
         st.divider()
         
-        # Convert to DataFrame for display
+        # Data grid preparation and configuration
         app_data = []
         for app in applications:
             cert_count = len(app.certificate_bindings)
@@ -144,10 +184,10 @@ def render_applications_view(engine):
         if app_data:
             df = pd.DataFrame(app_data)
             
-            # Configure AG Grid
+            # AG Grid configuration
             gb = GridOptionsBuilder.from_dataframe(df)
             
-            # Configure default settings
+            # Configure default column settings
             gb.configure_default_column(
                 resizable=True,
                 sortable=True,
@@ -155,7 +195,7 @@ def render_applications_view(engine):
                 editable=False
             )
             
-            # Configure specific columns based on view type
+            # View-specific column configuration
             if view_type == "Application Type":
                 gb.configure_column(
                     "Type",
@@ -164,13 +204,13 @@ def render_applications_view(engine):
                     rowGroup=True
                 )
             
+            # Individual column configurations
             gb.configure_column(
                 "Application",
                 minWidth=200,
                 flex=2
             )
             
-            # Configure other columns
             gb.configure_column(
                 "Description",
                 minWidth=200,
@@ -183,7 +223,7 @@ def render_applications_view(engine):
                 flex=1
             )
             
-            # Configure certificate columns
+            # Certificate-related column configurations
             gb.configure_column(
                 "Certificates",
                 type=["numericColumn"],
@@ -214,7 +254,6 @@ def render_applications_view(engine):
                 """)
             )
             
-            # Configure date column
             gb.configure_column(
                 "Created",
                 type=["dateColumnFilter"],
@@ -222,17 +261,16 @@ def render_applications_view(engine):
                 valueFormatter="value ? new Date(value).toLocaleDateString() : ''"
             )
             
-            # Hide ID column
             gb.configure_column("_id", hide=True)
             
-            # Configure selection
+            # Grid selection configuration
             gb.configure_selection(
                 selection_mode="single",
                 use_checkbox=False,
                 pre_selected_rows=[]
             )
             
-            # Configure grid options
+            # Additional grid options
             grid_options = {
                 'animateRows': True,
                 'enableRangeSelection': True,
@@ -254,7 +292,7 @@ def render_applications_view(engine):
             
             gridOptions = gb.build()
             
-            # Display the AG Grid
+            # Render the AG Grid
             grid_response = AgGrid(
                 df,
                 gridOptions=gridOptions,
@@ -267,7 +305,7 @@ def render_applications_view(engine):
                 height=600
             )
             
-            # Handle selection
+            # Handle grid row selection
             try:
                 selected_rows = grid_response.get('selected_rows', [])
                 
@@ -281,7 +319,7 @@ def render_applications_view(engine):
                     if view_type == "Application Type" and not selected_row.get('Application'):
                         return
                     
-                    # Get the application based on the ID
+                    # Get and display selected application details
                     selected_app = next(
                         (app for app in applications if app.id == selected_row['_id']),
                         None
@@ -293,19 +331,38 @@ def render_applications_view(engine):
             except Exception as e:
                 st.error(f"Error handling selection: {str(e)}")
             
-            # Add spacing after grid
+            # Add bottom spacing
             st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
         else:
             st.warning("No application data available")
 
-def render_application_details(application):
-    """Render detailed view of an application"""
+def render_application_details(application: Application) -> None:
+    """
+    Render a detailed view for a specific application.
+
+    This function creates a tabbed interface showing detailed information about
+    an application, including:
+    - Basic application information (name, type, description, owner)
+    - Certificate metrics and status
+    - Certificate expiration visualization
+    - Certificate binding management
+
+    Args:
+        application: Application model instance to display details for
+
+    Features:
+        - Two-tab interface (Overview and Certificate Bindings)
+        - Real-time certificate status monitoring
+        - Interactive certificate binding management
+        - Application editing and deletion capabilities
+    """
     st.subheader(f"📱 {application.name}")
     
     # Create tabs for different sections
     tab1, tab2 = st.tabs(["Overview", "Certificate Bindings"])
     
     with tab1:
+        # Display application information and metrics
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
@@ -315,7 +372,7 @@ def render_application_details(application):
                 **Created:** {application.created_at.strftime('%Y-%m-%d')}
             """)
             
-            # Add edit functionality
+            # Application editing interface
             with st.expander("Edit Application"):
                 with st.form("edit_application"):
                     new_name = st.text_input("Name", value=application.name)
@@ -340,7 +397,7 @@ def render_application_details(application):
                         except Exception as e:
                             st.error(f"Error updating application: {str(e)}")
             
-            # Add delete functionality
+            # Application deletion interface
             with st.expander("Delete Application", expanded=False):
                 st.warning("⚠️ This action cannot be undone!")
                 if st.button("Delete Application", type="secondary"):
@@ -354,7 +411,7 @@ def render_application_details(application):
                         st.error(f"Error deleting application: {str(e)}")
         
         with col2:
-            # Display certificate metrics
+            # Certificate metrics and visualization
             valid_certs = sum(1 for binding in application.certificate_bindings 
                             if binding.certificate.valid_until > datetime.now())
             total_certs = len(application.certificate_bindings)
@@ -365,7 +422,7 @@ def render_application_details(application):
             col4.metric("Total Certificates", total_certs)
             
             if total_certs > 0:
-                # Display certificate expiration chart
+                # Certificate expiration visualization
                 st.markdown("### Certificate Expiration")
                 expiration_data = []
                 for binding in application.certificate_bindings:
@@ -385,6 +442,7 @@ def render_application_details(application):
                     )
     
     with tab2:
+        # Certificate bindings management interface
         if application.certificate_bindings:
             st.markdown("### Certificate Bindings")
             for binding in application.certificate_bindings:

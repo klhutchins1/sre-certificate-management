@@ -188,6 +188,9 @@ def main():
     elif current_view == "Settings":
         render_settings_view(st.session_state.engine)
 
-# Application entry point
+# Make main function available for import
+__all__ = ['main']
+
+# Only run main directly if this is the entry point
 if __name__ == "__main__":
     main() 

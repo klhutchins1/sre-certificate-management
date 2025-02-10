@@ -1,3 +1,27 @@
+"""
+Certificate History View Module
+
+This module provides a comprehensive interface for viewing and analyzing certificate history
+in the certificate management system. It offers multiple perspectives on certificate history:
+
+Views:
+1. Common Name History - Track certificates by their common names over time
+2. Scan History - View the history of certificate scans and their results
+3. Host Certificate History - Monitor certificate changes on specific hosts
+
+Key Features:
+- Interactive timeline visualizations
+- Detailed certificate history tracking
+- Scan result analysis
+- Host-based certificate monitoring
+- Certificate change tracking
+- Comprehensive filtering and sorting capabilities
+- Real-time certificate status monitoring
+
+The module uses Streamlit for the UI and Plotly for timeline visualizations,
+providing an interactive and user-friendly interface for certificate history analysis.
+"""
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -9,9 +33,24 @@ from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 
 
-def render_history_view(engine):
-    """Render the certificate scan history view"""
-    # Load warning suppression script and CSS
+def render_history_view(engine) -> None:
+    """
+    Render the main certificate history interface with multiple view options.
+
+    This function creates a tabbed interface that provides different perspectives
+    on certificate history:
+    1. Common Name History - Track certificates by their common names
+    2. Scan History - View certificate scan results
+    3. Host Certificate History - Monitor certificates on specific hosts
+
+    Args:
+        engine: SQLAlchemy engine instance for database connections
+
+    The view uses tabs to organize different aspects of certificate history,
+    allowing users to switch between different views while maintaining a clean
+    and organized interface.
+    """
+    # Initialize UI components and styles
     load_warning_suppression()
     load_css()
     
@@ -29,10 +68,30 @@ def render_history_view(engine):
     with host_tab:
         render_host_certificate_history(engine)
 
-def render_host_certificate_history(engine):
-    """Render certificate history by host"""
+def render_host_certificate_history(engine) -> None:
+    """
+    Render the certificate history view for specific hosts.
+
+    This function provides a detailed view of certificate history for individual hosts,
+    including:
+    - Timeline visualization of certificates
+    - Detailed certificate information
+    - Certificate validity tracking
+    - Port and platform information
+    - Last seen timestamps
+
+    Args:
+        engine: SQLAlchemy engine instance for database connections
+
+    Features:
+        - Host selection with IP address information
+        - Interactive timeline visualization
+        - Detailed certificate history in tabular format
+        - Real-time certificate status monitoring
+        - Certificate validity period tracking
+    """
     with SessionManager(engine) as session:
-        # Get all hosts with their bindings and certificates
+        # Query host data with related certificates
         hosts = session.query(Host).options(
             joinedload(Host.ip_addresses),
             joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate)
@@ -49,7 +108,7 @@ def render_host_certificate_history(engine):
                 key = f"{host.name} ({ip.ip_address})"
                 host_options[key] = (host.id, ip.id)
         
-        # Host selection
+        # Host selection interface
         selected_host = st.selectbox(
             "Select Host",
             options=list(host_options.keys()),
@@ -60,7 +119,7 @@ def render_host_certificate_history(engine):
         if selected_host:
             host_id, ip_id = host_options[selected_host]
             
-            # Get certificate history for this host/IP
+            # Query certificate bindings for selected host
             bindings = session.query(CertificateBinding).filter(
                 CertificateBinding.host_id == host_id,
                 CertificateBinding.host_ip_id == ip_id
@@ -71,7 +130,7 @@ def render_host_certificate_history(engine):
             ).all()
             
             if bindings:
-                # Convert to DataFrame for display
+                # Prepare certificate history data
                 cert_history = []
                 for binding in bindings:
                     cert = binding.certificate
@@ -88,7 +147,7 @@ def render_host_certificate_history(engine):
                 
                 df = pd.DataFrame(cert_history)
                 
-                # Display timeline of certificates
+                # Display certificate timeline visualization
                 st.subheader("Certificate Timeline")
                 timeline_chart = {
                     "Certificate": df["Certificate"].tolist(),
@@ -97,7 +156,7 @@ def render_host_certificate_history(engine):
                 }
                 st.plotly_chart(create_timeline_chart(timeline_chart))
                 
-                # Display detailed history
+                # Display detailed certificate history
                 st.subheader("Detailed History")
                 st.dataframe(
                     df,
@@ -141,12 +200,33 @@ def render_host_certificate_history(engine):
             else:
                 st.info("No certificate history found for this host")
 
-def create_timeline_chart(data):
-    """Create a timeline chart using plotly"""
+def create_timeline_chart(data: dict) -> "plotly.graph_objs._figure.Figure":
+    """
+    Create an interactive timeline visualization using Plotly.
+
+    This function generates a Gantt chart showing certificate validity periods,
+    allowing users to visualize certificate lifespans and overlaps.
+
+    Args:
+        data: Dictionary containing timeline data with the following keys:
+            - Certificate: List of certificate names/identifiers
+            - Start: List of validity start dates
+            - End: List of validity end dates
+
+    Returns:
+        plotly.Figure: A Plotly figure object containing the timeline visualization
+
+    Features:
+        - Interactive timeline with zoom and pan capabilities
+        - Color-coded certificate periods
+        - Automatic height adjustment based on number of certificates
+        - Grid lines for better date reference
+        - Grouped certificates for better organization
+    """
     import plotly.figure_factory as ff
     import plotly.express as px
     
-    # Create timeline data
+    # Prepare timeline data structure
     df_timeline = []
     for i, (cert, start, end) in enumerate(zip(data["Certificate"], data["Start"], data["End"])):
         df_timeline.append(dict(
@@ -156,7 +236,7 @@ def create_timeline_chart(data):
             Resource="Certificate"
         ))
     
-    # Create the figure
+    # Create the Gantt chart
     fig = ff.create_gantt(
         df_timeline,
         index_col='Resource',
@@ -166,7 +246,7 @@ def create_timeline_chart(data):
         showgrid_y=True
     )
     
-    # Update layout
+    # Configure chart layout
     fig.update_layout(
         title="Certificate Timeline",
         height=200 + (len(data["Certificate"]) * 30),
@@ -176,10 +256,36 @@ def create_timeline_chart(data):
     
     return fig
 
-def render_scan_history(engine):
-    """Render the scan history view"""
+def render_scan_history(engine) -> None:
+    """
+    Render the certificate scan history interface.
+
+    This function provides a comprehensive view of certificate scan results,
+    including filtering capabilities, metrics, and detailed scan information.
+
+    Args:
+        engine: SQLAlchemy engine instance for database connections
+
+    Features:
+        - Time period filtering (24h, 7d, 30d, All time)
+        - Status-based filtering
+        - Host-based filtering
+        - Key metrics display:
+            - Total scans
+            - Success rate
+            - Unique hosts
+        - Interactive data grid with:
+            - Sorting capabilities
+            - Column filtering
+            - Status highlighting
+            - Date formatting
+            - Certificate validity indicators
+
+    The view provides a detailed analysis of scan results, helping users
+    track certificate scanning activities and identify potential issues.
+    """
     with SessionManager(engine) as session:
-        # Get all scans with certificate and host info
+        # Query scan history with related data
         scans = session.query(CertificateScan)\
             .outerjoin(Certificate)\
             .outerjoin(Host)\
@@ -194,10 +300,10 @@ def render_scan_history(engine):
             st.warning("No scan history found")
             return
         
-        # Convert to DataFrame for easier manipulation
+        # Prepare scan data for display
         scan_data = []
         for scan in scans:
-            # Get host information
+            # Process host information
             if scan.host:
                 host_display = scan.host.name
                 # Get IP addresses for the host
@@ -215,7 +321,7 @@ def render_scan_history(engine):
                 "Host": host_display,
             }
             
-            # Add certificate info if available
+            # Add certificate information if available
             if scan.certificate:
                 data.update({
                     "Certificate": scan.certificate.common_name,
@@ -233,11 +339,11 @@ def render_scan_history(engine):
         
         df = pd.DataFrame(scan_data)
         
-        # Add filtering options
+        # Filtering interface
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            # Date range filter
+            # Time period filter
             date_range = st.selectbox(
                 "Time Period",
                 ["Last 24 Hours", "Last 7 Days", "Last 30 Days", "All Time"],
@@ -267,7 +373,7 @@ def render_scan_history(engine):
             if host_filter != "All":
                 df = df[df["Host"] == host_filter]
         
-        # Display metrics
+        # Display key metrics
         st.divider()
         metric_col1, metric_col2, metric_col3 = st.columns(3)
         with metric_col1:
@@ -280,10 +386,10 @@ def render_scan_history(engine):
             st.metric("Unique Hosts", unique_hosts)
         st.divider()
         
-        # Configure AG Grid
+        # Configure and display data grid
         gb = GridOptionsBuilder.from_dataframe(df)
         
-        # Configure default settings for all columns
+        # Configure default column settings
         gb.configure_default_column(
             resizable=True,
             sortable=True,
@@ -291,7 +397,7 @@ def render_scan_history(engine):
             editable=False
         )
         
-        # Configure specific columns
+        # Configure individual columns
         gb.configure_column(
             "Host",
             minWidth=200,
@@ -381,8 +487,32 @@ def render_scan_history(engine):
             height=600
         )
 
-def render_certificate_tracking(cert, session):
-    """Render the certificate tracking tab"""
+def render_certificate_tracking(cert: Certificate, session: Session) -> None:
+    """
+    Render the certificate tracking interface for change management.
+
+    This function provides an interface for tracking and managing changes
+    related to a specific certificate, including planned changes, updates,
+    and historical tracking entries.
+
+    Args:
+        cert: Certificate model instance to display tracking information for
+        session: SQLAlchemy session for database operations
+
+    Features:
+        - Add new change/tracking entries
+        - Track change numbers/tickets
+        - Manage planned change dates
+        - Monitor change status (Pending/Completed/Cancelled)
+        - Add detailed change notes
+        - View change history in an interactive grid
+        - Real-time status indicators
+        - Automatic timestamp tracking
+
+    The interface helps maintain a complete audit trail of certificate-related
+    changes and planned activities.
+    """
+    # Header section with add button
     col1, col2 = st.columns([0.7, 0.3])
     
     with col1:
@@ -392,11 +522,12 @@ def render_certificate_tracking(cert, session):
             st.session_state.show_tracking_entry = True
             st.session_state.editing_cert_id = cert.id
     
-    # Show tracking entry form if button was clicked
+    # Change entry form
     if st.session_state.get('show_tracking_entry', False) and st.session_state.get('editing_cert_id') == cert.id:
         with st.form("tracking_entry_form"):
             st.subheader("Add Change Entry")
             
+            # Form input fields
             change_number = st.text_input(
                 "Change/Ticket Number",
                 placeholder="e.g., CHG0012345",
@@ -407,38 +538,41 @@ def render_certificate_tracking(cert, session):
                 key=f"planned_date_{cert.id}"
             )
             status = st.selectbox(
-                "Change Status",  # Changed from "Status" to be more descriptive
+                "Change Status",
                 options=["Pending", "Completed", "Cancelled"],
                 key=f"status_{cert.id}"
             )
             notes = st.text_area(
-                "Change Notes",  # Changed from "Notes" to be more descriptive
+                "Change Notes",
                 placeholder="Enter any additional notes about this change...",
                 key=f"notes_{cert.id}"
             )
             
+            # Form submission handling
             submitted = st.form_submit_button("Save Entry")
             if submitted:
-                # Create new tracking entry
-                from datetime import datetime
-                new_entry = CertificateTracking(
-                    certificate_id=cert.id,
-                    change_number=change_number,
-                    planned_change_date=datetime.combine(planned_date, datetime.min.time()),
-                    notes=notes,
-                    status=status,
-                    created_at=datetime.now(),
-                    updated_at=datetime.now()
-                )
-                session.add(new_entry)
-                session.commit()
-                st.success("Change entry added!")
-                st.session_state.show_tracking_entry = False
-                st.rerun()
+                try:
+                    # Create and save new tracking entry
+                    new_entry = CertificateTracking(
+                        certificate_id=cert.id,
+                        change_number=change_number,
+                        planned_change_date=datetime.combine(planned_date, datetime.min.time()),
+                        notes=notes,
+                        status=status,
+                        created_at=datetime.now(),
+                        updated_at=datetime.now()
+                    )
+                    session.add(new_entry)
+                    session.commit()
+                    st.success("Change entry added!")
+                    st.session_state.show_tracking_entry = False
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error saving change entry: {str(e)}")
     
     # Display existing tracking entries
     if cert.tracking_entries:
-        # Create DataFrame for display
+        # Prepare tracking data for display
         tracking_data = []
         for entry in cert.tracking_entries:
             tracking_data.append({
@@ -448,15 +582,15 @@ def render_certificate_tracking(cert, session):
                 "Notes": entry.notes,
                 "Created": entry.created_at,
                 "Updated": entry.updated_at,
-                "_id": entry.id  # Add ID for selection handling
+                "_id": entry.id
             })
         
         df = pd.DataFrame(tracking_data)
         
-        # Configure AG Grid
+        # Configure data grid
         gb = GridOptionsBuilder.from_dataframe(df)
         
-        # Configure default settings for all columns
+        # Configure default column settings
         gb.configure_default_column(
             resizable=True,
             sortable=True,
@@ -464,7 +598,7 @@ def render_certificate_tracking(cert, session):
             editable=False
         )
         
-        # Configure specific columns
+        # Configure individual columns
         gb.configure_column(
             "Change Number",
             minWidth=150,
@@ -517,7 +651,7 @@ def render_certificate_tracking(cert, session):
         )
         gb.configure_column("_id", hide=True)
         
-        # Configure selection
+        # Configure grid selection
         gb.configure_selection(
             selection_mode="single",
             use_checkbox=False,
@@ -538,7 +672,7 @@ def render_certificate_tracking(cert, session):
         
         gridOptions = gb.build()
         
-        # Display the AG Grid
+        # Display the tracking history grid
         grid_response = AgGrid(
             df,
             gridOptions=gridOptions,
@@ -553,10 +687,43 @@ def render_certificate_tracking(cert, session):
     else:
         st.info("No change entries found for this certificate")
         
-def render_cn_history(engine):
-    """Render certificate history by Common Name"""
+def render_cn_history(engine) -> None:
+    """
+    Render the certificate history view organized by Common Name (CN).
+
+    This function provides a comprehensive view of certificate history for each
+    unique Common Name in the system, including:
+    - Timeline visualization of certificate validity periods
+    - Detailed certificate information and metrics
+    - Host binding information
+    - Certificate status tracking
+    - Detailed certificate properties
+
+    Args:
+        engine: SQLAlchemy engine instance for database connections
+
+    Features:
+        - Common Name selection interface
+        - Interactive timeline visualization
+        - Key metrics display:
+            - Total certificates
+            - Valid certificates
+            - Unique hosts
+            - Active certificates
+        - Detailed certificate information:
+            - Serial numbers
+            - Validity periods
+            - Host bindings
+            - Certificate status
+        - Certificate details view:
+            - Issuer information
+            - Subject details
+            - Key usage
+            - Signature algorithm
+            - Subject Alternative Names (SANs)
+    """
     with SessionManager(engine) as session:
-        # Get all unique common names
+        # Query unique common names
         common_names = session.query(Certificate.common_name)\
             .distinct()\
             .order_by(Certificate.common_name)\
@@ -566,10 +733,10 @@ def render_cn_history(engine):
             st.warning("No certificate data found")
             return
         
-        # Create CN selection options
+        # Prepare common name selection options
         cn_options = [cn[0] for cn in common_names if cn[0]]  # Filter out None values
         
-        # CN selection
+        # Common name selection interface
         selected_cn = st.selectbox(
             "Select Common Name",
             options=cn_options,
@@ -578,17 +745,17 @@ def render_cn_history(engine):
         )
         
         if selected_cn:
-            # Get all certificates with this CN
+            # Query certificates for selected common name
             certificates = session.query(Certificate)\
                 .filter(Certificate.common_name == selected_cn)\
                 .order_by(Certificate.valid_from.desc())\
                 .all()
             
             if certificates:
-                # Convert to DataFrame for display
+                # Prepare certificate history data
                 cert_history = []
                 for cert in certificates:
-                    # Get all bindings for this certificate
+                    # Process certificate bindings
                     bindings = []
                     first_seen = None
                     last_seen = None
@@ -598,7 +765,7 @@ def render_cn_history(engine):
                         host_ip = binding.host_ip.ip_address if binding.host_ip else "No IP"
                         bindings.append(f"{host_name} ({host_ip})")
                         
-                        # Track first and last seen
+                        # Track first and last seen dates
                         if binding.last_seen:
                             if first_seen is None or binding.last_seen < first_seen:
                                 first_seen = binding.last_seen
@@ -619,7 +786,7 @@ def render_cn_history(engine):
                 
                 df = pd.DataFrame(cert_history)
                 
-                # Display timeline of certificates
+                # Display certificate timeline
                 st.subheader("Certificate Timeline")
                 timeline_chart = {
                     "Certificate": [f"Cert {i+1}" for i in range(len(df))],
@@ -628,7 +795,7 @@ def render_cn_history(engine):
                 }
                 st.plotly_chart(create_timeline_chart(timeline_chart))
                 
-                # Display metrics
+                # Display key metrics
                 st.divider()
                 metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
                 with metric_col1:
@@ -644,10 +811,10 @@ def render_cn_history(engine):
                     st.metric("Active Certificates", active_certs, help="Certificates seen in the last 30 days")
                 st.divider()
                 
-                # Configure AG Grid
+                # Configure and display certificate history grid
                 gb = GridOptionsBuilder.from_dataframe(df)
                 
-                # Configure default settings for all columns
+                # Configure default column settings
                 gb.configure_default_column(
                     resizable=True,
                     sortable=True,
@@ -655,7 +822,7 @@ def render_cn_history(engine):
                     editable=False
                 )
                 
-                # Configure specific columns
+                # Configure individual columns
                 gb.configure_column(
                     "Serial Number",
                     minWidth=150,
@@ -738,7 +905,7 @@ def render_cn_history(engine):
                 )
                 gb.configure_column("_id", hide=True)
                 
-                # Configure selection
+                # Configure grid selection
                 gb.configure_selection(
                     selection_mode="single",
                     use_checkbox=False,
@@ -759,7 +926,7 @@ def render_cn_history(engine):
                 
                 gridOptions = gb.build()
                 
-                # Display the AG Grid
+                # Display the certificate history grid
                 grid_response = AgGrid(
                     df,
                     gridOptions=gridOptions,
@@ -772,7 +939,7 @@ def render_cn_history(engine):
                     height=400
                 )
                 
-                # Handle selection to show certificate details
+                # Handle certificate selection for detailed view
                 if grid_response['selected_rows']:
                     selected = grid_response['selected_rows'][0]
                     cert_id = selected['_id']

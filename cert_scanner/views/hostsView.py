@@ -1,3 +1,24 @@
+"""
+Host Management View Module
+
+This module provides a comprehensive interface for managing hosts and their certificate
+bindings in the certificate management system. It offers multiple views and management
+capabilities for hosts, their IP addresses, and associated certificates.
+
+Key Features:
+- Host management (add, edit, delete)
+- IP address management
+- Certificate binding tracking
+- Multiple view options (by hostname or IP address)
+- Real-time certificate status monitoring
+- Platform management
+- Detailed host and binding information
+- Certificate history tracking
+
+The module uses Streamlit for the UI and AG Grid for interactive data display,
+providing a rich and user-friendly interface for host management operations.
+"""
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -7,9 +28,36 @@ from ..models import Host, HostIP, CertificateBinding, Application, Certificate
 from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
 from ..static.styles import load_warning_suppression, load_css
 
-def render_hosts_view(engine):
-    """Render the hosts view"""
-    # Load warning suppression script and CSS
+def render_hosts_view(engine) -> None:
+    """
+    Render the main host management interface.
+
+    This function creates an interactive interface for managing hosts and their
+    certificate bindings, providing multiple views and management capabilities:
+    - Host creation and management
+    - IP address management
+    - Certificate binding tracking
+    - Platform configuration
+    - Host metrics and statistics
+
+    Args:
+        engine: SQLAlchemy engine instance for database connections
+
+    Features:
+        - Add new hosts with multiple IP addresses
+        - View hosts by hostname or IP address
+        - Track certificate bindings and their status
+        - Monitor certificate expiration
+        - Configure platform settings
+        - View detailed host information
+        - Real-time status updates
+        - Interactive data grid with sorting and filtering
+        - Automatic data refresh
+
+    The view maintains state using Streamlit's session state for form visibility
+    and success messages, and provides comprehensive error handling for all operations.
+    """
+    # Initialize UI components and styles
     load_warning_suppression()
     load_css()
     
@@ -497,11 +545,46 @@ def render_hosts_view(engine):
         else:
             st.warning("No host data available")
 
-def render_binding_details(binding):
-    """Render detailed information about a certificate binding"""
+def render_binding_details(binding: CertificateBinding) -> None:
+    """
+    Render detailed information about a specific certificate binding.
+
+    This function displays comprehensive information about a certificate binding,
+    including certificate details, binding configuration, and scan history.
+
+    Args:
+        binding: CertificateBinding model instance containing the binding information
+
+    Features:
+        - Certificate information display:
+            - Common name
+            - Validity status
+            - Expiration date
+            - Serial number
+            - Thumbprint
+        - Binding configuration details:
+            - Platform settings
+            - Port configuration
+            - Site name
+            - Last seen timestamp
+        - Host information:
+            - Hostname
+            - IP address
+            - Environment
+            - Host type
+        - Scan history:
+            - Scan dates
+            - Status history
+            - Port history
+
+    The view uses color coding and status indicators to highlight important
+    information such as certificate validity and expiration status.
+    """
+    # Calculate certificate validity status
     is_valid = binding.certificate.valid_until > datetime.now()
     status_class = "cert-valid" if is_valid else "cert-expired"
     
+    # Display certificate details section
     st.markdown(f"""
         ### Certificate Details
         
@@ -512,7 +595,7 @@ def render_binding_details(binding):
         **Thumbprint:** {binding.certificate.thumbprint}
     """, unsafe_allow_html=True)
     
-    # Show binding details
+    # Display binding configuration section
     st.markdown("""
         ### Binding Details
     """)
@@ -534,7 +617,7 @@ def render_binding_details(binding):
             **Host Type:** {binding.host.host_type}
         """)
     
-    # Show certificate history
+    # Display scan history section
     if binding.certificate.scans:
         st.markdown("### Scan History")
         scan_data = []
@@ -567,14 +650,60 @@ def render_binding_details(binding):
                 use_container_width=True
             )
 
-def render_host_details(host):
-    """Render detailed information about a host"""
+def render_host_details(host: Host) -> None:
+    """
+    Render detailed information about a specific host.
+
+    This function provides a comprehensive view of a host's configuration,
+    certificate bindings, and history through a tabbed interface.
+
+    Args:
+        host: Host model instance containing the host information
+
+    Features:
+        Overview Tab:
+            - Basic host information
+                - Host type
+                - Environment
+                - Last seen timestamp
+            - Host management
+                - Edit functionality
+                - Delete capability
+            - IP address listing
+            - Certificate metrics
+                - Valid certificates count
+                - Total certificates count
+
+        Certificate Bindings Tab:
+            - List of all certificate bindings
+            - For each binding:
+                - Certificate common name
+                - Validity status
+                - Port information
+                - Platform details
+                - Site name
+                - Last seen timestamp
+            - Binding removal capability
+
+        History Tab:
+            - Complete certificate history
+            - For each certificate:
+                - Validity period
+                - Status
+                - Port information
+                - Platform details
+                - Last seen information
+
+    The interface provides full management capabilities while maintaining
+    a clean and organized presentation of complex host information.
+    """
     st.subheader(f"🖥️ {host.name}")
     
-    # Create tabs for different sections
+    # Create tabbed interface
     tab1, tab2, tab3 = st.tabs(["Overview", "Certificate Bindings", "History"])
     
     with tab1:
+        # Host information and management section
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
@@ -583,7 +712,7 @@ def render_host_details(host):
                 **Last Seen:** {host.last_seen.strftime('%Y-%m-%d %H:%M')}
             """)
             
-            # Add edit functionality
+            # Host editing interface
             with st.expander("Edit Host"):
                 with st.form("edit_host"):
                     new_type = st.selectbox("Host Type", 
@@ -604,7 +733,7 @@ def render_host_details(host):
                         except Exception as e:
                             st.error(f"Error updating host: {str(e)}")
             
-            # Add delete functionality
+            # Host deletion interface
             with st.expander("Delete Host", expanded=False):
                 st.warning("⚠️ This action cannot be undone!")
                 if st.button("Delete Host", type="secondary"):
@@ -618,14 +747,14 @@ def render_host_details(host):
                         st.error(f"Error deleting host: {str(e)}")
         
         with col2:
-            # Display IP addresses
+            # IP addresses section
             st.markdown("### IP Addresses")
             for ip in host.ip_addresses:
                 st.markdown(f"""
                     - {ip.ip_address} (Last seen: {ip.last_seen.strftime('%Y-%m-%d %H:%M')})
                 """)
             
-            # Display certificate metrics
+            # Certificate metrics section
             valid_certs = sum(1 for binding in host.certificate_bindings 
                             if binding.certificate.valid_until > datetime.now())
             total_certs = len(host.certificate_bindings)
@@ -636,6 +765,7 @@ def render_host_details(host):
             col4.metric("Total Certificates", total_certs)
     
     with tab2:
+        # Certificate bindings section
         if host.certificate_bindings:
             st.markdown("### Certificate Bindings")
             for binding in host.certificate_bindings:
@@ -665,6 +795,7 @@ def render_host_details(host):
             st.info("No certificate bindings found for this host")
     
     with tab3:
+        # Certificate history section
         st.markdown("### Certificate History")
         history_data = []
         for binding in host.certificate_bindings:

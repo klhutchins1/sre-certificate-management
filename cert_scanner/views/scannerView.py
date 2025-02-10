@@ -1,3 +1,25 @@
+"""
+Certificate Scanner View Module
+
+This module provides the interface for scanning and discovering SSL/TLS certificates
+across hosts and networks. It offers a user-friendly interface for initiating scans,
+monitoring progress, and viewing results in real-time.
+
+Key Features:
+- Multiple input formats for scan targets
+- Batch scanning capabilities
+- Real-time scan progress monitoring
+- Detailed scan results display
+- Automatic certificate discovery
+- Error handling and reporting
+- Recent scan history tracking
+- Database integration for results storage
+
+The module handles various input formats, validates targets, manages scan operations,
+and provides immediate feedback on scan progress and results. It integrates with
+the database to store discovered certificates and their relationships with hosts.
+"""
+
 import streamlit as st
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -9,9 +31,47 @@ from ..models import (
 from ..static.styles import load_warning_suppression, load_css
 
 
-def render_scan_interface(engine):
-    """Render the certificate scanning interface"""
-    # Load warning suppression script and CSS
+def render_scan_interface(engine) -> None:
+    """
+    Render the main certificate scanning interface.
+
+    This function provides a comprehensive interface for scanning SSL/TLS certificates,
+    including input validation, progress tracking, and results display. It handles:
+    - Multiple input formats for scan targets
+    - Real-time scan progress monitoring
+    - Result storage and display
+    - Error handling and reporting
+
+    Args:
+        engine: SQLAlchemy engine instance for database connections
+
+    Features:
+        - Flexible input formats:
+            - Standard hostnames
+            - Custom ports
+            - URLs with protocols
+            - IP addresses
+        - Input validation:
+            - Port range checking
+            - Hostname validation
+            - Format verification
+        - Progress tracking:
+            - Real-time progress bar
+            - Status updates
+            - Error reporting
+        - Results management:
+            - Success/failure tracking
+            - Database storage
+            - Recent scan history
+        - Error handling:
+            - Connection errors
+            - Certificate retrieval failures
+            - Database errors
+
+    The interface maintains state using Streamlit's session state for scan results
+    and provides comprehensive error handling for all operations.
+    """
+    # Initialize UI components and styles
     load_warning_suppression()
     load_css()
     
@@ -21,7 +81,7 @@ def render_scan_interface(engine):
         
     st.title("Scan Certificates")
     
-    # Initialize session state for scan results if not exists
+    # Initialize scan results state
     if 'scan_results' not in st.session_state:
         st.session_state.scan_results = {
             "success": [],
@@ -29,10 +89,11 @@ def render_scan_interface(engine):
             "warning": []
         }
     
+    # Create main layout columns
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        # Check for pre-populated SANs from certificate view
+        # Handle pre-populated scan targets
         default_scan_targets = st.session_state.get('scan_targets', [])
         if default_scan_targets:
             # Ensure we have a list of strings
@@ -43,7 +104,8 @@ def render_scan_interface(engine):
             default_text = "\n".join(default_scan_targets)
         else:
             default_text = ""
-            
+        
+        # Scan input interface
         scan_input = st.text_area(
             "Enter hostnames to scan (one per line)",
             value=default_text,
@@ -54,6 +116,7 @@ https://example.com
 internal.server.local:444"""
         )
         
+        # Input format help section
         with st.expander("ℹ️ Input Format Help"):
             st.markdown("""
             Enter one host per line in any of these formats:
@@ -79,40 +142,40 @@ internal.server.local:444"""
               - 8080: Alternative HTTP
             """)
         
-        # Create a button and store its state
+        # Scan initiation button
         scan_button_clicked = st.button("Start Scan")
         
-        # Only process if button is clicked
+        # Handle scan initiation
         if scan_button_clicked:
             print("DEBUG: Scan button clicked")  # Debug output
-            # Clear previous results
+            # Reset scan results
             st.session_state.scan_results = {
                 "success": [],
                 "error": [],
                 "warning": []
             }
             
-            # Check for empty input
+            # Validate input
             if not scan_input.strip():
                 st.error("Please enter at least one hostname to scan")
                 return
             
+            # Parse and validate scan targets
             entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
             scan_targets = []
             validation_errors = False
             
-            # Parse hostnames and ports
+            # Process each target
             for entry in entries:
-                # Parse URL or hostname:port
                 try:
-                    # Check for negative port in the input string first
+                    # Validate port number format
                     if ':-' in entry:
                         st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
                         st.error("Please enter at least one valid hostname to scan")
                         validation_errors = True
                         continue
 
-                    # Handle URLs (http://, https://, etc.)
+                    # Parse URL or hostname:port format
                     parsed = urlparse(entry)
                     if parsed.netloc:
                         hostname = parsed.netloc
@@ -121,10 +184,9 @@ internal.server.local:444"""
                     
                     port = 443  # Default port
                     
-                    # Split hostname and port if present
+                    # Handle port specification
                     if ':' in hostname:
                         try:
-                            # Split on the last colon to handle IPv6 addresses correctly
                             parts = hostname.rsplit(':', 1)
                             if len(parts) != 2:
                                 st.error(f"Invalid format in {entry}: Could not parse hostname and port")
@@ -133,77 +195,80 @@ internal.server.local:444"""
                                 continue
                                 
                             hostname, port_str = parts
-                            port_str = port_str.strip()  # Remove any whitespace
+                            port_str = port_str.strip()
                             
-                            # First try to convert the port string to an integer
+                            # Validate port number
                             try:
                                 port = int(port_str)
-                                print(f"DEBUG: Parsed port {port} from {entry}")  # Debug output
+                                print(f"DEBUG: Parsed port {port} from {entry}")
                                 
-                                # Then validate the port range
                                 if port < 1 or port > 65535:
-                                    print(f"DEBUG: Invalid port {port} - outside valid range")  # Debug output
+                                    print(f"DEBUG: Invalid port {port} - outside valid range")
                                     st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
                                     st.error("Please enter at least one valid hostname to scan")
                                     validation_errors = True
                                     continue
                                 else:
-                                    print(f"DEBUG: Port {port} is valid")  # Debug output
+                                    print(f"DEBUG: Port {port} is valid")
                             except ValueError:
-                                print(f"DEBUG: Failed to parse port from {entry}")  # Debug output
+                                print(f"DEBUG: Failed to parse port from {entry}")
                                 st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
                                 st.error("Please enter at least one valid hostname to scan")
                                 validation_errors = True
                                 continue
                         except Exception as e:
-                            print(f"DEBUG: Error validating port: {str(e)}")  # Debug output
+                            print(f"DEBUG: Error validating port: {str(e)}")
                             st.error(f"Error validating port in {entry}: {str(e)}")
                             st.error("Please enter at least one valid hostname to scan")
                             validation_errors = True
                             continue
                     
-                    # Validate hostname is not empty after parsing
+                    # Validate hostname
                     if not hostname:
                         st.error(f"Invalid entry: {entry} - Hostname cannot be empty")
                         st.error("Please enter at least one valid hostname to scan")
                         validation_errors = True
                         continue
                     
-                    # Remove any remaining slashes or spaces
+                    # Clean up hostname
                     hostname = hostname.strip('/')
                     
                     scan_targets.append((hostname, port))
                 except Exception as e:
-                    print(f"DEBUG: Exception while parsing {entry}: {str(e)}")  # Additional debug
+                    print(f"DEBUG: Exception while parsing {entry}: {str(e)}")
                     st.error(f"Error parsing {entry}: Please check the format")
                     validation_errors = True
                     continue
             
+            # Handle validation errors
             if validation_errors:
-                print("DEBUG: Validation errors found, showing final error message")  # Additional debug
+                print("DEBUG: Validation errors found, showing final error message")
                 st.error("Please enter at least one valid hostname to scan")
                 return
-                
+            
+            # Execute scans
             if scan_targets:
-                # Create containers for progress
+                # Create progress tracking containers
                 progress_container = st.empty()
                 status_container = st.empty()
                 
                 with progress_container:
                     progress = st.progress(0)
                 
+                # Execute scans with progress tracking
                 with status_container:
                     with st.spinner('Scanning certificates...'):
                         for i, (hostname, port) in enumerate(scan_targets):
                             status_container.text(f'Scanning {hostname}:{port}...')
                             try:
+                                # Perform certificate scan
                                 cert_info = st.session_state.scanner.scan_certificate(hostname, port)
                                 if cert_info:
                                     st.session_state.scan_results["success"].append(f"{hostname}:{port}")
-                                    # Save to database
+                                    # Save scan results to database
                                     with Session(engine) as session:
                                         try:
-                                            # Create or update certificate
+                                            # Process certificate information
                                             cert = session.query(Certificate).filter_by(
                                                 serial_number=cert_info.serial_number
                                             ).first()
@@ -223,7 +288,7 @@ internal.server.local:444"""
                                                 )
                                                 session.add(cert)
                                             
-                                            # Create or update host
+                                            # Process host information
                                             host = session.query(Host).filter_by(
                                                 name=cert_info.hostname
                                             ).first()
@@ -231,17 +296,16 @@ internal.server.local:444"""
                                             if not host:
                                                 host = Host(
                                                     name=cert_info.hostname,
-                                                    host_type=HOST_TYPE_SERVER,  # Default type
-                                                    environment=ENV_PRODUCTION,  # Default environment
+                                                    host_type=HOST_TYPE_SERVER,
+                                                    environment=ENV_PRODUCTION,
                                                     last_seen=datetime.now()
                                                 )
                                                 session.add(host)
                                             else:
                                                 host.last_seen = datetime.now()
                                             
-                                            # Create or update bindings for each IP address
+                                            # Process IP addresses and bindings
                                             for ip in cert_info.ip_addresses:
-                                                # Create or update HostIP
                                                 host_ip = session.query(HostIP).filter_by(
                                                     host_id=host.id,
                                                     ip_address=ip
@@ -257,7 +321,7 @@ internal.server.local:444"""
                                                 else:
                                                     host_ip.last_seen = datetime.now()
                                                 
-                                                # Check for existing binding
+                                                # Update certificate bindings
                                                 binding = session.query(CertificateBinding).filter_by(
                                                     host_id=host.id,
                                                     host_ip_id=host_ip.id,
@@ -265,11 +329,9 @@ internal.server.local:444"""
                                                 ).first()
                                                 
                                                 if binding:
-                                                    # Update existing binding
                                                     binding.certificate_id = cert.id
                                                     binding.last_seen = datetime.now()
                                                 else:
-                                                    # Create new binding
                                                     binding = CertificateBinding(
                                                         host_id=host.id,
                                                         host_ip_id=host_ip.id,
@@ -280,7 +342,7 @@ internal.server.local:444"""
                                                     )
                                                     session.add(binding)
                                             
-                                            # Create scan record
+                                            # Record successful scan
                                             scan = CertificateScan(
                                                 certificate=cert,
                                                 scan_date=datetime.now(),
@@ -294,11 +356,11 @@ internal.server.local:444"""
                                             st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
                                             session.rollback()
                                 else:
+                                    # Handle failed certificate retrieval
                                     st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
-                                    # Record failed scan
                                     with Session(engine) as session:
                                         try:
-                                            # Create or get host for failed scan
+                                            # Record failed scan
                                             host = session.query(Host).filter_by(name=hostname).first()
                                             if not host:
                                                 host = Host(
@@ -310,7 +372,6 @@ internal.server.local:444"""
                                                 session.add(host)
                                                 session.flush()
 
-                                            # Create scan record for failed attempt
                                             scan = CertificateScan(
                                                 scan_date=datetime.now(),
                                                 status='Failed',
@@ -323,13 +384,13 @@ internal.server.local:444"""
                                             logger.error(f"Failed to record failed scan: {str(e)}")
                                             session.rollback()
                             except ConnectionError as e:
+                                # Handle connection errors
                                 error_msg = f"Connection error scanning {hostname}:{port} - {str(e)}"
                                 st.error(error_msg)
                                 st.session_state.scan_results["error"].append(error_msg)
-                                # Record failed scan
                                 with Session(engine) as session:
                                     try:
-                                        # Create or get host for failed scan
+                                        # Record failed scan
                                         host = session.query(Host).filter_by(name=hostname).first()
                                         if not host:
                                             host = Host(
@@ -341,7 +402,6 @@ internal.server.local:444"""
                                             session.add(host)
                                             session.flush()
 
-                                        # Create scan record for failed attempt
                                         scan = CertificateScan(
                                             scan_date=datetime.now(),
                                             status='Failed',
@@ -354,13 +414,13 @@ internal.server.local:444"""
                                         logger.error(f"Failed to record failed scan: {str(e)}")
                                         session.rollback()
                             except Exception as e:
+                                # Handle other errors
                                 error_msg = f"Error scanning {hostname}:{port} - {str(e)}"
                                 st.error(error_msg)
                                 st.session_state.scan_results["error"].append(error_msg)
-                                # Record failed scan
                                 with Session(engine) as session:
                                     try:
-                                        # Create or get host for failed scan
+                                        # Record failed scan
                                         host = session.query(Host).filter_by(name=hostname).first()
                                         if not host:
                                             host = Host(
@@ -372,7 +432,6 @@ internal.server.local:444"""
                                             session.add(host)
                                             session.flush()
 
-                                        # Create scan record for failed attempt
                                         scan = CertificateScan(
                                             scan_date=datetime.now(),
                                             status='Failed',
@@ -385,18 +444,20 @@ internal.server.local:444"""
                                         logger.error(f"Failed to record failed scan: {str(e)}")
                                         session.rollback()
                             
+                            # Update progress
                             with progress_container:
                                 progress.progress((i + 1) / len(scan_targets))
                 
-                # Clear status container after scanning is complete
+                # Clear status after completion
                 status_container.empty()
                 
-                # Only clear scan targets after successful scan
+                # Clear scan targets after successful scan
                 if 'scan_targets' in st.session_state:
                     del st.session_state.scan_targets
             else:
                 st.error("Please enter at least one valid hostname to scan")
     
+    # Recent scans sidebar
     with col2:
         st.subheader("Recent Scans")
         with Session(engine) as session:
@@ -433,7 +494,7 @@ internal.server.local:444"""
             else:
                 st.info("No recent scans")
     
-    # Display current scan results
+    # Display scan results summary
     if any(st.session_state.scan_results.values()):
         st.divider()
         st.subheader("Current Scan Results")
@@ -455,8 +516,38 @@ internal.server.local:444"""
         
         st.success(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.")
 
-def render_scan_results():
-    """Render the scan results section"""
+def render_scan_results() -> None:
+    """
+    Render the scan results section showing success, failures, and warnings.
+
+    This function displays a comprehensive summary of certificate scan results,
+    organized into three categories:
+    - Successful scans
+    - Failed scans
+    - Warning messages
+
+    Features:
+        - Categorized results display:
+            - Success section with valid certificates
+            - Error section with failed scans
+            - Warning section for potential issues
+        - Detailed information for each result:
+            - Hostname and port
+            - Scan timestamp
+            - Status indicators
+        - Visual status indicators:
+            - Success: Green checkmark
+            - Error: Red X
+            - Warning: Yellow triangle
+        - Formatted timestamps
+        - Monospace formatting for technical details
+
+    The function handles both string-based messages and scan result objects,
+    providing consistent formatting and visual indicators for each type.
+    Results are stored in Streamlit's session state for persistence between
+    reruns.
+    """
+    # Display successful scans
     if st.session_state.scan_results["success"]:
         st.markdown("### ✅ Successful Scans")
         for scan in st.session_state.scan_results["success"]:
@@ -468,6 +559,7 @@ def render_scan_results():
                           f"(🕒 {scan_time} • <span class='text-success'>Valid</span>)</span>",
                           unsafe_allow_html=True)
     
+    # Display failed scans
     if st.session_state.scan_results["error"]:
         st.markdown("### ❌ Failed Scans")
         for scan in st.session_state.scan_results["error"]:
@@ -479,6 +571,7 @@ def render_scan_results():
                           f"(🕒 {scan_time} • <span class='text-danger'>Failed</span>)</span>",
                           unsafe_allow_html=True)
     
+    # Display warning messages
     if st.session_state.scan_results["warning"]:
         st.markdown("### ⚠️ Warnings")
         for scan in st.session_state.scan_results["warning"]:

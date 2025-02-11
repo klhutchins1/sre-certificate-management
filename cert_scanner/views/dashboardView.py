@@ -59,9 +59,7 @@ def render_dashboard(engine) -> None:
     load_css()
     
     st.title("Dashboard")
-    
-    # Create metrics layout
-    col1, col2, col3 = st.columns([1, 1, 1])
+    st.divider()
     
     try:
         with SessionManager(engine) as session:
@@ -77,10 +75,15 @@ def render_dashboard(engine) -> None:
                 ).count()
                 total_hosts = session.query(Host).count()
                 
-                # Display key metrics
+                # Display key metrics in standardized container
+                st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
+                col1, col2, col3 = st.columns(3)
                 col1.metric("Total Certificates", total_certs)
                 col2.metric("Expiring within 30 days", expiring_soon)
                 col3.metric("Total Hosts", total_hosts)
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                st.divider()
                 
                 # Query certificate data for timeline
                 certs = session.query(

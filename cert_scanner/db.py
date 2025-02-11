@@ -245,10 +245,20 @@ def get_session(engine):
         
     Returns:
         SQLAlchemy session object or None if engine is invalid
+        
+    Features:
+        - Sets expire_on_commit=False to prevent stale data issues
+        - Configures session for thread safety
+        - Handles invalid engine gracefully
     """
     if not engine:
         return None
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return sessionmaker(
+        bind=engine,
+        expire_on_commit=False,  # Prevent stale data issues
+        autoflush=True,  # Enable automatic flushing
+        autocommit=False  # Keep transactions explicit
+    )()
 
 class SessionManager:
     """

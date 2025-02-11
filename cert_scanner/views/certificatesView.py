@@ -39,6 +39,7 @@ def render_certificate_list(engine):
     load_css()
     
     # Create title row with columns
+    st.markdown('<div class="title-row">', unsafe_allow_html=True)
     col1, col2 = st.columns([3, 1])
     with col1:
         st.title("Certificates")
@@ -49,6 +50,7 @@ def render_certificate_list(engine):
             # Toggle the form visibility
             st.session_state['show_manual_entry'] = not st.session_state.get('show_manual_entry', False)
             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
     
     # Show any pending success messages
     if 'success_message' in st.session_state:
@@ -57,12 +59,37 @@ def render_certificate_list(engine):
     
     # Show manual entry form if button was clicked
     if st.session_state.get('show_manual_entry', False):
+        st.markdown('<div class="form-container">', unsafe_allow_html=True)
         with SessionManager(engine) as session:
             render_manual_entry_form(session)
-            st.divider()
+        st.markdown('</div>', unsafe_allow_html=True)
     
-    # Create metrics columns
+    st.divider()
+    
+    # Create metrics columns with minimal spacing
+    st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
+    
+    with SessionManager(engine) as session:
+        if not session:
+            st.error("Database connection failed")
+            return
+        
+        # Calculate metrics
+        total_certs = session.query(Certificate).count()
+        valid_certs = session.query(Certificate).filter(
+            Certificate.valid_until > datetime.now()
+        ).count()
+        total_bindings = session.query(CertificateBinding).count()
+        
+        # Display metrics
+        col1.metric("Total Certificates", total_certs)
+        col2.metric("Valid Certificates", valid_certs)
+        col3.metric("Total Bindings", total_bindings)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.divider()
     
     with SessionManager(engine) as session:
         if not session:
@@ -82,20 +109,9 @@ def render_certificate_list(engine):
                 joinedload(Certificate.certificate_bindings)
                 .joinedload(CertificateBinding.host_ip)
             )
+            .populate_existing()
             .all()
         )
-        
-        # Calculate metrics
-        total_certs = len(certificates)
-        valid_certs = len([c for c in certificates if c.valid_until > datetime.now()])
-        total_bindings = sum(len(cert.certificate_bindings) for cert in certificates)
-        
-        # Display metrics
-        col1.metric("Total Certificates", total_certs)
-        col2.metric("Valid Certificates", valid_certs)
-        col3.metric("Total Bindings", total_bindings)
-        
-        st.divider()
         
         if not certificates:
             st.warning("No certificates found in database")
@@ -192,7 +208,10 @@ def render_certificate_list(engine):
                 'suppressAggFuncInHeader': True,
                 'suppressMovableColumns': True,
                 'rowHeight': 35,
-                'headerHeight': 40
+                'headerHeight': 40,
+                'domLayout': 'autoHeight',
+                'alwaysShowVerticalScroll': True,
+                'ensureDomOrder': True
             }
             
             gb.configure_grid_options(**grid_options)
@@ -209,36 +228,30 @@ def render_certificate_list(engine):
                 theme="streamlit",
                 allow_unsafe_jscode=True,
                 key="cert_grid",
+                reload_data=False,
                 height=600
             )
             
-            # Handle selection
+            # Handle selection without extra spacing
             try:
                 selected_rows = grid_response['selected_rows']
                 
                 if isinstance(selected_rows, pd.DataFrame):
                     if not selected_rows.empty:
-                        # Convert DataFrame row to dictionary
                         selected_row = selected_rows.iloc[0].to_dict()
                         selected_cert_id = int(selected_row['_id'])
                         if selected_cert_id in certificates_dict:
                             selected_cert = certificates_dict[selected_cert_id]
-                            st.divider()
                             render_certificate_card(selected_cert, session)
                 elif isinstance(selected_rows, list) and selected_rows:
-                    # Handle list format
                     selected_row = selected_rows[0]
                     if isinstance(selected_row, dict) and '_id' in selected_row:
                         selected_cert_id = int(selected_row['_id'])
                         if selected_cert_id in certificates_dict:
                             selected_cert = certificates_dict[selected_cert_id]
-                            st.divider()
                             render_certificate_card(selected_cert, session)
             except Exception as e:
                 st.error(f"Error handling selection: {str(e)}")
-            
-            # Add spacing after grid
-            st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
 
 def render_certificate_card(cert, session):
     """

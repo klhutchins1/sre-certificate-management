@@ -558,4 +558,71 @@ def test_expired_certificate_styling(mock_streamlit, mock_aggrid, engine, sessio
     # Verify the cell class function for status styling
     cell_class = status_col.get("cellClass")
     assert "ag-status-expired" in cell_class, "Expired status styling not found"
-    assert "ag-status-valid" in cell_class, "Valid status styling not found" 
+    assert "ag-status-valid" in cell_class, "Valid status styling not found"
+
+def test_new_certificate_appears_in_list(mock_streamlit, mock_aggrid, engine, session):
+    """Test that newly added certificates appear in the certificate list"""
+    # Create initial certificate
+    cert1 = Certificate(
+        serial_number="123456",
+        thumbprint="abc123",
+        common_name="test1.com",
+        valid_from=datetime.now(),
+        valid_until=datetime.now() + timedelta(days=365),
+        issuer={"CN": "Test CA", "O": "Test Org"},
+        subject={"CN": "test1.com", "O": "Test Company"},
+        san=["test1.com"],
+        key_usage="Digital Signature",
+        signature_algorithm="sha256WithRSAEncryption",
+        sans_scanned=False
+    )
+    session.add(cert1)
+    session.commit()
+
+    # Mock SessionManager
+    mock_session_manager = MagicMock()
+    mock_session_manager.__enter__ = MagicMock(return_value=session)
+    mock_session_manager.__exit__ = MagicMock(return_value=None)
+
+    # First render to get initial state
+    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+        render_certificate_list(engine)
+
+    # Verify first certificate appears
+    initial_grid_call = mock_aggrid.call_args_list[0]
+    initial_df = initial_grid_call[0][0]
+    assert len(initial_df) == 1
+    assert initial_df.iloc[0]["Common Name"] == "test1.com"
+
+    # Add new certificate
+    cert2 = Certificate(
+        serial_number="789012",
+        thumbprint="def456",
+        common_name="test2.com",
+        valid_from=datetime.now(),
+        valid_until=datetime.now() + timedelta(days=365),
+        issuer={"CN": "Test CA", "O": "Test Org"},
+        subject={"CN": "test2.com", "O": "Test Company"},
+        san=["test2.com"],
+        key_usage="Digital Signature",
+        signature_algorithm="sha256WithRSAEncryption",
+        sans_scanned=False
+    )
+    session.add(cert2)
+    session.commit()
+
+    # Mock current time to ensure certificates are valid
+    with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+        mock_datetime.now.return_value = datetime.now()
+        mock_datetime.strptime = datetime.strptime
+        
+        # Render again after adding new certificate
+        with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+            render_certificate_list(engine)
+
+    # Verify both certificates appear
+    final_grid_call = mock_aggrid.call_args_list[-1]
+    final_df = final_grid_call[0][0]
+    assert len(final_df) == 2
+    assert "test1.com" in final_df["Common Name"].values
+    assert "test2.com" in final_df["Common Name"].values 

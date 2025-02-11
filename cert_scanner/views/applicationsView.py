@@ -26,9 +26,10 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
-from ..models import Application, CertificateBinding
+from ..models import Application, CertificateBinding, Certificate
 from ..constants import APP_TYPES, app_types
 from ..static.styles import load_warning_suppression, load_css
+from ..db import SessionManager
 
 
 def render_applications_view(engine) -> None:
@@ -56,6 +57,7 @@ def render_applications_view(engine) -> None:
     load_css()
     
     # Header section with title and add button
+    st.markdown('<div class="title-row">', unsafe_allow_html=True)
     col1, col2 = st.columns([3, 1])
     with col1:
         st.title("Applications")
@@ -65,6 +67,7 @@ def render_applications_view(engine) -> None:
                     use_container_width=True):
             st.session_state['show_add_app_form'] = not st.session_state.get('show_add_app_form', False)
             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
     
     # Display success messages if any
     if 'success_message' in st.session_state:
@@ -73,6 +76,7 @@ def render_applications_view(engine) -> None:
     
     # Application creation form
     if st.session_state.get('show_add_app_form', False):
+        st.markdown('<div class="form-container">', unsafe_allow_html=True)
         with st.form("add_application_form"):
             st.subheader("Add New Application")
             
@@ -121,6 +125,33 @@ def render_applications_view(engine) -> None:
                         st.rerun()
                 except Exception as e:
                     st.error(f"Error adding application: {str(e)}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # Create metrics columns with standardized styling
+    st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    
+    with SessionManager(engine) as session:
+        if not session:
+            st.error("Database connection failed")
+            return
+        
+        # Calculate metrics
+        total_apps = session.query(Application).count()
+        total_bindings = session.query(CertificateBinding).filter(CertificateBinding.application_id.isnot(None)).count()
+        valid_certs = session.query(CertificateBinding).join(CertificateBinding.certificate).filter(
+            CertificateBinding.application_id.isnot(None),
+            Certificate.valid_until > datetime.now()
+        ).count()
+        
+        # Display metrics
+        col1.metric("Total Applications", total_apps)
+        col2.metric("Certificate Bindings", total_bindings)
+        col3.metric("Valid Certificates", valid_certs)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
     
     st.divider()
     
@@ -147,20 +178,6 @@ def render_applications_view(engine) -> None:
             horizontal=True,
             help="Group applications by their type or view all applications"
         )
-        
-        # Application metrics calculation and display
-        total_apps = len(applications)
-        total_bindings = sum(len(app.certificate_bindings) for app in applications)
-        valid_certs = sum(1 for app in applications 
-                         for binding in app.certificate_bindings 
-                         if binding.certificate.valid_until > datetime.now())
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Applications", total_apps)
-        col2.metric("Certificate Bindings", total_bindings)
-        col3.metric("Valid Certificates", valid_certs)
-        
-        st.divider()
         
         # Data grid preparation and configuration
         app_data = []

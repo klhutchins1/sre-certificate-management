@@ -27,6 +27,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from ..models import Host, HostIP, CertificateBinding, Application, Certificate
 from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
 from ..static.styles import load_warning_suppression, load_css
+from ..db import SessionManager
 
 def render_hosts_view(engine) -> None:
     """
@@ -62,6 +63,7 @@ def render_hosts_view(engine) -> None:
     load_css()
     
     # Create a row for title and button
+    st.markdown('<div class="title-row">', unsafe_allow_html=True)
     col1, col2 = st.columns([3, 1])
     with col1:
         st.title("Hosts")
@@ -72,6 +74,7 @@ def render_hosts_view(engine) -> None:
             # Toggle the form visibility
             st.session_state['show_add_host_form'] = not st.session_state.get('show_add_host_form', False)
             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
     
     # Show any pending success messages
     if 'success_message' in st.session_state:
@@ -80,6 +83,7 @@ def render_hosts_view(engine) -> None:
     
     # Show Add Host form if button was clicked
     if st.session_state.get('show_add_host_form', False):
+        st.markdown('<div class="form-container">', unsafe_allow_html=True)
         with st.form("add_host_form"):
             st.subheader("Add New Host")
             
@@ -142,6 +146,30 @@ def render_hosts_view(engine) -> None:
                         st.rerun()  # Refresh the page
                 except Exception as e:
                     st.error(f"Error adding host: {str(e)}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # Create metrics columns with standardized styling
+    st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    
+    with SessionManager(engine) as session:
+        if not session:
+            st.error("Database connection failed")
+            return
+        
+        # Calculate metrics
+        total_hosts = session.query(Host).count()
+        total_ips = session.query(HostIP).count()
+        total_certs = session.query(Certificate).count()
+        
+        # Display metrics
+        col1.metric("Total Hosts", total_hosts)
+        col2.metric("Total IPs", total_ips)
+        col3.metric("Total Certificates", total_certs)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
     
     st.divider()
     
@@ -208,9 +236,6 @@ def render_hosts_view(engine) -> None:
         </script>
     """, unsafe_allow_html=True)
     
-    # Create metrics columns
-    col1, col2, col3 = st.columns(3)
-    
     with Session(engine) as session:
         # Store session in session state for use in binding details
         st.session_state['session'] = session
@@ -225,30 +250,7 @@ def render_hosts_view(engine) -> None:
             st.warning("No hosts found in database")
             return
         
-        # Calculate metrics
-        all_bindings = []
-        for host in hosts:
-            all_bindings.extend(host.certificate_bindings)
-        
-        unique_ips = len(set(
-            ip.ip_address 
-            for host in hosts 
-            for ip in host.ip_addresses
-        ))
-        unique_hosts = len(hosts)
-        total_certs = len(set(
-            binding.certificate_id 
-            for binding in all_bindings
-        ))
-        
-        # Display metrics
-        col1.metric("Total Hosts", unique_hosts)
-        col2.metric("Total IPs", unique_ips)
-        col3.metric("Total Certificates", total_certs)
-        
-        st.divider()
-        
-        # Add view selector
+        # View type selector
         view_type = st.radio(
             "View By",
             ["Hostname", "IP Address"],
@@ -529,7 +531,7 @@ def render_hosts_view(engine) -> None:
                         if selected_row.get('_id'):
                             # If there's a binding ID, show binding details
                             selected_binding = next(
-                                (b for b in all_bindings if b.id == selected_row['_id']), 
+                                (b for b in host.certificate_bindings if b.id == selected_row['_id']), 
                                 None
                             )
                             if selected_binding:

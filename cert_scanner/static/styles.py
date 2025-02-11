@@ -105,38 +105,153 @@ def load_css():
         }
         
         /* Title and button row styling */
+        .title-row {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            margin-bottom: 0.5rem !important;
+            position: relative !important;
+        }
+        
+        /* Form container styling */
+        .form-container {
+            position: absolute !important;
+            top: 100% !important;
+            left: 0 !important;
+            right: 0 !important;
+            z-index: 1000 !important;
+            background-color: rgba(14, 17, 23, 0.95) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            border-radius: 0.5rem !important;
+            padding: 1rem !important;
+            margin-top: 0.5rem !important;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
+        }
+        
+        /* Title and button container */
         [data-testid="column"] {
             padding: 0 !important;
             margin: 0 !important;
         }
         
-        /* Title styling */
+        /* Button styling */
+        .row-widget.stButton {
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        
+        .row-widget.stButton > button {
+            width: 100% !important;
+            min-height: 45px !important;
+            margin: 0 !important;
+        }
+        
+        /* Success message styling */
+        [data-testid="stAlert"] {
+            position: fixed !important;
+            top: 1rem !important;
+            right: 1rem !important;
+            z-index: 1001 !important;
+            max-width: 300px !important;
+            margin: 0 !important;
+            padding: 0.5rem 1rem !important;
+            border-radius: 0.5rem !important;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
+        }
+        
+        /* Metrics styling */
+        [data-testid="metric-container"] {
+            background-color: rgba(28, 131, 225, 0.1) !important;
+            border: 1px solid rgba(28, 131, 225, 0.1) !important;
+            border-radius: 0.5rem !important;
+            padding: 1rem !important;
+            margin: 0.25rem !important;
+        }
+        
+        /* Metrics row container */
+        .metrics-container {
+            margin: 1rem 0 !important;
+            padding: 0 !important;
+            position: relative !important;
+            z-index: 1 !important;
+        }
+        
+        /* Remove unnecessary vertical spacing */
+        [data-testid="element-container"] {
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        
+        /* Adjust vertical spacing for specific elements */
+        .stButton, .stMarkdown {
+            margin-bottom: 0 !important;
+        }
+        
+        /* Adjust divider spacing */
+        hr {
+            margin: 0.5rem 0 !important;
+        }
+        
+        /* Title spacing */
         h1 {
             margin: 0 !important;
             padding: 0 !important;
             line-height: 1.2 !important;
         }
         
-        /* Button styling */
-        .row-widget.stButton {
-            width: 100%;
+        /* Metrics value styling */
+        [data-testid="metric-container"] [data-testid="stMetricValue"] {
+            font-size: 1.8rem !important;
+            font-weight: 600 !important;
+            color: rgb(28, 131, 225) !important;
+        }
+        
+        /* Metrics label styling */
+        [data-testid="metric-container"] [data-testid="stMetricLabel"] {
+            font-size: 1rem !important;
+            color: rgba(255, 255, 255, 0.7) !important;
+        }
+        
+        /* Metrics delta styling */
+        [data-testid="metric-container"] [data-testid="stMetricDelta"] {
+            font-size: 0.9rem !important;
+        }
+        
+        /* Streamlit block container spacing */
+        [data-testid="stVerticalBlock"] {
+            gap: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+        }
+        
+        /* Main content container spacing */
+        .main .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+            position: relative !important;
+        }
+        
+        /* Form styling */
+        .stForm {
+            background-color: transparent !important;
+            border: none !important;
             margin: 0 !important;
+            padding: 1rem !important;
+        }
+        
+        .stForm > div {
             padding: 0 !important;
         }
-        .row-widget.stButton > button {
-            width: 100%;
-            min-height: 45px;
-            margin: 0 !important;
+        
+        /* Form input spacing */
+        .stTextInput, .stNumberInput, .stSelectbox, .stTextArea {
+            margin-bottom: 0.5rem !important;
         }
         
-        /* Divider styling */
-        hr {
-            margin: 1rem 0 !important;
-        }
-        
-        /* Metrics styling */
-        [data-testid="metric-container"] {
-            padding: 1rem !important;
+        /* Form submit button spacing */
+        .stForm [data-testid="stFormSubmitButton"] {
+            margin-top: 1rem !important;
         }
         
         /* AG Grid styling */
@@ -161,15 +276,6 @@ def load_css():
         [data-testid="stAgGrid"] {
             min-height: 300px;
             max-height: 500px;
-        }
-        
-        /* Form styling */
-        .stForm {
-            background-color: transparent !important;
-            border: none !important;
-        }
-        .stForm > div {
-            padding: 0 !important;
         }
         
         /* Warning suppression */
@@ -221,23 +327,11 @@ def load_css():
         [data-testid="stVerticalBlock"] > div {
             padding-bottom: 0.5rem !important;
         }
-        .stTextInput, .stNumberInput, .stSelectbox {
-            margin-top: 0 !important;
-            padding-top: 0 !important;
-            padding-bottom: 0.5rem !important;
-        }
         .stTextInput > label, .stNumberInput > label, .stSelectbox > label {
             padding-bottom: 0.5rem !important;
         }
         .stTextInput > div > div > input, .stNumberInput > div > div > input {
             line-height: 1.6 !important;
-        }
-        [data-testid="stForm"] {
-            border: none !important;
-            padding: 0 !important;
-        }
-        .stButton {
-            margin-top: 1rem !important;
         }
         
         /* Selectbox styles */

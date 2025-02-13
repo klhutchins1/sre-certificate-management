@@ -8,3 +8,4 @@ exports/
 .coverage
 .app_running
 SRE-CertificateManagement.code-workspace
+streamlit_runner.log

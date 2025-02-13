@@ -1,10 +1,12 @@
 # Python == 3.8.10
-streamlit>=1.41.0
-pandas>=1.5.0,<2.0.0
-sqlalchemy>=2.0.25
-plotly>=5.18.0
-python-dateutil>=2.8.2
-pyOpenSSL>=23.3.0
-pyyaml>=6.0.2
-pytest>=7.0.0
-pytest-cov>=4.1.0 
+fpdf2==2.8.2
+matplotlib==3.7.5
+pandas==1.5.3
+plotly==5.24.1
+pyOpenSSL==25.0.0
+pytest==8.3.4
+PyYAML==6.0.2
+setuptools==56.0.0
+SQLAlchemy==2.0.37
+streamlit==4.1.0
+streamlit-aggrid==0.3.3

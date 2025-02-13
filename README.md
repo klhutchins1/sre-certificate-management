@@ -34,8 +34,23 @@ pip install -r requirements.txt
 4. Run the application:
 
 ```bash
+# Method 1: Using custom runner (recommended)
+python run_custom.py
+
+# Method 2: Using streamlit directly (alternative)
 streamlit run run.py
 ```
+
+The application will be available at http://localhost:8501 by default.
+
+### Troubleshooting
+
+If you encounter port conflicts, you can modify the port in `run_custom.py` by changing the `--server.port` value.
+
+To see detailed logs of the application startup:
+1. Run the application using the custom runner
+2. Check the `streamlit_runner.log` file in the application directory
+3. The log file contains detailed information about the startup process and any errors
 
 ### Offline Installation
 

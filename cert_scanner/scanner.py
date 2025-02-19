@@ -80,6 +80,7 @@ class CertificateInfo:
         extended_key_usage (Optional[str]): Extended key usage flags
         signature_algorithm (Optional[str]): Signature algorithm used
         version (Optional[int]): X.509 version number
+        chain_valid (bool): Indicates if the certificate chain is valid
     """
     hostname: str
     ip_addresses: List[str]
@@ -96,6 +97,7 @@ class CertificateInfo:
     extended_key_usage: Optional[str] = None
     signature_algorithm: Optional[str] = None
     version: Optional[int] = None
+    chain_valid: bool = False
 
 #------------------------------------------------------------------------------
 # Certificate Scanner Implementation
@@ -377,73 +379,82 @@ class CertificateScanner:
         return results
     
     def _get_certificate(self, address: str, port: int) -> Optional[bytes]:
-        """
-        Retrieve raw certificate data from network endpoint.
+        """Get certificate from host with timeout and chain validation."""
+        sock = None
+        ssock = None
         
-        Args:
-            address (str): Hostname or IP to connect to
-            port (int): Port number to connect to
-            
-        Returns:
-            Optional[bytes]: Raw certificate data if successful
-            
-        Note:
-            - Uses SSL context with hostname verification disabled
-            - Implements connection timeout
-            - Handles various network errors
-        """
         try:
+            # Log the attempt
+            self.logger.info(f"Attempting to retrieve certificate from {address}:{port}")
+            
+            # Create SSL context with chain validation
             context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
+            context.check_hostname = False  # We'll do our own hostname validation
+            context.verify_mode = ssl.CERT_REQUIRED  # Require certificate verification
             
-            with context.wrap_socket(socket.socket(socket.AF_INET), server_hostname=address) as ssock:
-                ssock.settimeout(5)
-                ssock.connect((address, port))
-                cert = ssock.getpeercert(binary_form=True)
+            # Load system root certificates
+            context.load_default_certs()
+            
+            # Create socket with timeout
+            sock = socket.create_connection((address, port), timeout=5)
+            try:
+                ssock = context.wrap_socket(sock, server_hostname=address)
+                # Get certificate in binary form
+                cert_binary = ssock.getpeercert(binary_form=True)
+                if cert_binary:
+                    self.logger.info(f"Certificate retrieved successfully from {address}:{port}")
+                    # Store chain validation status
+                    self._last_cert_chain = True  # Certificate chain was validated
+                    return cert_binary
                 
-                if cert:
-                    self.logger.info(f'Certificate exists for {address}:{port}')
-                    return cert
-                else:
-                    self.logger.info(f'No certificate found for {address}:{port}')
-                    return None
-                    
-        except (ConnectionResetError, ConnectionRefusedError, socket.gaierror) as e:
-            self.logger.warning(f'{address}:{port} is not reachable')
-            self.logger.error(f'Error while checking certificate: {e}')
-            return None
+                self.logger.warning(f"No certificate found at {address}:{port}")
+                return None
+                
+            except ssl.SSLCertVerificationError as e:
+                self.logger.warning(f"Certificate validation failed for {address}:{port}: {str(e)}")
+                # Still return the certificate but mark it as unverified
+                try:
+                    context.verify_mode = ssl.CERT_NONE
+                    ssock = context.wrap_socket(sock, server_hostname=address)
+                    cert_binary = ssock.getpeercert(binary_form=True)
+                    if cert_binary:
+                        self.logger.info(f"Retrieved unverified certificate from {address}:{port}")
+                        self._last_cert_chain = False  # Chain validation failed
+                        return cert_binary
+                except Exception as inner_e:
+                    self.logger.error(f"Failed to retrieve unverified certificate: {str(inner_e)}")
+                return None
+                
         except socket.timeout:
-            self.logger.error(f'Socket timed out while checking certificate for {address}:{port}')
-            return None
+            self.logger.error(f"Connection timed out for {address}:{port}")
+        except ConnectionRefusedError:
+            self.logger.error(f"Connection refused for {address}:{port}")
+        except ssl.SSLError as e:
+            self.logger.error(f"SSL error for {address}:{port}: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Error retrieving certificate from {address}:{port}: {str(e)}")
+        finally:
+            # Clean up sockets
+            if ssock:
+                try:
+                    ssock.close()
+                except:
+                    pass
+            if sock:
+                try:
+                    sock.close()
+                except:
+                    pass
         
-    def _process_certificate(self, cert_binary: bytes, address: str, port: int) -> CertificateInfo:
-        """
-        Process raw certificate data into structured information.
-        
-        Args:
-            cert_binary (bytes): Raw certificate data
-            address (str): Address the certificate was retrieved from
-            port (int): Port the certificate was retrieved from
-            
-        Returns:
-            CertificateInfo: Structured certificate information
-            
-        Note:
-            Extracts comprehensive certificate information including:
-            - Basic certificate fields
-            - Subject Alternative Names
-            - Key usage flags
-            - Validity dates
-            - IP address resolution
-        """
+        return None
+    
+    def _process_certificate(self, cert_binary: bytes, address: str, port: int) -> Optional[CertificateInfo]:
+        """Process raw certificate data into structured information."""
         try:
             x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert_binary)
         except OpenSSL.crypto.Error as e:
-            # Handle OpenSSL errors more robustly
             error_msg = str(e)
             if e.args and isinstance(e.args[0], list) and e.args[0]:
-                # Try to get a more specific error message if available
                 error_details = e.args[0][0]
                 if len(error_details) >= 3:
                     error_msg = error_details[2]
@@ -479,7 +490,10 @@ class CertificateScanner:
             '%Y%m%d%H%M%SZ'
         )
         
-        return CertificateInfo(
+        # Add chain validation status
+        chain_valid = hasattr(self, '_last_cert_chain') and self._last_cert_chain
+        
+        cert_info = CertificateInfo(
             hostname=address,
             ip_addresses=ip_addresses,
             port=port,
@@ -492,8 +506,15 @@ class CertificateScanner:
             subject=subject,
             valid_from=valid_from,
             version=x509.get_version(),
-            key_usage=key_usage
+            key_usage=key_usage,
+            chain_valid=chain_valid  # Add chain validation status
         )
+        
+        # Clear the chain reference
+        if hasattr(self, '_last_cert_chain'):
+            delattr(self, '_last_cert_chain')
+        
+        return cert_info
         
     def _extract_san(self, x509cert) -> List[str]:
         """

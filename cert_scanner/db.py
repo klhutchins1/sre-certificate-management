@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 import sqlite3
 import random
+import json
 
 # Third-party imports
 import streamlit as st
@@ -147,8 +148,103 @@ def update_database_schema(engine):
 # Database Initialization
 #------------------------------------------------------------------------------
 
+def migrate_database(engine):
+    """Perform database migrations to update schema."""
+    try:
+        inspector = inspect(engine)
+        
+        # Check if certificates table exists
+        if 'certificates' in inspector.get_table_names():
+            columns = [col['name'] for col in inspector.get_columns('certificates')]
+            current_time = datetime.now().isoformat()
+            
+            # Add chain_valid column if it doesn't exist
+            if 'chain_valid' not in columns:
+                logger.info("Adding chain_valid column to certificates table")
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE certificates ADD COLUMN chain_valid BOOLEAN DEFAULT FALSE"))
+                    conn.commit()
+            
+            # Add created_at column if it doesn't exist
+            if 'created_at' not in columns:
+                logger.info("Adding created_at column to certificates table")
+                with engine.connect() as conn:
+                    # Add column with NULL default first
+                    conn.execute(text("ALTER TABLE certificates ADD COLUMN created_at DATETIME"))
+                    # Then update with current timestamp
+                    conn.execute(text(f"UPDATE certificates SET created_at = '{current_time}' WHERE created_at IS NULL"))
+                    conn.commit()
+            
+            # Add updated_at column if it doesn't exist
+            if 'updated_at' not in columns:
+                logger.info("Adding updated_at column to certificates table")
+                with engine.connect() as conn:
+                    # Add column with NULL default first
+                    conn.execute(text("ALTER TABLE certificates ADD COLUMN updated_at DATETIME"))
+                    # Then update with current timestamp
+                    conn.execute(text(f"UPDATE certificates SET updated_at = '{current_time}' WHERE updated_at IS NULL"))
+                    conn.commit()
+            
+            # Add sans_scanned column if it doesn't exist
+            if 'sans_scanned' not in columns:
+                logger.info("Adding sans_scanned column to certificates table")
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE certificates ADD COLUMN sans_scanned BOOLEAN DEFAULT FALSE"))
+                    conn.commit()
+            
+            # Handle JSON field migration
+            with engine.connect() as conn:
+                # Get all certificates
+                result = conn.execute(text("SELECT id, issuer, subject, san FROM certificates"))
+                for row in result:
+                    try:
+                        # Convert string fields to JSON if they're not already
+                        issuer = row.issuer
+                        subject = row.subject
+                        san = row.san
+                        
+                        # Convert issuer
+                        if issuer and not issuer.startswith('{'):
+                            try:
+                                issuer_dict = eval(issuer)
+                                issuer = json.dumps(issuer_dict)
+                            except:
+                                issuer = json.dumps({})
+                        
+                        # Convert subject
+                        if subject and not subject.startswith('{'):
+                            try:
+                                subject_dict = eval(subject)
+                                subject = json.dumps(subject_dict)
+                            except:
+                                subject = json.dumps({})
+                        
+                        # Convert SAN
+                        if san and not san.startswith('['):
+                            try:
+                                san_list = eval(san)
+                                san = json.dumps(san_list if isinstance(san_list, list) else [])
+                            except:
+                                san = json.dumps([])
+                        
+                        # Update the record
+                        conn.execute(
+                            text("UPDATE certificates SET issuer = :issuer, subject = :subject, san = :san WHERE id = :id"),
+                            {"id": row.id, "issuer": issuer, "subject": subject, "san": san}
+                        )
+                    except Exception as e:
+                        logger.error(f"Error migrating certificate {row.id}: {str(e)}")
+                        continue
+                
+                conn.commit()
+        
+        logger.info("Database migration completed successfully")
+    except Exception as e:
+        logger.error(f"Failed to migrate database: {str(e)}")
+        raise
+
 def init_database(db_path=None):
-    """Initialize the database connection and create tables if they don't exist"""
+    """Initialize the database and perform migrations."""
     try:
         # Get database path from parameter or settings
         if db_path is None:
@@ -212,6 +308,9 @@ def init_database(db_path=None):
         # Create tables and update schema
         logger.info("Creating database tables...")
         Base.metadata.create_all(engine)
+        
+        # Perform migrations
+        migrate_database(engine)
         
         # Verify database is functional
         with engine.connect() as conn:

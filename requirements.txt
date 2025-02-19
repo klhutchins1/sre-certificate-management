@@ -6,7 +6,10 @@ plotly==5.24.1
 pyOpenSSL==25.0.0
 pytest==8.3.4
 PyYAML==6.0.2
-setuptools==56.0.0
+setuptools==70.0.0
 SQLAlchemy==2.0.37
-streamlit==4.1.0
-streamlit-aggrid==0.3.3
+streamlit==1.40.1
+streamlit-aggrid==1.0.5
+cryptography==42.0.5
+requests==2.31.0
+certifi==2024.2.2

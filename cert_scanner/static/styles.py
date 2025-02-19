@@ -109,7 +109,7 @@ def load_css():
             display: flex !important;
             align-items: center !important;
             justify-content: space-between !important;
-            margin-bottom: 0.5rem !important;
+            margin-bottom: 1rem !important;
             position: relative !important;
         }
         
@@ -609,6 +609,11 @@ def load_css():
             color: rgba(255, 255, 255, 0.6) !important;
             border: none !important;
             font-style: italic !important;
+        }
+        
+        /* Progress bar color */
+        .stProgress > div > div > div > div {
+            background-color: #0066ff;
         }
         </style>
     """, unsafe_allow_html=True) 

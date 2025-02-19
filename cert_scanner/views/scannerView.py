@@ -29,7 +29,39 @@ from ..models import (
     HOST_TYPE_SERVER, ENV_PRODUCTION
 )
 from ..static.styles import load_warning_suppression, load_css
+import json
+from typing import Tuple
 
+
+def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
+    """
+    Validate a port number string.
+    
+    Args:
+        port_str: The port number as a string
+        entry: The full entry string for error messages
+        
+    Returns:
+        Tuple[bool, int]: (is_valid, port_number)
+    """
+    print(f"DEBUG: Validating port: {port_str} from entry: {entry}")  # Debug log
+    try:
+        port = int(port_str)
+        print(f"DEBUG: Converted port to integer: {port}")  # Debug log
+        if port < 0:
+            print(f"DEBUG: Port is negative: {port}")  # Debug log
+            st.error(f"Invalid port number in {entry}: Port cannot be negative")
+            return False, 0
+        if port > 65535:
+            print(f"DEBUG: Port is too large: {port}")  # Debug log
+            st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+            return False, 0
+        print(f"DEBUG: Port is valid: {port}")  # Debug log
+        return True, port
+    except ValueError as e:
+        print(f"DEBUG: ValueError converting port: {str(e)}")  # Debug log
+        st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
+        return False, 0
 
 def render_scan_interface(engine) -> None:
     """
@@ -147,7 +179,6 @@ internal.server.local:444"""
         
         # Handle scan initiation
         if scan_button_clicked:
-            print("DEBUG: Scan button clicked")  # Debug output
             # Reset scan results
             st.session_state.scan_results = {
                 "success": [],
@@ -168,81 +199,65 @@ internal.server.local:444"""
             # Process each target
             for entry in entries:
                 try:
-                    # Validate port number format
-                    if ':-' in entry:
-                        st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
-                        st.error("Please enter at least one valid hostname to scan")
-                        validation_errors = True
-                        continue
-
-                    # Parse URL or hostname:port format
-                    parsed = urlparse(entry)
-                    if parsed.netloc:
+                    # First check if input contains a scheme
+                    has_scheme = entry.startswith(('http://', 'https://'))
+                    
+                    if has_scheme:
+                        # Parse as URL
+                        parsed = urlparse(entry)
+                        print(f"DEBUG: URL parse result: {parsed}")  # Debug log
+                        
+                        # Get hostname from netloc
                         hostname = parsed.netloc
-                    else:
-                        hostname = parsed.path
-                    
-                    port = 443  # Default port
-                    
-                    # Handle port specification
-                    if ':' in hostname:
-                        try:
-                            parts = hostname.rsplit(':', 1)
-                            if len(parts) != 2:
-                                st.error(f"Invalid format in {entry}: Could not parse hostname and port")
-                                st.error("Please enter at least one valid hostname to scan")
+                        print(f"DEBUG: Using netloc as hostname: {hostname}")  # Debug log
+                        
+                        # Check if port is in netloc
+                        if ':' in hostname:
+                            hostname, port_str = hostname.rsplit(':', 1)
+                            print(f"DEBUG: Split hostname and port from netloc: {hostname}, {port_str}")  # Debug log
+                            is_valid, port = validate_port(port_str, entry)
+                            if not is_valid:
                                 validation_errors = True
                                 continue
-                                
-                            hostname, port_str = parts
-                            port_str = port_str.strip()
+                        elif parsed.port:
+                            is_valid, port = validate_port(str(parsed.port), entry)
+                            if not is_valid:
+                                validation_errors = True
+                                continue
+                        else:
+                            port = 443  # Default port for URLs
+                    else:
+                        # Handle hostname:port format
+                        if ':' in entry:
+                            hostname, port_str = entry.rsplit(':', 1)
+                            print(f"DEBUG: Split hostname and port from entry: {hostname}, {port_str}")  # Debug log
                             
                             # Validate port number
-                            try:
-                                port = int(port_str)
-                                print(f"DEBUG: Parsed port {port} from {entry}")
-                                
-                                if port < 1 or port > 65535:
-                                    print(f"DEBUG: Invalid port {port} - outside valid range")
-                                    st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
-                                    st.error("Please enter at least one valid hostname to scan")
-                                    validation_errors = True
-                                    continue
-                                else:
-                                    print(f"DEBUG: Port {port} is valid")
-                            except ValueError:
-                                print(f"DEBUG: Failed to parse port from {entry}")
-                                st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
-                                st.error("Please enter at least one valid hostname to scan")
+                            is_valid, port = validate_port(port_str, entry)
+                            if not is_valid:
                                 validation_errors = True
                                 continue
-                        except Exception as e:
-                            print(f"DEBUG: Error validating port: {str(e)}")
-                            st.error(f"Error validating port in {entry}: {str(e)}")
-                            st.error("Please enter at least one valid hostname to scan")
-                            validation_errors = True
-                            continue
+                        else:
+                            hostname = entry
+                            port = 443  # Default port
                     
                     # Validate hostname
+                    hostname = hostname.strip('/')
                     if not hostname:
                         st.error(f"Invalid entry: {entry} - Hostname cannot be empty")
-                        st.error("Please enter at least one valid hostname to scan")
                         validation_errors = True
                         continue
                     
-                    # Clean up hostname
-                    hostname = hostname.strip('/')
+                    print(f"DEBUG: Final hostname and port: {hostname}, {port}")  # Debug log
                     
                     scan_targets.append((hostname, port))
                 except Exception as e:
-                    print(f"DEBUG: Exception while parsing {entry}: {str(e)}")
                     st.error(f"Error parsing {entry}: Please check the format")
                     validation_errors = True
                     continue
             
             # Handle validation errors
             if validation_errors:
-                print("DEBUG: Validation errors found, showing final error message")
                 st.error("Please enter at least one valid hostname to scan")
                 return
             
@@ -253,6 +268,13 @@ internal.server.local:444"""
                 status_container = st.empty()
                 
                 with progress_container:
+                    st.markdown("""
+                        <style>
+                        .stProgress > div > div > div > div {
+                            background-color: #0066ff;
+                        }
+                        </style>
+                        """, unsafe_allow_html=True)
                     progress = st.progress(0)
                 
                 # Execute scans with progress tracking
@@ -280,13 +302,29 @@ internal.server.local:444"""
                                                     common_name=cert_info.common_name,
                                                     valid_from=cert_info.valid_from,
                                                     valid_until=cert_info.expiration_date,
-                                                    issuer=str(cert_info.issuer),
-                                                    subject=str(cert_info.subject),
-                                                    san=str(cert_info.san),
+                                                    _issuer=json.dumps(cert_info.issuer),
+                                                    _subject=json.dumps(cert_info.subject),
+                                                    _san=json.dumps(cert_info.san),
                                                     key_usage=cert_info.key_usage,
-                                                    signature_algorithm=cert_info.signature_algorithm
+                                                    signature_algorithm=cert_info.signature_algorithm,
+                                                    chain_valid=cert_info.chain_valid,
+                                                    sans_scanned=False
                                                 )
                                                 session.add(cert)
+                                            else:
+                                                # Update existing certificate
+                                                cert.thumbprint = cert_info.thumbprint
+                                                cert.common_name = cert_info.common_name
+                                                cert.valid_from = cert_info.valid_from
+                                                cert.valid_until = cert_info.expiration_date
+                                                cert._issuer = json.dumps(cert_info.issuer)
+                                                cert._subject = json.dumps(cert_info.subject)
+                                                cert._san = json.dumps(cert_info.san)
+                                                cert.key_usage = cert_info.key_usage
+                                                cert.signature_algorithm = cert_info.signature_algorithm
+                                                cert.chain_valid = cert_info.chain_valid
+                                                cert.sans_scanned = False
+                                                cert.updated_at = datetime.now()
                                             
                                             # Process host information
                                             host = session.query(Host).filter_by(
@@ -352,6 +390,13 @@ internal.server.local:444"""
                                             session.add(scan)
                                             
                                             session.commit()
+                                            
+                                            # Update sans_scanned flag if this was a SAN scan
+                                            if st.session_state.get('scan_targets') and isinstance(st.session_state.scan_targets, list):
+                                                # Set sans_scanned to True since we've attempted the scan
+                                                cert.sans_scanned = True
+                                                session.commit()
+                                            
                                         except Exception as e:
                                             st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
                                             session.rollback()
@@ -383,36 +428,6 @@ internal.server.local:444"""
                                         except Exception as e:
                                             logger.error(f"Failed to record failed scan: {str(e)}")
                                             session.rollback()
-                            except ConnectionError as e:
-                                # Handle connection errors
-                                error_msg = f"Connection error scanning {hostname}:{port} - {str(e)}"
-                                st.error(error_msg)
-                                st.session_state.scan_results["error"].append(error_msg)
-                                with Session(engine) as session:
-                                    try:
-                                        # Record failed scan
-                                        host = session.query(Host).filter_by(name=hostname).first()
-                                        if not host:
-                                            host = Host(
-                                                name=hostname,
-                                                host_type=HOST_TYPE_SERVER,
-                                                environment=ENV_PRODUCTION,
-                                                last_seen=datetime.now()
-                                            )
-                                            session.add(host)
-                                            session.flush()
-
-                                        scan = CertificateScan(
-                                            scan_date=datetime.now(),
-                                            status='Failed',
-                                            port=port,
-                                            host_id=host.id
-                                        )
-                                        session.add(scan)
-                                        session.commit()
-                                    except Exception as e:
-                                        logger.error(f"Failed to record failed scan: {str(e)}")
-                                        session.rollback()
                             except Exception as e:
                                 # Handle other errors
                                 error_msg = f"Error scanning {hostname}:{port} - {str(e)}"
@@ -445,8 +460,7 @@ internal.server.local:444"""
                                         session.rollback()
                             
                             # Update progress
-                            with progress_container:
-                                progress.progress((i + 1) / len(scan_targets))
+                            progress.progress((i + 1) / len(scan_targets))
                 
                 # Clear status after completion
                 status_container.empty()
@@ -555,9 +569,12 @@ def render_scan_results() -> None:
                 st.markdown(scan)
             else:
                 scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
-                          f"(🕒 {scan_time} • <span class='text-success'>Valid</span>)</span>",
-                          unsafe_allow_html=True)
+                chain_status = "🔒 Valid Chain" if scan.certificate and scan.certificate.chain_valid else "⚠️ Unverified Chain"
+                st.markdown(
+                    f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
+                    f"(🕒 {scan_time} • <span class='text-success'>Valid</span> • {chain_status})</span>",
+                    unsafe_allow_html=True
+                )
     
     # Display failed scans
     if st.session_state.scan_results["error"]:
@@ -567,9 +584,11 @@ def render_scan_results() -> None:
                 st.markdown(scan)
             else:
                 scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
-                          f"(🕒 {scan_time} • <span class='text-danger'>Failed</span>)</span>",
-                          unsafe_allow_html=True)
+                st.markdown(
+                    f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
+                    f"(🕒 {scan_time} • <span class='text-danger'>Failed</span>)</span>",
+                    unsafe_allow_html=True
+                )
     
     # Display warning messages
     if st.session_state.scan_results["warning"]:
@@ -579,6 +598,8 @@ def render_scan_results() -> None:
                 st.markdown(scan)
             else:
                 scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
-                          f"(🕒 {scan_time} • <span class='text-warning'>Warning</span>)</span>",
-                          unsafe_allow_html=True)
+                st.markdown(
+                    f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
+                    f"(🕒 {scan_time} • <span class='text-warning'>Warning</span>)</span>",
+                    unsafe_allow_html=True
+                )

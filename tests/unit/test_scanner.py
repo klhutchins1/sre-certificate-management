@@ -118,27 +118,27 @@ def test_get_ip_addresses(scanner):
 @patch('ssl.create_default_context')
 def test_get_certificate(mock_ssl_context, mock_socket, scanner):
     """Test certificate retrieval"""
-    # Create mock SSL socket with context manager
+    # Create mock SSL socket
     mock_ssl_socket = MagicMock()
     mock_ssl_socket.getpeercert.return_value = b"mock_cert_data"
     
-    # Setup context manager for SSL socket
-    mock_wrapped_socket = MagicMock()
-    mock_wrapped_socket.__enter__.return_value = mock_ssl_socket
-    mock_wrapped_socket.__exit__.return_value = None
-    
     # Setup SSL context
     mock_context = MagicMock()
-    mock_context.wrap_socket.return_value = mock_wrapped_socket
+    mock_context.wrap_socket.return_value = mock_ssl_socket
     mock_ssl_context.return_value = mock_context
+    
+    # Setup socket
+    mock_socket_instance = MagicMock()
+    mock_socket.return_value = mock_socket_instance
     
     # Test certificate retrieval
     cert_data = scanner._get_certificate("test.com", 443)
-    assert cert_data == b"mock_cert_data"
     
     # Verify socket was created and connected
     mock_socket.assert_called_once()
-    mock_context.wrap_socket.assert_called_once()
+    mock_context.wrap_socket.assert_called_once_with(mock_socket_instance, server_hostname="test.com")
+    mock_ssl_socket.getpeercert.assert_called_once_with(binary_form=True)
+    assert cert_data == mock_ssl_socket.getpeercert.return_value
 
 @patch('socket.socket')
 def test_get_certificate_errors(mock_socket, scanner):

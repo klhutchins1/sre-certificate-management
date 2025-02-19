@@ -480,6 +480,77 @@ class CertificateScanner:
                 key_usage = str(ext)
                 break
         
+        # Get signature algorithm - try multiple methods
+        signature_algorithm = None
+        try:
+            # Common signature algorithm OIDs and their names
+            sig_alg_oids = {
+                "1.2.840.113549.1.1.5": "SHA1withRSA",
+                "1.2.840.113549.1.1.11": "SHA256withRSA",
+                "1.2.840.113549.1.1.12": "SHA384withRSA",
+                "1.2.840.113549.1.1.13": "SHA512withRSA",
+                "1.2.840.10045.4.3.2": "ECDSA-SHA256",
+                "1.2.840.10045.4.3.3": "ECDSA-SHA384",
+                "1.2.840.10045.4.3.4": "ECDSA-SHA512",
+                "1.3.14.3.2.29": "SHA1withRSA",
+                "1.2.840.113549.1.1.4": "MD5withRSA",
+                "1.2.840.113549.1.1.1": "RSA",
+                "1.2.840.113549.1.1.2": "MD2withRSA",
+                "1.2.840.113549.1.1.3": "MD4withRSA",
+                "1.2.840.113549.1.1.6": "SHA1withRSA",
+                "1.2.840.113549.1.1.7": "RSAES-OAEP",
+                "1.2.840.113549.1.1.8": "MGF1",
+                "1.2.840.113549.1.1.9": "RSASSA-PSS",
+                "1.2.840.113549.1.1.10": "RSASSA-PSS",
+                "1.2.840.10045.4.1": "ECDSA-SHA1",
+                "1.2.840.10045.4.3.1": "ECDSA-SHA224",
+                "1.2.840.10040.4.3": "DSA-SHA1",
+                "2.16.840.1.101.3.4.3.1": "DSA-SHA224",
+                "2.16.840.1.101.3.4.3.2": "DSA-SHA256"
+            }
+
+            # Method 1: Try getting algorithm directly
+            try:
+                sig_alg_direct = x509.get_signature_algorithm()
+                if sig_alg_direct:
+                    self.logger.info(f"Method 1 - Direct signature algorithm for {address}: {sig_alg_direct}")
+                    signature_algorithm = sig_alg_direct.decode('utf-8')
+            except Exception as e1:
+                self.logger.warning(f"Method 1 failed for {address}: {str(e1)}")
+
+            # Method 2: Try OID mapping
+            if not signature_algorithm:
+                try:
+                    sig_alg_oid = x509.get_signature_algorithm_oid().decode('utf-8')
+                    self.logger.info(f"Method 2 - Signature algorithm OID for {address}: {sig_alg_oid}")
+                    if sig_alg_oid in sig_alg_oids:
+                        signature_algorithm = sig_alg_oids[sig_alg_oid]
+                        self.logger.info(f"Method 2 - Mapped signature algorithm for {address}: {signature_algorithm}")
+                    else:
+                        signature_algorithm = sig_alg_oid
+                        self.logger.info(f"Method 2 - Using OID as signature algorithm for {address}: {signature_algorithm}")
+                except Exception as e2:
+                    self.logger.warning(f"Method 2 failed for {address}: {str(e2)}")
+
+            # Method 3: Try getting algorithm name directly
+            if not signature_algorithm:
+                try:
+                    sig_alg_name = x509.get_signature_algorithm_name()
+                    if sig_alg_name:
+                        self.logger.info(f"Method 3 - Algorithm name for {address}: {sig_alg_name}")
+                        signature_algorithm = sig_alg_name.decode('utf-8') if isinstance(sig_alg_name, bytes) else str(sig_alg_name)
+                except Exception as e3:
+                    self.logger.warning(f"Method 3 failed for {address}: {str(e3)}")
+
+            if not signature_algorithm:
+                self.logger.warning(f"All signature algorithm extraction methods failed for {address}")
+            else:
+                self.logger.info(f"Final signature algorithm for {address}: {signature_algorithm}")
+
+        except Exception as e:
+            self.logger.error(f"Error getting signature algorithm for {address}: {str(e)}")
+            signature_algorithm = None
+        
         # Get dates
         valid_from = datetime.strptime(
             x509.get_notBefore().decode('utf-8'),
@@ -507,6 +578,7 @@ class CertificateScanner:
             valid_from=valid_from,
             version=x509.get_version(),
             key_usage=key_usage,
+            signature_algorithm=signature_algorithm,
             chain_valid=chain_valid  # Add chain validation status
         )
         

@@ -28,6 +28,10 @@ from ..models import Host, HostIP, CertificateBinding, Application, Certificate
 from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
+from ..components.deletion_dialog import render_deletion_dialog
+import logging
+
+logger = logging.getLogger(__name__)
 
 def render_hosts_view(engine) -> None:
     """
@@ -520,333 +524,196 @@ def render_hosts_view(engine) -> None:
                     if view_type == "Hostname" and not selected_row.get('Hostname'):
                         return
                     
-                    # Get the host based on the hostname
-                    selected_host = next(
-                        (h for h in hosts if h.name == selected_row['Hostname']),
-                        None
-                    )
+                    # Get the host with all relationships
+                    selected_host = session.query(Host).options(
+                        joinedload(Host.ip_addresses),
+                        joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate),
+                        joinedload(Host.scans)
+                    ).filter_by(name=selected_row['Hostname']).first()
                     
                     if selected_host:
                         st.divider()
                         if selected_row.get('_id'):
                             # If there's a binding ID, show binding details
-                            selected_binding = next(
-                                (b for b in host.certificate_bindings if b.id == selected_row['_id']), 
-                                None
-                            )
-                            if selected_binding:
-                                render_binding_details(selected_binding)
+                            binding = session.query(CertificateBinding).options(
+                                joinedload(CertificateBinding.host),
+                                joinedload(CertificateBinding.host_ip),
+                                joinedload(CertificateBinding.certificate)
+                            ).get(selected_row['_id'])
+                            if binding:
+                                render_details(selected_host, binding, session)
                         else:
                             # If no binding, show host details
-                            render_host_details(selected_host)
+                            render_details(selected_host, None, session)
             except Exception as e:
                 st.error(f"Error handling selection: {str(e)}")
+                logger.error(f"Selection error: {str(e)}", exc_info=True)  # Add detailed logging
                 
             # Add spacing after grid
             st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
         else:
             st.warning("No host data available")
 
-def render_binding_details(binding: CertificateBinding) -> None:
+def render_details(selected_host: Host, binding: CertificateBinding = None, session: Session = None) -> None:
     """
-    Render detailed information about a specific certificate binding.
-
-    This function displays comprehensive information about a certificate binding,
-    including certificate details, binding configuration, and scan history.
-
+    Unified details view for both host and binding details.
+    
     Args:
-        binding: CertificateBinding model instance containing the binding information
-
-    Features:
-        - Certificate information display:
-            - Common name
-            - Validity status
-            - Expiration date
-            - Serial number
-            - Thumbprint
-        - Binding configuration details:
-            - Platform settings
-            - Port configuration
-            - Site name
-            - Last seen timestamp
-        - Host information:
-            - Hostname
-            - IP address
-            - Environment
-            - Host type
-        - Scan history:
-            - Scan dates
-            - Status history
-            - Port history
-
-    The view uses color coding and status indicators to highlight important
-    information such as certificate validity and expiration status.
+        selected_host: Host model instance
+        binding: Optional CertificateBinding instance for binding-specific view
+        session: SQLAlchemy session for database operations
     """
-    # Calculate certificate validity status
-    is_valid = binding.certificate.valid_until > datetime.now()
-    status_class = "cert-valid" if is_valid else "cert-expired"
-    
-    # Display certificate details section
-    st.markdown(f"""
-        ### Certificate Details
-        
-        **Current Certificate:** {binding.certificate.common_name}  
-        **Status:** <span class='cert-status {status_class}'>{"Valid" if is_valid else "Expired"}</span>  
-        **Valid Until:** {binding.certificate.valid_until.strftime('%Y-%m-%d')}  
-        **Serial Number:** {binding.certificate.serial_number}  
-        **Thumbprint:** {binding.certificate.thumbprint}
-    """, unsafe_allow_html=True)
-    
-    # Display binding configuration section
-    st.markdown("""
-        ### Binding Details
-    """)
-    
-    col1, col2 = st.columns(2)
+    # Create header with title
+    col1, col2 = st.columns([3, 1])
     with col1:
-        st.markdown(f"""
-            **Platform:** {binding.platform or "Not Set"}  
-            **Port:** {binding.port}  
-            **Site Name:** {binding.site_name or "Default"}  
-            **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
-        """)
+        st.subheader(f"💻 {selected_host.name}")
     
-    with col2:
-        st.markdown(f"""
-            **Host:** {binding.host.name}  
-            **IP Address:** {binding.host_ip.ip_address if binding.host_ip else "N/A"}  
-            **Environment:** {binding.host.environment}  
-            **Host Type:** {binding.host.host_type}
-        """)
-    
-    # Display scan history section
-    if binding.certificate.scans:
-        st.markdown("### Scan History")
-        scan_data = []
-        for scan in binding.certificate.scans:
-            scan_data.append({
-                "Date": scan.scan_date,
-                "Status": scan.status,
-                "Port": scan.port
-            })
-        
-        if scan_data:
-            df = pd.DataFrame(scan_data)
-            st.dataframe(
-                df,
-                column_config={
-                    "Date": st.column_config.DatetimeColumn(
-                        "Date",
-                        format="DD/MM/YYYY HH:mm"
-                    ),
-                    "Status": st.column_config.TextColumn(
-                        "Status",
-                        width="small"
-                    ),
-                    "Port": st.column_config.NumberColumn(
-                        "Port",
-                        width="small"
-                    )
-                },
-                hide_index=True,
-                use_container_width=True
-            )
-
-def render_host_details(host: Host) -> None:
-    """
-    Render detailed information about a specific host.
-
-    This function provides a comprehensive view of a host's configuration,
-    certificate bindings, and history through a tabbed interface.
-
-    Args:
-        host: Host model instance containing the host information
-
-    Features:
-        Overview Tab:
-            - Basic host information
-                - Host type
-                - Environment
-                - Last seen timestamp
-            - Host management
-                - Edit functionality
-                - Delete capability
-            - IP address listing
-            - Certificate metrics
-                - Valid certificates count
-                - Total certificates count
-
-        Certificate Bindings Tab:
-            - List of all certificate bindings
-            - For each binding:
-                - Certificate common name
-                - Validity status
-                - Port information
-                - Platform details
-                - Site name
-                - Last seen timestamp
-            - Binding removal capability
-
-        History Tab:
-            - Complete certificate history
-            - For each certificate:
-                - Validity period
-                - Status
-                - Port information
-                - Platform details
-                - Last seen information
-
-    The interface provides full management capabilities while maintaining
-    a clean and organized presentation of complex host information.
-    """
-    st.subheader(f"🖥️ {host.name}")
-    
-    # Create tabbed interface
-    tab1, tab2, tab3 = st.tabs(["Overview", "Certificate Bindings", "History"])
+    # Create tabs for different sections
+    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Certificates", "IP Addresses", "Danger Zone"])
     
     with tab1:
-        # Host information and management section
+        # Overview tab
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown(f"""
-                **Host Type:** {host.host_type}  
-                **Environment:** {host.environment}  
-                **Last Seen:** {host.last_seen.strftime('%Y-%m-%d %H:%M')}
-            """)
-            
-            # Host editing interface
-            with st.expander("Edit Host"):
-                with st.form("edit_host"):
-                    new_type = st.selectbox("Host Type", 
-                        options=HOST_TYPES,
-                        index=HOST_TYPES.index(host.host_type))
-                    new_env = st.selectbox("Environment",
-                        options=ENVIRONMENTS,
-                        index=ENVIRONMENTS.index(host.environment))
-                    
-                    if st.form_submit_button("Update Host", type="primary"):
-                        try:
-                            session = st.session_state.get('session')
-                            host.host_type = new_type
-                            host.environment = new_env
-                            session.commit()
-                            st.success("✅ Host updated successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error updating host: {str(e)}")
-            
-            # Host deletion interface
-            with st.expander("Delete Host", expanded=False):
-                st.warning("⚠️ This action cannot be undone!")
-                if st.button("Delete Host", type="secondary"):
-                    try:
-                        session = st.session_state.get('session')
-                        session.delete(host)
-                        session.commit()
-                        st.success("Host deleted successfully!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error deleting host: {str(e)}")
+            st.markdown(f"**Host Type:** {selected_host.host_type}")
+            st.markdown(f"**Environment:** {selected_host.environment}")
+            if selected_host.description:
+                st.markdown(f"**Description:** {selected_host.description}")
+            st.markdown(f"**Last Seen:** {selected_host.last_seen.strftime('%Y-%m-%d %H:%M')}")
         
-        with col2:
-            # IP addresses section
-            st.markdown("### IP Addresses")
-            for ip in host.ip_addresses:
-                st.markdown(f"""
-                    - {ip.ip_address} (Last seen: {ip.last_seen.strftime('%Y-%m-%d %H:%M')})
-                """)
-            
-            # Certificate metrics section
-            valid_certs = sum(1 for binding in host.certificate_bindings 
-                            if binding.certificate.valid_until > datetime.now())
-            total_certs = len(host.certificate_bindings)
-            
-            st.markdown("### Certificate Status")
-            col3, col4 = st.columns(2)
-            col3.metric("Valid Certificates", valid_certs)
-            col4.metric("Total Certificates", total_certs)
-    
-    with tab2:
-        # Certificate bindings section
-        if host.certificate_bindings:
-            st.markdown("### Certificate Bindings")
-            for binding in host.certificate_bindings:
+        # If we're showing a specific binding, show its details
+        if binding:
+            with col2:
+                st.markdown("### Current Certificate")
+                st.markdown(f"**Certificate:** {binding.certificate.common_name}")
                 is_valid = binding.certificate.valid_until > datetime.now()
                 status_class = "cert-valid" if is_valid else "cert-expired"
+                st.markdown(f"**Status:** <span class='cert-status {status_class}'>{'Valid' if is_valid else 'Expired'}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Valid Until:** {binding.certificate.valid_until.strftime('%Y-%m-%d')}")
+                st.markdown(f"**Port:** {binding.port if binding.port else 'N/A'}")
+                st.markdown(f"**Platform:** {binding.platform or 'Not Set'}")
+    
+    with tab2:
+        # Certificates tab
+        if binding:
+            # Show detailed certificate information for the specific binding
+            cert = binding.certificate
+            st.markdown("### Certificate Details")
+            st.markdown(f"**Serial Number:** {cert.serial_number}")
+            st.markdown(f"**Thumbprint:** {cert.thumbprint}")
+            st.markdown(f"**Type:** {binding.binding_type}")
+            if binding.site_name:
+                st.markdown(f"**Site:** {binding.site_name}")
+            
+            # Show scan history if available
+            if cert.scans:
+                st.markdown("### Scan History")
+                scan_data = []
+                for scan in cert.scans:
+                    scan_data.append({
+                        "Date": scan.scan_date,
+                        "Status": scan.status,
+                        "Port": scan.port
+                    })
                 
-                with st.expander(f"{binding.certificate.common_name} ({binding.port})", expanded=False):
-                    st.markdown(f"""
-                        **Certificate:** {binding.certificate.common_name}  
-                        **Status:** <span class='cert-status {status_class}'>{"Valid" if is_valid else "Expired"}</span>  
-                        **Port:** {binding.port}  
-                        **Platform:** {binding.platform or "Not Set"}  
-                        **Site Name:** {binding.site_name or "Default"}  
-                        **Last Seen:** {binding.last_seen.strftime('%Y-%m-%d %H:%M')}
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button("Remove Binding", key=f"remove_{binding.id}", type="secondary"):
-                        try:
-                            session = st.session_state.get('session')
-                            session.delete(binding)
-                            session.commit()
-                            st.success("Binding removed successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error removing binding: {str(e)}")
+                if scan_data:
+                    df = pd.DataFrame(scan_data)
+                    st.dataframe(
+                        df,
+                        column_config={
+                            "Date": st.column_config.DatetimeColumn(
+                                "Date",
+                                format="DD/MM/YYYY HH:mm"
+                            ),
+                            "Status": st.column_config.TextColumn(
+                                "Status",
+                                width="small"
+                            ),
+                            "Port": st.column_config.NumberColumn(
+                                "Port",
+                                width="small"
+                            )
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
         else:
-            st.info("No certificate bindings found for this host")
+            # Show all certificates bound to this host
+            bindings = session.query(CertificateBinding).filter_by(host_id=selected_host.id).all()
+            if bindings:
+                for b in bindings:
+                    cert = b.certificate
+                    if cert:
+                        with st.expander(f"🔐 {cert.common_name}", expanded=True):
+                            st.markdown(f"**Port:** {b.port if b.port else 'N/A'}")
+                            st.markdown(f"**Platform:** {b.platform if b.platform else 'Not Set'}")
+                            st.markdown(f"**Type:** {b.binding_type}")
+                            st.markdown(f"**Valid Until:** {cert.valid_until.strftime('%Y-%m-%d')}")
+                            if b.site_name:
+                                st.markdown(f"**Site:** {b.site_name}")
+                            
+                            # Add remove binding button
+                            if st.button("Remove Binding", key=f"remove_{b.id}", type="secondary"):
+                                try:
+                                    session.delete(b)
+                                    session.commit()
+                                    st.success("Binding removed successfully!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error removing binding: {str(e)}")
+            else:
+                st.info("No certificates bound to this host")
     
     with tab3:
-        # Certificate history section
-        st.markdown("### Certificate History")
-        history_data = []
-        for binding in host.certificate_bindings:
-            history_data.append({
-                "Certificate": binding.certificate.common_name,
-                "Valid From": binding.certificate.valid_from,
-                "Valid Until": binding.certificate.valid_until,
-                "Status": "Valid" if binding.certificate.valid_until > datetime.now() else "Expired",
-                "Port": binding.port,
-                "Platform": binding.platform or "Not Set",
-                "Last Seen": binding.last_seen
-            })
-        
-        if history_data:
-            df = pd.DataFrame(history_data)
-            st.dataframe(
-                df,
-                column_config={
-                    "Certificate": st.column_config.TextColumn(
-                        "Certificate",
-                        width="large"
-                    ),
-                    "Valid From": st.column_config.DatetimeColumn(
-                        "Valid From",
-                        format="DD/MM/YYYY"
-                    ),
-                    "Valid Until": st.column_config.DatetimeColumn(
-                        "Valid Until",
-                        format="DD/MM/YYYY"
-                    ),
-                    "Status": st.column_config.TextColumn(
-                        "Status",
-                        width="small"
-                    ),
-                    "Port": st.column_config.NumberColumn(
-                        "Port",
-                        width="small"
-                    ),
-                    "Platform": st.column_config.TextColumn(
-                        "Platform",
-                        width="medium"
-                    ),
-                    "Last Seen": st.column_config.DatetimeColumn(
-                        "Last Seen",
-                        format="DD/MM/YYYY HH:mm"
-                    )
-                },
-                hide_index=True,
-                use_container_width=True
-            )
+        # IP Addresses tab
+        if binding and binding.host_ip:
+            st.markdown(f"**Current IP:** {binding.host_ip.ip_address}")
+            st.markdown(f"**Last Seen:** {binding.host_ip.last_seen.strftime('%Y-%m-%d %H:%M')}")
         else:
-            st.info("No certificate history found for this host")
+            if selected_host.ip_addresses:
+                for ip in selected_host.ip_addresses:
+                    st.markdown(f"**{ip.ip_address}** - Last seen: {ip.last_seen.strftime('%Y-%m-%d %H:%M')}")
+            else:
+                st.info("No IP addresses recorded for this host")
+    
+    with tab4:
+        st.markdown("### ⚠️ Danger Zone")
+        
+        # Gather dependencies
+        dependencies = {
+            "IP Addresses": [ip.ip_address for ip in selected_host.ip_addresses],
+            "Certificate Bindings": [
+                f"{b.certificate.common_name} ({b.port})" if b.port else b.certificate.common_name
+                for b in selected_host.certificate_bindings if b.certificate
+            ],
+            "Scan Records": [
+                f"Scan on {s.scan_date.strftime('%Y-%m-%d %H:%M')}"
+                for s in selected_host.scans
+            ]
+        }
+        
+        def delete_host():
+            try:
+                # Delete the host and all related records
+                session.delete(selected_host)
+                session.commit()
+                st.success(f"Host {selected_host.name} deleted successfully")
+                # Clear the selection and rerun to refresh the view
+                if 'selected_host_id' in st.session_state:
+                    del st.session_state.selected_host_id
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error deleting host: {str(e)}")
+                session.rollback()
+        
+        # Create the full confirmation text
+        confirm_text = f"delete {selected_host.name}"
+        
+        # Render deletion dialog with explicit confirmation text
+        render_deletion_dialog(
+            title="Delete Host",
+            item_name=selected_host.name,
+            dependencies=dependencies,
+            on_confirm=delete_host,
+            danger_text=f"This action cannot be undone. All related data will be permanently deleted. Type exactly '{confirm_text}' to confirm deletion."
+        )

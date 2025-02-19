@@ -76,9 +76,9 @@ def render_applications_view(engine) -> None:
     
     # Application creation form
     if st.session_state.get('show_add_app_form', False):
-        st.markdown('<div class="form-container">', unsafe_allow_html=True)
         with st.form("add_application_form"):
             st.subheader("Add New Application")
+            st.markdown('<div class="form-content">', unsafe_allow_html=True)
             
             # Form input fields
             col1, col2 = st.columns(2)
@@ -95,6 +95,7 @@ def render_applications_view(engine) -> None:
                 app_owner = st.text_input("Owner",
                     help="Team or individual responsible for this application")
             
+            st.markdown('</div>', unsafe_allow_html=True)
             # Form submission handling
             submitted = st.form_submit_button("Add Application", type="primary")
             
@@ -125,7 +126,6 @@ def render_applications_view(engine) -> None:
                         st.rerun()
                 except Exception as e:
                     st.error(f"Error adding application: {str(e)}")
-        st.markdown('</div>', unsafe_allow_html=True)
     
     st.divider()
     

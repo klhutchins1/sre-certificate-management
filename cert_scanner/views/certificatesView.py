@@ -27,10 +27,11 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
-from ..models import Certificate, CertificateBinding, Host, HostIP, HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, ENV_INTERNAL, ENV_PRODUCTION
+from ..models import Certificate, CertificateBinding, Host, HostIP, HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking
 from ..constants import platform_options
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
+from ..components.deletion_dialog import render_deletion_dialog
 import json
 
 def render_certificate_list(engine):
@@ -272,9 +273,13 @@ def render_certificate_card(cert, session):
     - Details: Technical certificate details
     - Change Tracking: Certificate lifecycle events
     """
-    st.subheader(f"📜 {cert.common_name}")
+    # Create header with title and delete button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.subheader(f"📜 {cert.common_name}")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Bindings", "Details", "Change Tracking"])
+    # Create tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Bindings", "Details", "Change Tracking", "Danger Zone"])
     
     with tab1:
         render_certificate_overview(cert, session)
@@ -287,6 +292,41 @@ def render_certificate_card(cert, session):
         
     with tab4:
         render_certificate_tracking(cert, session)
+        
+    with tab5:
+        st.markdown("### ⚠️ Danger Zone")
+        
+        # Gather dependencies
+        dependencies = {
+            "Bindings": [f"{b.host.name}:{b.port}" if b.port else b.host.name 
+                        for b in cert.certificate_bindings],
+            "Change Records": [f"Change {t.change_number}" for t in cert.tracking_entries],
+            "Scan History": [f"Scan on {s.scan_date.strftime('%Y-%m-%d %H:%M')}"
+                           for s in cert.scans]
+        }
+        
+        def delete_certificate():
+            try:
+                # Delete the certificate and all related records
+                session.delete(cert)
+                session.commit()
+                st.success(f"Certificate {cert.common_name} deleted successfully")
+                # Clear the selection and rerun to refresh the view
+                if 'selected_cert_id' in st.session_state:
+                    del st.session_state.selected_cert_id
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error deleting certificate: {str(e)}")
+                session.rollback()
+        
+        # Render deletion dialog
+        render_deletion_dialog(
+            title="Delete Certificate",
+            item_name=cert.common_name,
+            dependencies=dependencies,
+            on_confirm=delete_certificate,
+            danger_text="This action cannot be undone. All related data will be permanently deleted."
+        )
 
 def render_certificate_overview(cert: Certificate, session) -> None:
     """Render the certificate overview tab."""
@@ -543,14 +583,23 @@ def render_certificate_details(cert):
     - Key usage flags
     - Signature algorithm details
     """
-    st.json({
-        "Serial Number": cert.serial_number,
-        "Thumbprint": cert.thumbprint,
-        "Issuer": cert.issuer,  # Already returns a dict from hybrid_property
-        "Subject": cert.subject,  # Already returns a dict from hybrid_property
-        "Key Usage": cert.key_usage,
-        "Signature Algorithm": cert.signature_algorithm
-    })
+    # Add debug logging
+    print(f"DEBUG: Certificate details for {cert.common_name}:")
+    print(f"DEBUG: Signature Algorithm: {cert.signature_algorithm}")
+    print(f"DEBUG: Raw certificate data: {cert.__dict__}")
+    
+    # Prepare details with proper handling of None values
+    details = {
+        "Serial Number": cert.serial_number or "Not Available",
+        "Thumbprint": cert.thumbprint or "Not Available",
+        "Issuer": cert.issuer or {},  # Already returns a dict from hybrid_property
+        "Subject": cert.subject or {},  # Already returns a dict from hybrid_property
+        "Key Usage": cert.key_usage or "Not Specified",
+        "Signature Algorithm": cert.signature_algorithm or "Not Available"
+    }
+    
+    #print(f"DEBUG: Details to display: {details}")
+    st.json(details)
 
 def render_certificate_tracking(cert, session):
     """

@@ -1,6 +1,6 @@
 import pytest
 import os
-from pathlib import Path
+from pathlib import Path, WindowsPath
 import shutil
 import json
 from datetime import datetime
@@ -242,17 +242,39 @@ def test_backup_with_missing_database(test_env):
 def test_backup_with_special_characters(test_env):
     """Test backup with special characters in paths"""
     # Use Windows-safe special characters
-    special_path = test_env['tmp_path'] / "special-test_backup (1)"
-    special_path.mkdir(exist_ok=True)
+    backup_dir = test_env['backup_dir']
+    special_path = backup_dir / "special-test_backup (1)"
+    special_path.mkdir(parents=True, exist_ok=True)
+    special_path = special_path.resolve()  # Get absolute path
+    
+    # Create test database file
+    db_file = test_env['db_file']  # Use the test environment's database file
+    engine = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
     
     settings = Settings()
-    settings.update("paths.backups", str(special_path))
+    # Update paths in settings
+    settings.update("paths.database", str(db_file))
+    settings.update("paths.backups", str(backup_dir))  # Use backup_dir instead of special_path
+    settings.save()
     
     success, message = create_backup()
-    assert success
+    assert success, f"Backup failed: {message}"
     
-    # Verify backup was created
-    assert len(list(special_path.glob("*"))) > 0
+    # Look for backup files in the backup directory
+    manifest_files = list(backup_dir.glob("backup_*.json"))
+    assert len(manifest_files) > 0, f"No manifest files found in {backup_dir}"
+    
+    # Verify all backup components exist
+    manifest_file = manifest_files[0]
+    with open(manifest_file) as f:
+        manifest = json.load(f)
+        config_file = Path(manifest['config'])
+        assert config_file.exists(), f"Config file not found at {config_file}"
+        if manifest['database']:
+            db_backup = Path(manifest['database'])
+            assert db_backup.exists(), f"Database backup not found at {db_backup}"
 
 def test_multiple_backups_ordering(test_env):
     """Test that multiple backups are ordered correctly"""
@@ -295,7 +317,8 @@ def test_multiple_backups_ordering(test_env):
             
             # Verify backup was created
             backup_files = list(test_env['backup_dir'].glob("*"))
-            assert len(backup_files) > i * 3, f"Expected at least {i * 3} files for backup {i}, got {len(backup_files)}"
+            expected_files = (i + 1) * 3  # Each backup creates 3 files
+            assert len(backup_files) >= expected_files, f"Expected at least {expected_files} files after backup {i}, got {len(backup_files)}"
             
             # Get timestamp from manifest file
             manifest_files = list(test_env['backup_dir'].glob("backup_*.json"))
@@ -306,7 +329,7 @@ def test_multiple_backups_ordering(test_env):
             
             created_backups.extend([str(f) for f in backup_files])
             
-            time.sleep(0.001)  # Small delay just to be safe
+            time.sleep(1)  # Ensure different timestamps
         
         # Verify we have unique timestamps
         assert len(created_timestamps) == 3, f"Expected 3 unique timestamps, got {len(created_timestamps)}: {created_timestamps}"

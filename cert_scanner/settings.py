@@ -26,7 +26,7 @@ integrity and provides proper error handling for all operations.
 # Standard library imports
 import os
 import yaml
-from pathlib import Path
+from pathlib import Path, WindowsPath
 import logging
 from typing import Dict, Any
 
@@ -336,7 +336,7 @@ class Settings:
     
     def _validate_config_value(self, key: str, value: Any) -> bool:
         """
-        Validate a configuration value.
+        Validate a configuration value based on its key
         
         Args:
             key: Configuration key to validate
@@ -352,56 +352,119 @@ class Settings:
         - Paths are valid
         - Lists contain valid elements
         """
-        try:
-            # Check if key exists in default config structure
-            current = DEFAULT_CONFIG
-            for k in key.split('.'):
-                if not isinstance(current, dict) or k not in current:
-                    logger.error(f"Invalid config key: {key}")
-                    return False
-                current = current[k]
+        # Split key into parts
+        key_parts = key.split('.')
+        
+        # Validate key exists in default config structure
+        config = DEFAULT_CONFIG
+        for part in key_parts:
+            if part not in config:
+                return False
+            config = config[part]
+
+        # Validate paths
+        if key == "paths.database":
+            if not _validate_path(value):
+                return False
+            # For database paths, ensure they end with .db
+            return value.lower().endswith('.db')
+        elif key == "paths.backups":
+            return _validate_path(value)
             
-            # Rate limit validation
-            if key.endswith('.rate_limit'):
-                return isinstance(value, int) and value > 0
-            
-            # Delay validation
-            if key.endswith('.delay'):
+        # Validate scanning settings
+        elif key.startswith("scanning."):
+            if "rate_limit" in key:
+                return isinstance(value, (int, float)) and value > 0
+            elif "delay" in key:
                 return isinstance(value, (int, float)) and value >= 0
-            
-            # Expiry warnings validation
-            if key == 'alerts.expiry_warnings':
+            elif "domains" in key:
+                return isinstance(value, list) and all(isinstance(d, str) for d in value)
+                
+        # Validate alert settings
+        elif key.startswith("alerts."):
+            if key == "alerts.expiry_warnings":
                 if not isinstance(value, list):
                     return False
-                return all(
-                    isinstance(w, dict) and
-                    isinstance(w.get('days'), int) and w['days'] > 0 and
-                    w.get('level') in ['info', 'warning', 'critical']
-                    for w in value
-                )
-            
-            # Path validation
-            if key.startswith('paths.'):
-                if not isinstance(value, str):
-                    return False
-                try:
-                    # Check if path contains invalid characters
-                    path = Path(value)
-                    # Try to resolve the path to catch any system-specific issues
-                    path.resolve()
-                    return True
-                except Exception as e:
-                    logger.error(f"Invalid path {value}: {str(e)}")
-                    return False
-            
-            # Domain list validation
-            if key.endswith('.domains'):
-                return isinstance(value, list) and all(isinstance(d, str) for d in value)
-            
-            return True
-        except Exception as e:
-            logger.error(f"Validation error for {key}: {str(e)}")
-            return False
+                valid_levels = {"info", "warning", "error", "critical"}
+                for warning in value:
+                    if not isinstance(warning, dict):
+                        return False
+                    if "days" not in warning or "level" not in warning:
+                        return False
+                    if not isinstance(warning["days"], int) or warning["days"] <= 0:
+                        return False
+                    if warning["level"] not in valid_levels:
+                        return False
+                return True
+            elif key == "alerts.failed_scans.consecutive_failures":
+                return isinstance(value, int) and value > 0
+                
+        # Validate export settings
+        elif key.startswith("exports."):
+            if key == "exports.csv.delimiter":
+                return isinstance(value, str) and len(value) == 1
+            elif key == "exports.csv.encoding":
+                return isinstance(value, str) and value.strip()
+            elif key == "exports.default_format":
+                return value in ["CSV", "JSON", "YAML"]
+                
+        # Unknown key
+        return False
+
+def _is_network_path(path):
+    """Check if a path is a valid network path format"""
+    if not isinstance(path, str):
+        return False
+    
+    # Normalize path separators
+    path = path.replace('\\', '/')
+    
+    # Check for UNC path format (//server/share/...)
+    if not path.startswith('//'):
+        return False
+    
+    # Split path into components
+    parts = [p for p in path.split('/') if p]
+    
+    # Network path should have at least server and share
+    if len(parts) < 2:
+        return False
+    
+    # Server name should not be empty
+    if not parts[0]:
+        return False
+    
+    # Share name should not be empty
+    if not parts[1]:
+        return False
+    
+    return True
+
+def _validate_path(path):
+    """Validate a file or directory path"""
+    if not isinstance(path, str):
+        return False
+    
+    if not path:
+        return False
+    
+    # Handle network paths
+    if path.startswith('\\\\') or path.startswith('//'):
+        return _is_network_path(path)
+    
+    # Handle local paths
+    try:
+        # Convert to Path object for validation
+        path_obj = Path(path)
+        
+        # Check for invalid characters in path
+        for part in path_obj.parts:
+            if any(c in part for c in ['<', '>', ':', '"', '|', '?', '*']):
+                return False
+        
+        return True
+    except Exception:
+        return False
 
 #------------------------------------------------------------------------------
 # Global Instance

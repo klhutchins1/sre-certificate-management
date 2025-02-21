@@ -33,7 +33,7 @@ all configuration changes and backup operations.
 import streamlit as st
 from ..settings import Settings
 import os
-from pathlib import Path
+from pathlib import Path, WindowsPath
 import shutil
 from datetime import datetime
 import json
@@ -41,8 +41,8 @@ import glob
 import logging
 import yaml
 import time
-from typing import List, Tuple, Dict, Optional
-from ..db import SessionManager
+from typing import List, Tuple, Dict, Optional, Union, Any
+from ..db import SessionManager, _is_network_path, _normalize_path
 from ..exports import (
     export_certificates_to_csv,
     export_certificates_to_pdf,
@@ -50,6 +50,7 @@ from ..exports import (
     export_hosts_to_pdf
 )
 from ..static.styles import load_warning_suppression, load_css
+from sqlalchemy.engine import Engine
 
 
 logger = logging.getLogger(__name__)
@@ -87,13 +88,7 @@ def list_backups() -> List[Dict]:
             backup_dir.mkdir(parents=True, exist_ok=True)
         
         backups = []
-        # List all files in backup directory for debugging
-        all_files = list(backup_dir.glob("*"))
-        logger.debug(f"All files in backup directory: {[str(f) for f in all_files]}")
-        
-        # Find all manifest files
         manifest_files = list(backup_dir.glob("backup_*.json"))
-        logger.debug(f"Found manifest files: {[str(f) for f in manifest_files]}")
         
         for manifest_file in manifest_files:
             try:
@@ -101,271 +96,149 @@ def list_backups() -> List[Dict]:
                     manifest = json.load(f)
                     # Add manifest filename for reference
                     manifest['manifest_file'] = str(manifest_file)
-                    # Ensure both timestamp and created fields exist
-                    if 'created' not in manifest and 'timestamp' in manifest:
-                        manifest['created'] = datetime.strptime(
-                            manifest['timestamp'], 
-                            "%Y%m%d_%H%M%S"
-                        ).isoformat()
+                    
+                    # Ensure required fields exist
+                    if 'timestamp' not in manifest:
+                        # If no timestamp, try to extract from filename
+                        filename = manifest_file.stem
+                        timestamp = filename.replace('backup_', '')
+                        manifest['timestamp'] = timestamp
+                    
+                    if 'created' not in manifest:
+                        try:
+                            # Try to parse timestamp into created date
+                            created = datetime.strptime(manifest['timestamp'], "%Y%m%d_%H%M%S")
+                            manifest['created'] = created.isoformat()
+                        except ValueError:
+                            # If parsing fails, use file modification time
+                            created = datetime.fromtimestamp(manifest_file.stat().st_mtime)
+                            manifest['created'] = created.isoformat()
+                    
                     backups.append(manifest)
             except Exception as e:
                 logger.error(f"Error reading manifest {manifest_file}: {str(e)}")
                 continue
         
         # Sort backups by created timestamp, newest first
-        sorted_backups = sorted(backups, key=lambda x: x.get('created', x.get('timestamp', '')), reverse=True)
-        logger.debug(f"Returning {len(sorted_backups)} backups")
+        sorted_backups = sorted(
+            backups,
+            key=lambda x: x.get('created', x.get('timestamp', '')),
+            reverse=True
+        )
         return sorted_backups
         
     except Exception as e:
         logger.error(f"Error listing backups: {str(e)}")
         return []
 
-def restore_backup(manifest: Dict) -> Tuple[bool, str]:
+def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[bool, str]:
     """
-    Restore the system from a backup using the provided manifest.
-
-    This function restores both the database and configuration from a backup
-    based on the provided manifest information. It includes comprehensive
-    validation and error handling to ensure data integrity.
-
+    Restore from a backup.
+    
     Args:
-        manifest: Dictionary containing backup manifest information:
-            - config: Path to configuration backup file
-            - database: Path to database backup file (optional)
-            - timestamp: Backup creation timestamp
-            - created: ISO format timestamp of creation
-
+        manifest_file_or_dict: Either a path to a manifest file or a manifest dictionary
+        
     Returns:
-        tuple: (success: bool, message: str)
-            - success: True if restore was successful, False otherwise
-            - message: Descriptive message about the operation result
-
-    Features:
-        - Database restoration:
-            - Connection management
-            - Table recreation
-            - Data verification
-        - Configuration restoration:
-            - YAML validation
-            - Safe configuration updates
-        - Comprehensive error handling:
-            - File existence checks
-            - Format validation
-            - Database integrity checks
-        - Automatic backup verification
-        - Session management
-        - Progress logging
-
-    The function includes safeguards to prevent partial restores and
-    maintains system integrity throughout the restore process.
+        Tuple[bool, str]: Success status and message
     """
+    settings = Settings()
+    db_path = settings.get("paths.database")
+    
+    if not db_path:
+        message = "Database path not configured"
+        st.error(message)
+        return False, message
+    
     try:
-        settings = Settings()
-        logger.info("Starting database restore process")
-        logger.info(f"Manifest contents: {manifest}")
+        # Load manifest
+        if isinstance(manifest_file_or_dict, dict):
+            manifest = manifest_file_or_dict
+        else:
+            try:
+                with open(manifest_file_or_dict) as f:
+                    manifest = json.load(f)
+            except Exception as e:
+                message = f"Failed to read manifest file: {str(e)}"
+                st.error(message)
+                return False, message
         
         # Verify backup files exist
-        config_file = Path(manifest.get('config', ''))
-        if not config_file.exists():
-            logger.error(f"Config backup file not found: {config_file}")
-            return False, "Config backup file not found"
+        db_backup = Path(manifest.get("database", ""))
+        config_backup = Path(manifest.get("config", ""))
         
-        # Restore database if it exists in backup
-        db_file = manifest.get('database')
-        if db_file:
-            logger.info(f"Database backup file found in manifest: {db_file}")
-            db_file = Path(db_file)
-            logger.info(f"Restoring from backup file: {db_file}")
+        if not config_backup.is_file():
+            message = "Config backup file not found"
+            st.error(message)
+            return False, message
             
-            if not db_file.exists():
-                logger.error(f"Database backup file not found: {db_file}")
-                return False, "Database backup file not found"
-                
-            db_path = Path(settings.get("paths.database", "data/certificates.db"))
-            logger.info(f"Target database path: {db_path}")
-            
-            # Ensure target directory exists
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            try:
-                # Close all existing database connections
-                from sqlalchemy import create_engine
-                from sqlalchemy.orm import Session, sessionmaker
-                from ..models import Base, Certificate
-                
-                # Drop all tables and recreate them
-                engine = create_engine(f"sqlite:///{db_path}")
-                logger.info("Closing all existing database sessions")
-                Session.close_all()
-                
-                logger.info("Dropping all tables")
-                Base.metadata.drop_all(engine)
-                engine.dispose()
-                
-                # Wait a moment for connections to fully close
-                time.sleep(0.1)
-                
-                logger.info("Copying backup file")
-                if db_path.exists():
-                    logger.info("Removing existing database file")
-                    db_path.unlink()
-                shutil.copy2(db_file, db_path)
-                
-                # Create a new engine and ensure tables exist
-                logger.info("Creating tables in restored database")
-                engine = create_engine(f"sqlite:///{db_path}")
-                Base.metadata.create_all(engine)
-                
-                # Verify the restored database
-                with Session(engine) as session:
-                    cert_count = session.query(Certificate).count()
-                    logger.info(f"Found {cert_count} certificates in restored database")
-                
-                engine.dispose()
-                logger.info("Database restore completed")
-                
-            except Exception as e:
-                logger.error(f"Failed to restore database: {str(e)}")
-                return False, f"Failed to restore database: {str(e)}"
+        if not db_backup.is_file():
+            message = "Database backup file not found"
+            st.error(message)
+            return False, message
         
-        # Restore config
-        try:
-            logger.info("Restoring configuration")
-            # First verify the backup config is valid YAML
-            with open(config_file, 'r') as f:
-                backup_config = yaml.safe_load(f)
-            if not isinstance(backup_config, dict):
-                logger.error("Invalid backup configuration format")
-                return False, "Invalid backup configuration format"
-            
-            # Update settings with backup config
-            settings._config = backup_config.copy()
-            settings.save()  # This will write to config.yaml
-            logger.info("Configuration restored successfully")
-            
-            return True, "Backup restored successfully"
-        except Exception as e:
-            logger.error(f"Failed to restore config: {str(e)}")
-            return False, f"Failed to restore config: {str(e)}"
-            
+        # Restore database
+        shutil.copy2(str(db_backup), db_path)
+        
+        # Restore configuration
+        with open(config_backup) as f:
+            config = yaml.safe_load(f)
+            settings._config = config
+            settings.save()
+        
+        message = "Backup restored successfully"
+        st.success(message)
+        return True, message
+        
     except Exception as e:
-        logger.error(f"Failed to restore backup: {str(e)}")
-        return False, f"Failed to restore backup: {str(e)}"
+        message = f"Failed to restore backup: {str(e)}"
+        st.error(message)
+        return False, message
 
-def create_backup() -> Tuple[bool, str]:
-    """
-    Create a complete system backup including database and configuration.
-
-    This function creates a timestamped backup of the entire system,
-    including the database and configuration files. It generates a
-    manifest file to track backup contents and metadata.
-
-    Returns:
-        tuple: (success: bool, message: str)
-            - success: True if backup was successful, False otherwise
-            - message: Descriptive message about the operation result
-
-    Features:
-        - Timestamped backups:
-            - Microsecond precision
-            - Unique backup identifiers
-        - Component backups:
-            - Database backup
-            - Configuration backup
-            - Manifest creation
-        - Validation:
-            - File integrity checks
-            - Backup verification
-            - Manifest validation
-        - Error handling:
-            - Partial backup cleanup
-            - Detailed error reporting
-            - Logging for troubleshooting
-
-    The function ensures atomic backup operations by cleaning up
-    partial backups if any step fails.
-    """
+def create_backup():
+    """Create a backup of the database and configuration"""
     try:
         settings = Settings()
-        logger.info("Starting backup creation")
         
-        # Ensure backup directory exists
-        backup_dir = Path(settings.get("paths.backups", "data/backups"))
+        # Get paths and ensure they're resolved
+        db_path = Path(_normalize_path(settings.get("paths.database"))).resolve()
+        backup_dir = WindowsPath(_normalize_path(settings.get("paths.backups"))).resolve()
+        
+        # Create backup directory if it doesn't exist
         backup_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Using backup directory: {backup_dir}")
         
-        # Create timestamp for backup with microsecond precision
-        now = datetime.now()
-        timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
-        
-        # Initialize backup paths
-        db_backup = None
-        config_backup = backup_dir / f"config_{timestamp}.yaml"
+        # Generate timestamp for backup files
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Backup database if it exists
-        db_path = Path(settings.get("paths.database", "data/certificates.db"))
-        logger.info(f"Database path to backup: {db_path}")
-        if db_path.exists():
+        db_backup = None
+        if os.path.exists(str(db_path)):
             db_backup = backup_dir / f"certificates_{timestamp}.db"
-            try:
-                logger.info(f"Creating database backup at: {db_backup}")
-                shutil.copy2(db_path, db_backup)
-            except Exception as e:
-                logger.error(f"Failed to backup database: {str(e)}")
-                return False, f"Failed to backup database: {str(e)}"
-        else:
-            logger.warning(f"Database file not found at {db_path}")
+            shutil.copy2(str(db_path), str(db_backup))
         
-        # Backup config
-        try:
-            logger.info("Creating config backup")
-            current_config = settings._config.copy()
-            with open(config_backup, 'w') as f:
-                yaml.safe_dump(current_config, f)
-        except Exception as e:
-            logger.error(f"Failed to backup config: {str(e)}")
-            if db_backup and db_backup.exists():
-                db_backup.unlink()  # Clean up database backup if config fails
-            return False, f"Failed to backup config: {str(e)}"
+        # Backup configuration
+        config = settings._config
+        config_backup = backup_dir / f"config_{timestamp}.yaml"
+        with open(str(config_backup), 'w', encoding='utf-8') as f:
+            yaml.safe_dump(config, f)
         
-        # Create backup manifest
-        try:
-            manifest = {
-                "timestamp": timestamp,
-                "database": str(db_backup) if db_backup else None,
-                "config": str(config_backup),
-                "created": now.isoformat()
-            }
-            logger.info(f"Creating manifest with contents: {manifest}")
-            
-            manifest_file = backup_dir / f"backup_{timestamp}.json"
-            with open(manifest_file, 'w') as f:
-                json.dump(manifest, f, indent=2)
-            
-            # Verify all files were created
-            expected_files = [manifest_file, config_backup]
-            if db_backup:
-                expected_files.append(db_backup)
-                
-            for file in expected_files:
-                if not file.exists():
-                    logger.error(f"Expected backup file not found: {file}")
-                    return False, f"Failed to verify backup files"
-            
-            logger.info("Backup created successfully")
-            return True, f"Backup created successfully at {backup_dir}"
-        except Exception as e:
-            logger.error(f"Failed to create manifest: {str(e)}")
-            # Clean up any created files
-            for file in [db_backup, config_backup]:
-                if file and file.exists():
-                    file.unlink()
-            return False, f"Failed to create manifest: {str(e)}"
-            
+        # Create manifest
+        manifest = {
+            "timestamp": timestamp,
+            "created": datetime.now().isoformat(),
+            "database": str(db_backup) if db_backup else None,
+            "config": str(config_backup)
+        }
+        
+        manifest_file = backup_dir / f"backup_{timestamp}.json"
+        with open(str(manifest_file), 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2)
+        
+        st.success("Backup created successfully")
+        return True, "Backup created successfully"
     except Exception as e:
-        logger.error(f"Failed to create backup: {str(e)}")
-        return False, f"Failed to create backup: {str(e)}"
+        error_msg = f"Failed to create backup: {str(e)}"
+        st.error(error_msg)
+        return False, error_msg
 
 def render_settings_view(engine) -> None:
     """
@@ -391,14 +264,11 @@ def render_settings_view(engine) -> None:
             - Path validation and creation
         
         - Scanning Settings:
-            - Rate limit configuration:
-                - Default rate limits
-                - Internal domain settings
-                - External domain settings
-            - Domain pattern management:
-                - Internal domain patterns
-                - External domain patterns
-                - Custom domain configuration
+            - Rate limit configuration help text
+            - Default rate limit configuration
+            - Internal domain configuration
+            - External domain configuration
+            - Domain pattern management
         
         - Alert Settings:
             - Certificate expiry warnings:
@@ -582,30 +452,26 @@ def render_settings_view(engine) -> None:
         for i, warning in enumerate(expiry_warnings):
             col1, col2, col3 = st.columns([2, 2, 1])
             with col1:
-                try:
-                    current_days = int(warning.get("days", 30))
-                    days = st.number_input(
-                        f"Days before expiry {i+1}",
-                        min_value=1,
-                        value=max(1, current_days),
-                        key=f"days_{i}"
-                    )
-                except ValueError:
-                    days = 30
-                    st.warning(f"Invalid days value for warning {i+1}, using default: 30")
+                days = st.number_input(
+                    f"Warning {i+1} Days",
+                    min_value=1,
+                    value=warning.get("days", 30),
+                    key=f"warning_days_{i}",
+                    help="Days before expiry to trigger warning"
+                )
             with col2:
                 level = st.selectbox(
-                    f"Alert level {i+1}",
-                    options=["info", "warning", "critical"],
-                    index=["info", "warning", "critical"].index(warning.get("level", "warning")),
-                    key=f"level_{i}"
+                    f"Warning {i+1} Level",
+                    options=["info", "warning", "error", "critical"],
+                    index=["info", "warning", "error", "critical"].index(warning.get("level", "warning")),
+                    key=f"warning_level_{i}",
+                    help="Severity level of the warning"
                 )
             with col3:
-                if st.button(f"Remove Warning {i+1}", key=f"remove_{i}"):
+                if st.button("Remove", key=f"remove_warning_{i}"):
                     expiry_warnings.pop(i)
                     st.rerun()
-            # Add warning to updated list
-            updated_warnings.append({"days": int(days), "level": level})
+            updated_warnings.append({"days": days, "level": level})
         
         # Add new warning threshold button
         if st.button("Add Expiry Warning"):
@@ -707,4 +573,66 @@ def render_settings_view(engine) -> None:
                         output_path = export_hosts_to_pdf(session)
                         st.success(f"Hosts exported to PDF: {output_path}")
                 except Exception as e:
-                    st.error(f"Failed to export hosts to PDF: {str(e)}") 
+                    st.error(f"Failed to export hosts to PDF: {str(e)}")
+
+    # Render backup and restore section
+    render_backup_restore_section()
+
+def render_backup_restore_section():
+    """Render backup and restore section in settings view"""
+    st.subheader("Backup and Restore")
+    
+    # Create a container for alerts
+    alert_container = st.empty()
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("Create Backup")
+        if st.button("Create Backup"):
+            # Clear any previous alerts
+            alert_container.empty()
+            
+            # Create backup and show result in alert container
+            success, message = create_backup()
+            if success:
+                alert_container.success(message)
+            else:
+                alert_container.error(message)
+    
+    with col2:
+        st.write("Available Backups")
+        try:
+            backups = list_backups()
+            
+            if not backups:
+                st.info("No backups available")
+            else:
+                # Create a list of backup options
+                backup_options = []
+                for b in backups:
+                    created = datetime.fromisoformat(b['created']).strftime("%Y-%m-%d %H:%M:%S")
+                    backup_options.append(f"{created}")
+                
+                selected_backup = st.selectbox(
+                    "Select backup to restore",
+                    options=backup_options,
+                    index=0 if backup_options else None
+                )
+                
+                if selected_backup and st.button("Restore Selected Backup"):
+                    # Clear any previous alerts
+                    alert_container.empty()
+                    
+                    # Find the selected backup manifest
+                    selected_idx = backup_options.index(selected_backup)
+                    manifest_file = backups[selected_idx]["manifest_file"]
+                    
+                    # Restore backup and show result in alert container
+                    success, message = restore_backup(manifest_file)
+                    if success:
+                        alert_container.success(message)
+                    else:
+                        alert_container.error(message)
+        except Exception as e:
+            alert_container.error(f"Error loading backups: {str(e)}") 

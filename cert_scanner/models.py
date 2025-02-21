@@ -214,6 +214,7 @@ class Certificate(Base):
         created_at (datetime): When the certificate was added
         updated_at (datetime): When the certificate was last updated
         notes (str): Additional notes for manual entries
+        version (int): X.509 version number
         
     Hybrid Properties:
         issuer (dict): Certificate issuer information
@@ -243,6 +244,7 @@ class Certificate(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     notes = Column(Text, nullable=True)
+    version = Column(Integer, nullable=True)  # X.509 version number
     
     # Relationships
     certificate_bindings = relationship("CertificateBinding", back_populates="certificate", cascade="all, delete-orphan")

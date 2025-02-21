@@ -1,9 +1,10 @@
 import pytest
 from sqlalchemy import create_engine, inspect, Column, Integer, String
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from cert_scanner.db import (
     init_database, get_session, backup_database, restore_database, 
-    update_database_schema, reset_database, check_database, SessionManager
+    update_database_schema, reset_database, check_database, SessionManager, _is_network_path, _normalize_path
 )
 from cert_scanner.models import Base, Certificate, Host, HostIP
 from datetime import datetime
@@ -26,12 +27,22 @@ import threading
 from sqlalchemy import event
 from sqlalchemy.orm import validates
 import queue
+import sys
+from pathlib import WindowsPath
 
 logger = logging.getLogger(__name__)
 
 # Constants for test data
 HOST_TYPE_SERVER = "Server"
 ENV_PRODUCTION = "Production"
+
+def cleanup_temp_dir(temp_dir):
+    """Helper function to clean up temporary test directories."""
+    try:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+    except Exception as e:
+        print(f"Warning: Failed to clean up temporary directory {temp_dir}: {e}")
 
 @pytest.fixture
 def test_db():
@@ -468,830 +479,6 @@ def test_init_database_existing_corrupted():
             shutil.rmtree(temp_dir)
         except Exception as e:
             print(f"Warning: Could not delete temporary directory: {temp_dir}, Error: {str(e)}")
-
-def init_database(db_path=None):
-    """Initialize the database connection and create tables if they don't exist"""
-    try:
-        # Get database path from parameter or settings
-        if db_path is None:
-            settings = Settings()
-            db_path = Path(settings.get("paths.database", "data/certificates.db"))
-        else:
-            db_path = Path(db_path)
-        
-        # Convert to absolute path
-        db_path = db_path.absolute()
-        
-        # Check for invalid characters in path first
-        invalid_chars = '<>"|?*'  # Remove ':' from invalid chars since it's valid in Windows paths
-        if any(char in str(db_path) for char in invalid_chars):
-            raise Exception(f"Invalid database path: {db_path}")
-        
-        parent_dir = db_path.parent
-        
-        # Handle parent directory
-        if parent_dir.exists():
-            if not parent_dir.is_dir():
-                raise Exception(f"Path exists but is not a directory: {parent_dir}")
-            if not os.access(str(parent_dir), os.W_OK):
-                raise Exception(f"No write permission for database directory: {parent_dir}")
-        else:
-            # Check if we can create the directory by checking write permissions on its parent
-            parent_of_parent = parent_dir.parent
-            if not parent_of_parent.exists() or not parent_of_parent.is_dir():
-                raise Exception(f"Parent directory's parent does not exist or is not a directory: {parent_of_parent}")
-            if not os.access(str(parent_of_parent), os.W_OK):
-                raise Exception(f"Cannot create database directory: {parent_dir} (no write permission)")
-            try:
-                parent_dir.mkdir(parents=True, exist_ok=True)
-            except PermissionError as e:
-                raise Exception(f"Cannot create database directory: {parent_dir} (Access denied)")
-            except Exception as e:
-                raise Exception(f"Cannot create database directory: {parent_dir} ({str(e)})")
-            
-            # Verify write permissions after creation
-            if not os.access(str(parent_dir), os.W_OK):
-                raise Exception(f"No write permission for database directory: {parent_dir}")
-        
-        # Handle existing database file
-        if db_path.exists():
-            if not os.access(str(db_path), os.W_OK):
-                raise Exception(f"No write permission for database file: {db_path}")
-            
-            # Validate existing database
-            try:
-                test_engine = create_engine(f"sqlite:///{db_path}")
-                with test_engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                test_engine.dispose()
-            except sqlite3.DatabaseError as e:
-                logger.warning(f"Removing invalid or corrupted database: {str(e)}")
-                try:
-                    db_path.unlink()
-                except Exception as e:
-                    logger.error(f"Failed to remove corrupted database: {str(e)}")
-                    raise
-                raise sqlite3.DatabaseError(f"Database at {db_path} is corrupted: {str(e)}")
-            except Exception as e:
-                logger.warning(f"Removing invalid or corrupted database: {str(e)}")
-                try:
-                    db_path.unlink()
-                except Exception as e:
-                    logger.error(f"Failed to remove corrupted database: {str(e)}")
-                    raise
-                raise
-        
-        # Create new database engine
-        logger.info(f"Using database at: {db_path}")
-        engine = create_engine(f"sqlite:///{db_path}")
-        
-        # Create tables and update schema
-        logger.info("Creating database tables...")
-        Base.metadata.create_all(engine)
-        
-        return engine
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        raise
-
-def cleanup_temp_dir(temp_dir):
-    """Helper function to clean up temporary directories"""
-    if not os.path.exists(temp_dir):
-        return
-
-    # Close any remaining sessions
-    Session.close_all()
-    
-    # Add a delay and force garbage collection
-    time.sleep(0.2)
-    gc.collect()
-    
-    for retry in range(3):
-        try:
-            shutil.rmtree(temp_dir)
-            break
-        except PermissionError:
-            if retry < 2:
-                time.sleep(0.5 * (retry + 1))
-            else:
-                logger.debug(f"Could not delete temporary directory after {retry + 1} attempts: {temp_dir}")
-
-# Ensure the SessionManager class is correctly implemented
-class SessionManager:
-    def __init__(self, engine):
-        self.engine = engine
-        self.session = None  # Initialize session attribute
-
-    def __enter__(self):
-        if self.engine:
-            self.session = Session(self.engine)  # Create a new session
-            return self.session
-        return None
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            self.session.close()  # Close the session
-
-def test_update_database_schema_add_column():
-    """Test adding a new column to an existing table"""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_schema_column.db")
-    engine = create_engine(f"sqlite:///{db_path}")
-    
-    try:
-        # Create initial table without the new column
-        class TestTable(Base):
-            __tablename__ = 'test_table'
-            id = Column(Integer, primary_key=True)
-            name = Column(String)
-
-        # Create initial schema
-        Base.metadata.create_all(engine)
-        
-        # Add new column to model
-        TestTable.new_column = Column(String)
-        
-        # Update schema
-        assert update_database_schema(engine) is True
-        
-        # Verify new column was added
-        inspector = inspect(engine)
-        columns = [c['name'] for c in inspector.get_columns('test_table')]
-        assert 'new_column' in columns
-        
-    finally:
-        Base.metadata.drop_all(engine)
-        engine.dispose()
-        cleanup_temp_dir(temp_dir)
-
-def test_init_database_readonly_dir(tmp_path):
-    """Test database initialization with read-only directory"""
-    db_path = str(tmp_path / "test.db")
-    parent_dir = str(tmp_path)
-    
-    try:
-        # Create the directory
-        os.makedirs(parent_dir, exist_ok=True)
-        
-        # Mock os.access to simulate read-only directory
-        def mock_access(path, mode):
-            path_str = str(path)
-            if os.path.normpath(path_str) == os.path.normpath(str(parent_dir)):
-                if mode == os.W_OK:
-                    return False
-            return True
-        
-        with patch('cert_scanner.db.os.access', side_effect=mock_access), \
-             patch('os.access', side_effect=mock_access):
-            with pytest.raises(Exception) as exc_info:
-                init_database(db_path)
-            assert "No write permission for database directory" in str(exc_info.value)
-    finally:
-        # No need to restore permissions since we're mocking
-        pass
-
-def test_init_database_nonexistent_parent(tmp_path):
-    """Test database initialization with nonexistent parent directory that can't be created"""
-    db_path = str(tmp_path / "nonexistent" / "test.db")
-    parent_dir = str(tmp_path / "nonexistent")
-    parent_of_parent = str(tmp_path)
-    
-    # Mock os.access to allow write permission on parent of parent
-    def mock_access(path, mode):
-        path_str = str(path)
-        if os.path.normpath(path_str) == os.path.normpath(str(parent_of_parent)):
-            return True
-        return False
-    
-    # Mock mkdir to raise PermissionError
-    def mock_mkdir(*args, **kwargs):
-        raise PermissionError("Access denied")
-    
-    with patch('cert_scanner.db.os.access', side_effect=mock_access), \
-         patch('os.access', side_effect=mock_access), \
-         patch('pathlib.Path.mkdir', side_effect=mock_mkdir):
-        with pytest.raises(Exception) as exc_info:
-            init_database(db_path)
-        
-        error_msg = str(exc_info.value)
-        assert "Cannot create database directory" in error_msg
-        assert "Access denied" in error_msg
-
-def test_session_cleanup_on_error():
-    """Test session cleanup when an error occurs"""
-    engine = create_engine('sqlite:///:memory:')
-    Base.metadata.create_all(engine)
-
-    Session = sessionmaker(bind=engine)
-    session = Session()
-
-    # Create a test record to verify session state
-    cert = Certificate(
-        serial_number="test123",
-        thumbprint="abc123",
-        common_name="test.com",
-        valid_from=datetime.now(),
-        valid_until=datetime.now(),
-        issuer="Test CA",
-        subject="CN=test.com",
-        san="test.com"
-    )
-    session.add(cert)
-    session.commit()
-
-    try:
-        # Simulate an error during session use
-        raise Exception("Test error")
-    except:
-        session.rollback()
-        session.close()
-        engine.dispose()  # Dispose the engine to ensure all connections are closed
-
-    # Verify that using the session raises an error
-    with pytest.raises((sqlalchemy.exc.ResourceClosedError, sqlalchemy.exc.StatementError)):
-        # Try to use the session after it's closed
-        session.query(Certificate).all()
-
-def test_session_manager_error_handling():
-    """Test SessionManager error handling and cleanup"""
-    engine = create_engine('sqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    
-    # Test that session is properly rolled back on error
-    with pytest.raises(ValueError):
-        with SessionManager(engine) as session:
-            # Add a test record
-            host = Host(
-                name="test-server",
-                host_type=HOST_TYPE_SERVER,
-                environment=ENV_PRODUCTION,
-                last_seen=datetime.now()
-            )
-            session.add(host)
-            session.flush()  # Ensure the record is in the session
-            
-            # Verify record exists in session
-            assert session.query(Host).count() == 1
-            
-            # Raise an error
-            raise ValueError("Test error")
-    
-    # Create new session to verify rollback occurred
-    with SessionManager(engine) as session:
-        assert session.query(Host).count() == 0
-
-def test_session_manager_nested():
-    """Test nested SessionManager contexts"""
-    engine = create_engine('sqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    
-    # Test nested session managers
-    with SessionManager(engine) as outer_session:
-        # Add a record in outer session
-        host1 = Host(
-            name="outer-server",
-            host_type=HOST_TYPE_SERVER,
-            environment=ENV_PRODUCTION,
-            last_seen=datetime.now()
-        )
-        outer_session.add(host1)
-        outer_session.commit()  # Commit the changes in outer session
-        
-        # Nested session manager
-        with SessionManager(engine) as inner_session:
-            # Add a record in inner session
-            host2 = Host(
-                name="inner-server",
-                host_type=HOST_TYPE_SERVER,
-                environment=ENV_PRODUCTION,
-                last_seen=datetime.now()
-            )
-            inner_session.add(host2)
-            inner_session.commit()  # Commit the changes in inner session
-            
-            # Verify both records are visible
-            assert inner_session.query(Host).count() == 2
-        
-        # Refresh outer session to see changes from inner session
-        outer_session.expire_all()
-        # Verify outer session can see all records
-        assert outer_session.query(Host).count() == 2
-
-def test_session_manager_commit():
-    """Test explicit commit in SessionManager"""
-    engine = create_engine('sqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    
-    # Test committing changes
-    with SessionManager(engine) as session:
-        host = Host(
-            name="test-server",
-            host_type=HOST_TYPE_SERVER,
-            environment=ENV_PRODUCTION,
-            last_seen=datetime.now()
-        )
-        session.add(host)
-        session.commit()
-    
-    # Verify changes persisted
-    with SessionManager(engine) as session:
-        assert session.query(Host).count() == 1
-        host = session.query(Host).first()
-        assert host.name == "test-server"
-
-def test_database_thread_safety():
-    """Test thread safety of database operations"""
-    import threading
-    import queue
-    from cert_scanner.db import db_lock
-    
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_thread.db")
-    engine = None
-    results_queue = queue.Queue()
-    
-    try:
-        engine = init_database(db_path)
-        
-        def worker(worker_id):
-            try:
-                with db_lock:
-                    # Simulate some database work
-                    with SessionManager(engine) as session:
-                        # Add a test record
-                        host = Host(
-                            name=f"server-{worker_id}",
-                            host_type=HOST_TYPE_SERVER,
-                            environment=ENV_PRODUCTION,
-                            last_seen=datetime.now()
-                        )
-                        session.add(host)
-                        session.commit()
-                        
-                        # Small delay to increase chance of race conditions
-                        time.sleep(0.1)
-                        
-                        # Verify our record
-                        result = session.query(Host).filter_by(name=f"server-{worker_id}").first()
-                        assert result is not None
-                        results_queue.put(("success", worker_id))
-            except Exception as e:
-                results_queue.put(("error", worker_id, str(e)))
-        
-        # Create and start multiple threads
-        threads = []
-        num_threads = 5
-        for i in range(num_threads):
-            t = threading.Thread(target=worker, args=(i,))
-            threads.append(t)
-            t.start()
-        
-        # Wait for all threads to complete
-        for t in threads:
-            t.join()
-        
-        # Check results
-        results = []
-        while not results_queue.empty():
-            results.append(results_queue.get())
-        
-        # Verify all operations succeeded
-        success_count = sum(1 for r in results if r[0] == "success")
-        assert success_count == num_threads
-        
-        # Verify final database state
-        with SessionManager(engine) as session:
-            assert session.query(Host).count() == num_threads
-    
-    finally:
-        if engine:
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
-
-def test_backup_restore_thread_safety():
-    """Test thread safety of backup and restore operations"""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_thread_backup.db")
-    backup_dir = os.path.join(temp_dir, "backups")
-    engine = None
-    
-    try:
-        os.makedirs(backup_dir)
-        engine = init_database(db_path)
-        
-        # Add some initial data
-        with SessionManager(engine) as session:
-            for i in range(5):
-                host = Host(
-                    name=f"server-{i}",
-                    host_type=HOST_TYPE_SERVER,
-                    environment=ENV_PRODUCTION,
-                    last_seen=datetime.now()
-                )
-                session.add(host)
-            session.commit()
-        
-        # Test concurrent backup operations
-        backup_paths = []
-        def backup_worker():
-            try:
-                backup_path = backup_database(engine, backup_dir)
-                backup_paths.append(backup_path)
-            except Exception as e:
-                pytest.fail(f"Backup failed: {str(e)}")
-        
-        threads = []
-        for _ in range(3):
-            t = threading.Thread(target=backup_worker)
-            threads.append(t)
-            t.start()
-        
-        for t in threads:
-            t.join()
-        
-        # Verify all backups were created successfully
-        assert len(backup_paths) == 3
-        for backup_path in backup_paths:
-            assert os.path.exists(backup_path)
-            
-            # Verify each backup is a valid database
-            test_engine = create_engine(f"sqlite:///{backup_path}")
-            with test_engine.connect() as conn:
-                result = conn.execute(text("SELECT COUNT(*) FROM hosts")).scalar()
-                assert result == 5
-            test_engine.dispose()
-    
-    finally:
-        if engine:
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
-
-def test_update_database_schema_default_value():
-    """Test adding a column with a default value"""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_schema_default.db")
-    engine = create_engine(f"sqlite:///{db_path}")
-    
-    try:
-        # Create initial table
-        class TestDefaultTable(Base):
-            __tablename__ = 'test_default_table'
-            id = Column(Integer, primary_key=True)
-            name = Column(String)
-        
-        Base.metadata.create_all(engine)
-        
-        # Add some initial data
-        with SessionManager(engine) as session:
-            test_record = TestDefaultTable(name="test1")
-            session.add(test_record)
-            session.commit()
-        
-        # Add new column with default value
-        TestDefaultTable.status = Column(String, default="active")
-        
-        # Update schema
-        assert update_database_schema(engine) is True
-        
-        # Verify column was added with default value
-        with SessionManager(engine) as session:
-            record = session.query(TestDefaultTable).first()
-            assert record.status == "active"  # Default value should be applied
-            
-            # New records should also get the default
-            new_record = TestDefaultTable(name="test2")
-            session.add(new_record)
-            session.commit()
-            assert new_record.status == "active"
-    
-    finally:
-        Base.metadata.drop_all(engine)
-        engine.dispose()
-        cleanup_temp_dir(temp_dir)
-
-def test_update_database_schema_with_constraint():
-    """Test adding a column with constraints"""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_schema_constraint.db")
-    engine = create_engine(f"sqlite:///{db_path}")
-    
-    try:
-        # Create initial table with validation
-        class TestConstraintTable(Base):
-            __tablename__ = 'test_constraint_table'
-            id = Column(Integer, primary_key=True)
-            name = Column(String)
-            required_field = Column(
-                String,
-                server_default=text("'default'")
-            )
-            
-            @validates('required_field')
-            def validate_required_field(self, key, value):
-                # Allow None during initial insert (server_default will handle it)
-                # But don't allow explicit None assignments
-                if value is None and self.id is not None:
-                    raise ValueError("required_field cannot be NULL")
-                return value
-        
-        # Create the table
-        Base.metadata.create_all(engine)
-        
-        # Test inserting records
-        with SessionManager(engine) as session:
-            # Test with default value (not specifying required_field)
-            record1 = TestConstraintTable(name="test1")
-            session.add(record1)
-            session.commit()
-            session.refresh(record1)
-            assert record1.required_field == "default"
-            
-            # Test with explicit value
-            record2 = TestConstraintTable(name="test2", required_field="custom")
-            session.add(record2)
-            session.commit()
-            session.refresh(record2)
-            assert record2.required_field == "custom"
-            
-            # Test with explicit NULL after insert (should fail)
-            with pytest.raises(ValueError):
-                record1.required_field = None
-                session.commit()
-            
-            # Rollback after the expected error
-            session.rollback()
-            
-            # Verify records are intact
-            session.refresh(record1)
-            session.refresh(record2)
-            assert record1.required_field == "default"
-            assert record2.required_field == "custom"
-            
-            # Verify only two records exist
-            records = session.query(TestConstraintTable).all()
-            assert len(records) == 2
-            assert records[0].required_field == "default"
-            assert records[1].required_field == "custom"
-    
-    finally:
-        Base.metadata.drop_all(engine)
-        engine.dispose()
-        cleanup_temp_dir(temp_dir)
-
-def test_update_database_schema_invalid():
-    """Test handling of invalid schema changes"""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_schema_invalid.db")
-    engine = create_engine(f"sqlite:///{db_path}")
-    
-    try:
-        # Create initial table
-        class TestInvalidTable(Base):
-            __tablename__ = 'test_invalid_table'
-            id = Column(Integer, primary_key=True)
-            name = Column(String)
-        
-        Base.metadata.create_all(engine)
-        
-        # Add some initial data
-        with SessionManager(engine) as session:
-            test_record = TestInvalidTable(name="test1")
-            session.add(test_record)
-            session.commit()
-        
-        # Create a new table class that's not part of Base.metadata
-        class InvalidTable:
-            __tablename__ = 'test_invalid_table'
-            id = Column(Integer, primary_key=True)
-            name = Column(String)
-            # Add an invalid column type (just a string instead of a proper type)
-            invalid_column = Column('INVALID_TYPE')
-        
-        # Try to update schema with invalid column type
-        assert update_database_schema(engine) is True  # Should succeed as invalid table is not in metadata
-        
-        # Verify original data is still intact
-        with SessionManager(engine) as session:
-            record = session.query(TestInvalidTable).first()
-            assert record.name == "test1"
-            # Verify invalid column was not added
-            inspector = inspect(engine)
-            columns = [c['name'] for c in inspector.get_columns('test_invalid_table')]
-            assert 'invalid_column' not in columns
-    
-    finally:
-        Base.metadata.drop_all(engine)
-        engine.dispose()
-        cleanup_temp_dir(temp_dir)
-
-def test_init_database_special_chars():
-    """Test database initialization with special characters in path"""
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # Test with spaces and parentheses
-        db_path1 = os.path.join(temp_dir, "test (1) with spaces.db")
-        engine1 = init_database(db_path1)
-        assert engine1 is not None
-        
-        # Verify database works
-        with SessionManager(engine1) as session:
-            host = Host(
-                name="test-server",
-                host_type=HOST_TYPE_SERVER,
-                environment=ENV_PRODUCTION,
-                last_seen=datetime.now()
-            )
-            session.add(host)
-            session.commit()
-        engine1.dispose()
-        
-        # Test with underscores and hyphens
-        db_path2 = os.path.join(temp_dir, "test_db-with-special_chars.db")
-        engine2 = init_database(db_path2)
-        assert engine2 is not None
-        
-        # Verify database works
-        with SessionManager(engine2) as session:
-            host = Host(
-                name="test-server",
-                host_type=HOST_TYPE_SERVER,
-                environment=ENV_PRODUCTION,
-                last_seen=datetime.now()
-            )
-            session.add(host)
-            session.commit()
-        engine2.dispose()
-        
-        # Test with dots
-        db_path3 = os.path.join(temp_dir, "test.db.backup.1")
-        engine3 = init_database(db_path3)
-        assert engine3 is not None
-        
-        # Verify database works
-        with SessionManager(engine3) as session:
-            host = Host(
-                name="test-server",
-                host_type=HOST_TYPE_SERVER,
-                environment=ENV_PRODUCTION,
-                last_seen=datetime.now()
-            )
-            session.add(host)
-            session.commit()
-        engine3.dispose()
-    
-    finally:
-        cleanup_temp_dir(temp_dir)
-
-def test_init_database_long_path():
-    """Test database initialization with very long path names"""
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # Create a deeply nested directory structure
-        deep_path = temp_dir
-        for i in range(10):  # Create 10 levels of directories
-            deep_path = os.path.join(deep_path, f"level_{i}_{'x' * 20}")  # 20 chars per level
-        
-        db_path = os.path.join(deep_path, "test.db")
-        
-        # Create all parent directories
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
-        # Initialize database
-        engine = init_database(db_path)
-        assert engine is not None
-        
-        # Verify database works
-        with SessionManager(engine) as session:
-            host = Host(
-                name="test-server",
-                host_type=HOST_TYPE_SERVER,
-                environment=ENV_PRODUCTION,
-                last_seen=datetime.now()
-            )
-            session.add(host)
-            session.commit()
-            
-            result = session.query(Host).first()
-            assert result is not None
-            assert result.name == "test-server"
-        
-        engine.dispose()
-    
-    finally:
-        cleanup_temp_dir(temp_dir)
-
-def test_init_database_unicode():
-    """Test database initialization with Unicode characters in path"""
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # Test with various Unicode characters
-        test_paths = [
-            os.path.join(temp_dir, "测试数据库.db"),  # Chinese
-            os.path.join(temp_dir, "тестовая-база.db"),  # Russian
-            os.path.join(temp_dir, "테스트-데이터베이스.db"),  # Korean
-            os.path.join(temp_dir, "Prüfung_Äß.db"),  # German
-            os.path.join(temp_dir, "base_de_données_éèê.db"),  # French
-        ]
-        
-        for db_path in test_paths:
-            try:
-                engine = init_database(db_path)
-                assert engine is not None
-                
-                # Verify database works
-                with SessionManager(engine) as session:
-                    host = Host(
-                        name="test-server",
-                        host_type=HOST_TYPE_SERVER,
-                        environment=ENV_PRODUCTION,
-                        last_seen=datetime.now()
-                    )
-                    session.add(host)
-                    session.commit()
-                    
-                    result = session.query(Host).first()
-                    assert result is not None
-                    assert result.name == "test-server"
-                
-                engine.dispose()
-            except Exception as e:
-                # Some filesystems might not support all Unicode characters
-                # Log the error but don't fail the test
-                logger.warning(f"Could not create database with Unicode path {db_path}: {str(e)}")
-    
-    finally:
-        cleanup_temp_dir(temp_dir)
-
-def update_database_schema(engine):
-    """
-    Update database schema to include new tables and columns.
-    
-    This function performs the following operations:
-    1. Inspects existing database schema
-    2. Compares with defined models
-    3. Creates missing tables
-    4. Adds missing columns to existing tables
-    
-    Args:
-        engine: SQLAlchemy engine instance
-        
-    Returns:
-        bool: True if update successful, False otherwise
-        
-    Note:
-        This operation is non-destructive and preserves existing data
-    """
-    try:
-        logger.info("Checking for missing tables and columns...")
-        inspector = inspect(engine)
-        existing_tables = inspector.get_table_names()
-        
-        # Get all table names from our models
-        model_tables = set(Base.metadata.tables.keys())
-        
-        # Find and create missing tables
-        missing_tables = model_tables - set(existing_tables)
-        if missing_tables:
-            logger.info(f"Creating missing tables: {missing_tables}")
-            for table_name in missing_tables:
-                if table_name in Base.metadata.tables:
-                    Base.metadata.tables[table_name].create(engine)
-        
-        # Update existing tables with missing columns
-        for table_name in existing_tables:
-            if table_name in Base.metadata.tables:
-                model_columns = {c.name: c for c in Base.metadata.tables[table_name].columns}
-                existing_columns = {c['name']: c for c in inspector.get_columns(table_name)}
-                
-                # Add missing columns
-                missing_columns = set(model_columns.keys()) - set(existing_columns.keys())
-                if missing_columns:
-                    logger.info(f"Adding missing columns to {table_name}: {missing_columns}")
-                    with engine.begin() as connection:
-                        for column_name in missing_columns:
-                            column = model_columns[column_name]
-                            nullable = 'NOT NULL' if not column.nullable else ''
-                            
-                            # Handle default values
-                            default = ''
-                            if column.server_default is not None:
-                                # For server_default, use the SQL text directly
-                                default = f"DEFAULT {str(column.server_default.arg)}"
-                            elif column.default is not None:
-                                if isinstance(column.default.arg, str):
-                                    default = f"DEFAULT '{column.default.arg}'"
-                                else:
-                                    default = f"DEFAULT {column.default.arg}"
-                            
-                            sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {nullable} {default}"
-                            connection.execute(text(sql.strip()))
-        
-        logger.info("Database schema updated successfully")
-        return True
-            
-    except Exception as e:
-        logger.error(f"Failed to update database schema: {str(e)}")
-        return False
 
 def test_init_database_with_settings():
     """Test database initialization using settings"""
@@ -1839,3 +1026,90 @@ def test_cleanup_temp_dir_error_handling():
             os.chmod(test_file, current_mode | stat.S_IREAD)
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
+
+def test_network_path_handling():
+    """Test handling of network share paths"""
+    # Test network path detection
+    assert _is_network_path(Path('\\\\server\\share\\path')) is True
+    assert _is_network_path(Path('//server/share/path')) is True
+    assert _is_network_path(Path('C:\\path\\to\\file')) is False
+    assert _is_network_path(Path('/path/to/file')) is False
+    
+    # Test path normalization
+    network_path = _normalize_path('\\\\server\\share\\path\\db.sqlite')
+    assert isinstance(network_path, WindowsPath)
+    assert str(network_path) == '\\\\server\\share\\path\\db.sqlite'
+    
+    local_path = _normalize_path('data/db.sqlite')
+    assert isinstance(local_path, Path)
+    assert local_path.is_absolute()
+
+@pytest.mark.skipif(sys.platform != 'win32', reason="Windows network path tests")
+def test_database_network_path():
+    """Test database initialization with network path"""
+    settings = Settings()
+    
+    # Configure a network path
+    network_path = '\\\\localhost\\share\\test.db'
+    settings.update('paths.database', network_path)
+    
+    try:
+        # Create mock cursor with proper isolation level handling
+        mock_cursor = MagicMock()
+        def execute_side_effect(sql, *args, **kwargs):
+            if "PRAGMA read_uncommitted" in sql:
+                mock_cursor.fetchone.return_value = [0]  # SERIALIZABLE isolation level
+            return None
+        mock_cursor.execute.side_effect = execute_side_effect
+        mock_cursor.fetchone.return_value = [0]  # Default return value
+        
+        # Create mock connection
+        mock_connection = MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        
+        # Mock SQLite dialect
+        mock_dialect = MagicMock()
+        mock_dialect.connect.return_value = mock_connection
+        
+        # Create mock engine
+        mock_engine = MagicMock()
+        mock_engine.raw_connection.return_value = mock_connection
+        mock_engine.connect.return_value.__enter__.return_value = mock_connection
+        mock_engine.dispose = MagicMock()
+        mock_engine.dialect = mock_dialect
+        
+        # Mock the connection pool
+        mock_pool = MagicMock()
+        mock_pool.connect.return_value = mock_connection
+        mock_engine.pool = mock_pool
+        
+        with patch('sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite.connect', return_value=mock_connection), \
+             patch('sqlalchemy.create_engine', return_value=mock_engine), \
+             patch('cert_scanner.db.create_engine', return_value=mock_engine) as mock_create_engine, \
+             patch('pathlib.Path.exists', return_value=True), \
+             patch('pathlib.Path.is_dir', return_value=True), \
+             patch('os.access', return_value=True), \
+             patch('pathlib.Path.unlink', return_value=None), \
+             patch('pathlib.Path.mkdir', return_value=None):
+            
+            # Initialize database with network path
+            result_engine = init_database()
+            
+            # Verify engine was created with correct path
+            assert result_engine is not None
+            assert mock_create_engine.call_count == 2
+            # Both calls should use the same network path
+            for call_args in mock_create_engine.call_args_list:
+                assert network_path in str(call_args[0][0])
+            
+            # Verify connection was attempted
+            mock_engine.connect.assert_called()
+            
+            # Clean up
+            result_engine.dispose()
+            
+    except Exception as e:
+        if "No such file or directory" in str(e):
+            pytest.skip("Network share not available")
+        else:
+            raise

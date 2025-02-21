@@ -17,6 +17,7 @@ from cert_scanner.views.certificatesView import (
 import json
 from unittest import mock
 from st_aggrid import GridUpdateMode, DataReturnMode
+from unittest.mock import call
 
 @pytest.fixture(scope="function")
 def mock_aggrid():
@@ -352,23 +353,34 @@ def test_render_certificate_card(mock_streamlit, sample_certificate, session):
         mock_datetime.now.return_value = datetime(2024, 6, 1)  # A date between valid_from and valid_until
         mock_datetime.strptime = datetime.strptime
         
+        # Mock the tabs to return the correct number of tabs
+        def mock_tabs(*args):
+            tabs = [MagicMock() for _ in range(len(args[0]))]
+            for tab in tabs:
+                tab.__enter__ = MagicMock(return_value=tab)
+                tab.__exit__ = MagicMock(return_value=None)
+            return tabs
+        mock_streamlit.tabs.side_effect = mock_tabs
+        
         render_certificate_card(sample_certificate, session)
-    
-    # Verify subheader was created with certificate name
-    subheader_calls = [args[0] for args, _ in mock_streamlit.subheader.call_args_list]
-    assert any("📜 test.example.com" in call for call in subheader_calls), "Certificate name not found in subheader calls"
-    
-    # Verify tabs were created
-    mock_streamlit.tabs.assert_called_with(["Overview", "Bindings", "Details", "Change Tracking"])
-    
-    # Verify that the certificate details were rendered
-    json_calls = [args[0] for args, _ in mock_streamlit.json.call_args_list]
-    assert any(
-        isinstance(call, dict) and 
-        call.get("Serial Number") == "123456" and
-        call.get("Thumbprint") == "abcdef123456"
-        for call in json_calls
-    ), "Certificate details not found in JSON output"
+        
+        # Verify tabs were created with all expected tabs including Danger Zone
+        mock_streamlit.tabs.assert_called_once_with(["Overview", "Bindings", "Details", "Change Tracking", "Danger Zone"])
+        
+        # Verify certificate details were rendered in order
+        mock_streamlit.markdown.assert_has_calls([
+            call('**Common Name:** test.example.com'),
+            call('**Valid From:** 2024-01-01'),
+            call("**Valid Until:** 2025-01-01 <span class='cert-status cert-valid'>Valid</span>", unsafe_allow_html=True),
+            call('**Serial Number:** `123456`'),
+            call('**Total Bindings:** 0'),
+            call('**Thumbprint:** `abcdef123456`'),
+            call('**Chain Status:** ⚠️ Unverified Chain'),
+            call('**Key Usage:** Digital Signature, Key Encipherment'),
+            call('**Platforms:** *None*'),
+            call('**SANs Scanned:** No'),
+            call('### ⚠️ Danger Zone')
+        ], any_order=False)
 
 def test_render_certificate_overview_with_sans(mock_streamlit, sample_certificate, session):
     """Test rendering certificate overview with SANs"""

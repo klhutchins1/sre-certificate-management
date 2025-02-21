@@ -584,9 +584,9 @@ def render_certificate_details(cert):
     - Signature algorithm details
     """
     # Add debug logging
-    print(f"DEBUG: Certificate details for {cert.common_name}:")
-    print(f"DEBUG: Signature Algorithm: {cert.signature_algorithm}")
-    print(f"DEBUG: Raw certificate data: {cert.__dict__}")
+    #print(f"DEBUG: Certificate details for {cert.common_name}:")
+    #print(f"DEBUG: Signature Algorithm: {cert.signature_algorithm}")
+    #print(f"DEBUG: Raw certificate data: {cert.__dict__}")
     
     # Prepare details with proper handling of None values
     details = {

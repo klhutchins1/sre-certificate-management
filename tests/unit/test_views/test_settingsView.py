@@ -293,9 +293,9 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
     
     # Create mock number input function that returns the correct values
     def mock_number_input(*args, **kwargs):
-        if "Days before expiry 1" in str(args):
+        if "Warning 1 Days" in str(args):
             return critical_days
-        elif "Days before expiry 2" in str(args):
+        elif "Warning 2 Days" in str(args):
             return warning_days
         elif "Consecutive failures before alert" in str(args):
             return consecutive_failures
@@ -310,10 +310,10 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
         
         # Get the current warning based on the key
         key = kwargs.get("key", "")
-        if "level_0" in key:
+        if "warning_level_0" in key:
             # First warning should be critical
             return "critical"
-        elif "level_1" in key:
+        elif "warning_level_1" in key:
             # Second warning should be warning
             return "warning"
         

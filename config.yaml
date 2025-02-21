@@ -22,8 +22,10 @@ paths:
 scanning:
   default_rate_limit: 60
   external:
+    delay: 0
     domains: []
     rate_limit: 30
   internal:
+    delay: 0
     domains: []
     rate_limit: 60

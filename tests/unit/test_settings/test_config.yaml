@@ -1,6 +1,14 @@
+# Test configuration file with network path examples
 paths:
-  database: "tests/data/test.db"
-  backups: "tests/data/backups"
+  # Database location examples
+  database: "tests/data/test.db"  # Local path
+  # database: "\\\\server\\share\\certificates.db"  # Network path (Windows)
+  # database: "//server/share/certificates.db"  # Network path (Unix)
+  
+  # Backup location examples
+  backups: "tests/data/backups"  # Local path
+  # backups: "\\\\server\\share\\backups"  # Network path (Windows)
+  # backups: "//server/share/backups"  # Network path (Unix)
 
 scanning:
   internal:

@@ -44,22 +44,22 @@ def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     Returns:
         Tuple[bool, int]: (is_valid, port_number)
     """
-    print(f"DEBUG: Validating port: {port_str} from entry: {entry}")  # Debug log
+    #print(f"DEBUG: Validating port: {port_str} from entry: {entry}")  # Debug log
     try:
         port = int(port_str)
-        print(f"DEBUG: Converted port to integer: {port}")  # Debug log
+        #print(f"DEBUG: Converted port to integer: {port}")  # Debug log
         if port < 0:
-            print(f"DEBUG: Port is negative: {port}")  # Debug log
+            #print(f"DEBUG: Port is negative: {port}")  # Debug log
             st.error(f"Invalid port number in {entry}: Port cannot be negative")
             return False, 0
         if port > 65535:
-            print(f"DEBUG: Port is too large: {port}")  # Debug log
+            #print(f"DEBUG: Port is too large: {port}")  # Debug log
             st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
             return False, 0
-        print(f"DEBUG: Port is valid: {port}")  # Debug log
+        #print(f"DEBUG: Port is valid: {port}")  # Debug log
         return True, port
     except ValueError as e:
-        print(f"DEBUG: ValueError converting port: {str(e)}")  # Debug log
+        #print(f"DEBUG: ValueError converting port: {str(e)}")  # Debug log
         st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
         return False, 0
 
@@ -205,16 +205,16 @@ internal.server.local:444"""
                     if has_scheme:
                         # Parse as URL
                         parsed = urlparse(entry)
-                        print(f"DEBUG: URL parse result: {parsed}")  # Debug log
+                        #print(f"DEBUG: URL parse result: {parsed}")  # Debug log
                         
                         # Get hostname from netloc
                         hostname = parsed.netloc
-                        print(f"DEBUG: Using netloc as hostname: {hostname}")  # Debug log
+                        #print(f"DEBUG: Using netloc as hostname: {hostname}")  # Debug log
                         
                         # Check if port is in netloc
                         if ':' in hostname:
                             hostname, port_str = hostname.rsplit(':', 1)
-                            print(f"DEBUG: Split hostname and port from netloc: {hostname}, {port_str}")  # Debug log
+                            #print(f"DEBUG: Split hostname and port from netloc: {hostname}, {port_str}")  # Debug log
                             is_valid, port = validate_port(port_str, entry)
                             if not is_valid:
                                 validation_errors = True
@@ -230,7 +230,7 @@ internal.server.local:444"""
                         # Handle hostname:port format
                         if ':' in entry:
                             hostname, port_str = entry.rsplit(':', 1)
-                            print(f"DEBUG: Split hostname and port from entry: {hostname}, {port_str}")  # Debug log
+                            #print(f"DEBUG: Split hostname and port from entry: {hostname}, {port_str}")  # Debug log
                             
                             # Validate port number
                             is_valid, port = validate_port(port_str, entry)
@@ -248,7 +248,7 @@ internal.server.local:444"""
                         validation_errors = True
                         continue
                     
-                    print(f"DEBUG: Final hostname and port: {hostname}, {port}")  # Debug log
+                    #print(f"DEBUG: Final hostname and port: {hostname}, {port}")  # Debug log
                     
                     scan_targets.append((hostname, port))
                 except Exception as e:

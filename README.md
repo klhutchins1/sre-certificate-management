@@ -395,6 +395,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 2. Advanced reporting
 3. Search capabilities
 
+
 ### Phase 4: Enhancement
 
 1. Performance optimization
@@ -410,3 +411,89 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 11. Hosts page should use color for valid and invalid certificates
 12. Dashboard data graph should be sized correctly when there are a lot of certificates.
 13. Need a Change planning page, to help build change tickets.
+
+## Planned Features
+
+### Certificate Authority Management
+- [ ] Track CA certificates separately from end-entity certificates
+- [ ] Display CA information in Certificates view
+- [ ] Track CA certificate chain relationships
+- [ ] Monitor CA certificate expiration
+- [ ] Validate certificate chains against known CAs
+- [ ] Import trusted CA certificates from system store
+
+### Multi-Instance Support
+- [ ] Enable multiple application instances to run simultaneously
+- [ ] Implement proper database locking mechanisms
+- [ ] Handle concurrent database access
+- [ ] Add instance identification and status tracking
+- [ ] Provide conflict resolution for concurrent updates
+
+### JWT Certificate Management
+- [ ] Scan for JWT certificates on RDS servers using PowerShell
+- [ ] Define standardized JWT certificate format
+- [ ] Import JWT certificates from scan results
+- [ ] Track JWT-specific certificate usage
+- [ ] Monitor JWT certificate expiration
+- [ ] Validate JWT certificate signatures
+
+### Enhanced Scanning Features
+- [ ] Maintain historical certificate data when scans fail
+  - Preserve existing certificate data if new scan fails
+  - Keep last successful scan data for each IP/domain
+  - Track scan source (instance/environment) for each result
+  - Implement scan result confidence scoring
+- [ ] Implement partial update mechanism for scan results
+  - Update only changed certificate data
+  - Keep existing data when scan access is denied
+  - Merge partial scan results from different sources
+  - Handle network connectivity issues gracefully
+- [ ] Track scan success/failure history
+  - Log scan attempts from each instance
+  - Record scan environment details
+  - Track access permissions per instance
+  - Monitor scan reliability per source
+- [ ] Add scan result confidence levels
+  - Calculate confidence score based on scan source
+  - Consider historical scan success rate
+  - Factor in network conditions
+  - Weight results by instance reliability
+- [ ] Provide manual override for scan results
+  - Allow manual data preservation
+  - Support administrator data validation
+  - Enable source-specific overrides
+  - Track override history
+- [ ] Compare scan results with previous data
+  - Detect significant changes
+  - Alert on unexpected data loss
+  - Validate scan result consistency
+  - Maintain scan result audit trail
+- [ ] Cross-instance scan coordination
+  - Coordinate scanning between instances
+  - Share scan results across environments
+  - Resolve conflicting scan data
+  - Optimize scanning efficiency
+
+### Domain Management
+- [ ] Track domain registration expiration
+- [ ] Monitor domain ownership
+- [ ] Integrate with domain registrars
+- [ ] Alert on approaching domain expiration
+- [ ] Track domain-certificate relationships
+- [ ] Support for wildcard domain management
+
+### Data Resilience
+- [ ] Implement robust database locking
+- [ ] Add transaction rollback support
+- [ ] Maintain audit trail of changes
+- [ ] Support data recovery from failed scans
+- [ ] Implement data versioning
+- [ ] Add conflict resolution mechanisms
+
+These planned features will enhance the system's capabilities in:
+- Certificate Authority tracking and validation
+- Multi-instance deployment support
+- JWT certificate management
+- Scan result persistence
+- Domain lifecycle management
+- Data integrity and resilience

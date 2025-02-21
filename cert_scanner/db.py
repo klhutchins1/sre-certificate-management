@@ -23,7 +23,7 @@ import logging
 import threading
 import shutil
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, WindowsPath
 import sqlite3
 import random
 import json
@@ -49,11 +49,47 @@ logger = logging.getLogger(__name__)
 # Database Configuration
 #------------------------------------------------------------------------------
 
-# Define default database path relative to the application root
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'certificates.db')
-
 # Thread-safe lock for database operations
 db_lock = threading.Lock()
+
+def _is_network_path(path: Path) -> bool:
+    """
+    Check if a path is a network path.
+    
+    Args:
+        path: Path to check
+        
+    Returns:
+        bool: True if path is a network path
+    """
+    path_str = str(path)
+    return path_str.startswith('\\\\') or path_str.startswith('//')
+
+def _normalize_path(path: str) -> Path:
+    """
+    Normalize a path string to a Path object.
+    
+    Args:
+        path: Path string to normalize
+        
+    Returns:
+        Path: Normalized path object
+        
+    This function handles:
+    - Network share paths (\\server\share)
+    - Local paths
+    - Relative paths
+    """
+    # Convert string to Path object
+    path_obj = Path(str(path))
+    
+    # Handle network paths
+    if _is_network_path(path_obj):
+        # For network paths, we want to preserve the UNC format
+        return WindowsPath(str(path_obj))
+    
+    # For local paths, resolve to absolute
+    return path_obj.absolute()
 
 #------------------------------------------------------------------------------
 # Schema Management
@@ -253,7 +289,7 @@ def init_database(db_path=None):
             logger.info(f"Got path from settings: {db_path}")
         
         # Convert to Path object without resolving
-        db_path = Path(str(db_path))
+        db_path = _normalize_path(db_path)
         logger.info(f"Using path: {db_path}")
         
         # Check for invalid characters in path first
@@ -264,6 +300,15 @@ def init_database(db_path=None):
         # Get parent directory and create if it doesn't exist
         parent_dir = db_path.parent
         logger.info(f"Parent directory: {parent_dir}")
+
+        # Check if parent exists but is not a directory
+        if parent_dir.exists() and not parent_dir.is_dir():
+            raise Exception(f"Path exists but is not a directory: {parent_dir}")
+
+        # Check if parent's parent exists
+        if not parent_dir.parent.exists():
+            raise Exception(f"Parent directory's parent does not exist: {parent_dir.parent}")
+
         try:
             # Create all parent directories
             parent_dir.mkdir(parents=True, exist_ok=True)
@@ -272,10 +317,8 @@ def init_database(db_path=None):
             raise Exception(f"No write permission to create directory: {parent_dir}")
         except Exception as e:
             raise Exception(f"Failed to create directory {parent_dir}: {str(e)}")
-        
-        # Verify directory exists and is writable
-        if not parent_dir.is_dir():
-            raise Exception(f"Path exists but is not a directory: {parent_dir}")
+
+        # Verify directory is writable
         if not os.access(str(parent_dir), os.W_OK):
             raise Exception(f"No write permission for database directory: {parent_dir}")
         
@@ -373,6 +416,7 @@ class SessionManager:
     """
     def __init__(self, engine):
         self.engine = engine
+        self.session = None
 
     def __enter__(self):
         if not self.engine:
@@ -422,7 +466,7 @@ def check_database():
     """
     try:
         settings = Settings()
-        db_path = Path(settings.get("paths.database", "data/certificates.db"))
+        db_path = _normalize_path(settings.get("paths.database", "data/certificates.db"))
         
         if not db_path.exists():
             return False
@@ -474,7 +518,7 @@ def backup_database(engine, backup_dir):
             raise Exception(f"Source database does not exist: {source_path}")
         
         # Convert backup directory to Path and resolve
-        backup_path = Path(str(backup_dir)).resolve()
+        backup_path = _normalize_path(str(backup_dir)).resolve()
         
         # Check if backup directory exists and is writable
         if backup_path.exists():

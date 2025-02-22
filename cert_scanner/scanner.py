@@ -5,6 +5,7 @@ This module provides functionality for scanning and analyzing SSL/TLS certificat
 including:
 - Certificate discovery and retrieval
 - Certificate parsing and information extraction
+- Domain information gathering
 - Rate-limited scanning for different domain types
 - Domain classification (internal/external)
 - Wildcard certificate handling
@@ -35,6 +36,7 @@ import OpenSSL.crypto
 
 # Local application imports
 from .settings import settings
+from .domain_scanner import DomainScanner, DomainInfo
 
 #------------------------------------------------------------------------------
 # Domain Configuration
@@ -99,6 +101,13 @@ class CertificateInfo:
     version: Optional[int] = None
     chain_valid: bool = False
 
+@dataclasses.dataclass
+class ScanResult:
+    """Data class representing complete scan results."""
+    certificate_info: Optional[CertificateInfo] = None
+    domain_info: Optional[DomainInfo] = None
+    error: Optional[str] = None
+
 #------------------------------------------------------------------------------
 # Certificate Scanner Implementation
 #------------------------------------------------------------------------------
@@ -147,6 +156,9 @@ class CertificateScanner:
                                                  self.internal_rate_limit, 
                                                  self.external_rate_limit))
         self.last_scan_time = 0
+        
+        # Initialize domain scanner
+        self.domain_scanner = DomainScanner()
     
     def _get_domain_type(self, domain: str) -> str:
         """
@@ -320,62 +332,73 @@ class CertificateScanner:
                 expanded.add(domain)
         return list(expanded)
     
-    def scan_certificate(self, address: str, port: int = 443) -> Optional[CertificateInfo]:
+    def scan_certificate(self, address: str, port: int = 443) -> ScanResult:
         """
-        Scan a certificate from given address and port.
+        Scan a certificate and domain information.
         
         Args:
-            address (str): Hostname or IP address to scan
-            port (int, optional): Port number to scan. Defaults to 443.
+            address: Hostname or IP address to scan
+            port: Port number to scan (default: 443)
             
         Returns:
-            Optional[CertificateInfo]: Certificate information if found and valid
-            
-        Note:
-            - Implements rate limiting based on domain type
-            - Skips wildcard domains
-            - Handles network and certificate processing errors
+            ScanResult: Combined certificate and domain scan results
         """
-        # Skip attempting to scan wildcard domains directly
-        if address.startswith('*.'):
-            self.logger.info(f'Skipping wildcard domain {address}')
-            return None
+        result = ScanResult()
         
-        # Apply rate limiting before scanning
-        self._apply_rate_limit(address)
-            
+        # Handle wildcard domains by scanning the base domain
+        if address.startswith('*.'):
+            base_domain = self._get_base_domain(address)
+            if base_domain:
+                self.logger.info(f'Converting wildcard {address} to base domain {base_domain}')
+                return self.scan_certificate(base_domain, port)
+            else:
+                result.error = f"Invalid wildcard domain format: {address}"
+                return result
+        
         try:
+            # Apply rate limiting before scanning certificate
+            self._apply_rate_limit(address)
+            
+            # Get certificate information
             cert_binary = self._get_certificate(address, port)
-            if not cert_binary:
-                return None
-                
-            cert_info = self._process_certificate(cert_binary, address, port)
-            return cert_info
+            if cert_binary:
+                cert_info = self._process_certificate(cert_binary, address, port)
+                if cert_info:
+                    result.certificate_info = cert_info
+                else:
+                    result.error = "Failed to process certificate data"
+            else:
+                result.error = "No certificate found"
+            
+            return result
             
         except Exception as e:
             self.logger.error(f"Error scanning {address}:{port} - {str(e)}")
-            return None
+            result.error = str(e)
+            return result
     
-    def scan_domains(self, domains: List[str], port: int = 443) -> List[CertificateInfo]:
+    def scan_domains(self, domains: List[str], port: int = 443) -> List[ScanResult]:
         """
-        Scan a list of domains, including base domains for wildcards.
+        Scan a list of domains for certificates and domain information.
         
         Args:
-            domains (List[str]): List of domains to scan
-            port (int, optional): Port number to scan. Defaults to 443.
+            domains: List of domains to scan
+            port: Port number to scan (default: 443)
             
         Returns:
-            List[CertificateInfo]: List of valid certificates found
-            
-        Note:
-            Automatically handles wildcard domains by scanning their base domains.
+            List[ScanResult]: List of scan results
         """
         expanded_domains = self._expand_domains(domains)
         results = []
         for domain in expanded_domains:
-            cert_info = self.scan_certificate(domain, port)
-            if cert_info:
-                results.append(cert_info)
+            result = self.scan_certificate(domain, port)
+            if isinstance(result, CertificateInfo):
+                # Convert old-style result to ScanResult
+                scan_result = ScanResult()
+                scan_result.certificate_info = result
+                results.append(scan_result)
+            else:
+                results.append(result)
         return results
     
     def _get_certificate(self, address: str, port: int) -> Optional[bytes]:

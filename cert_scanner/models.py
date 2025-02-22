@@ -26,13 +26,14 @@ constraints, and cascading behaviors for maintaining data integrity.
 
 # SQLAlchemy imports
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table
-from sqlalchemy import UniqueConstraint, Boolean, Text
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy import UniqueConstraint, Boolean, Text, event
+from sqlalchemy.orm import relationship, declarative_base, validates
 from sqlalchemy.ext.hybrid import hybrid_property
 
 # Standard library imports
 import json
 from datetime import datetime
+import re
 
 # Local application imports
 from .constants import (
@@ -462,4 +463,157 @@ class Application(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
     # Relationships
-    certificate_bindings = relationship("CertificateBinding", back_populates="application") 
+    certificate_bindings = relationship("CertificateBinding", back_populates="application")
+
+#------------------------------------------------------------------------------
+# Domain Models
+#------------------------------------------------------------------------------
+
+class Domain(Base):
+    """
+    Represents a domain name and its properties.
+    
+    This model tracks domain names, their registration details, and relationships
+    to certificates and subdomains. It provides domain lifecycle management
+    and monitoring capabilities.
+    
+    Attributes:
+        id (int): Primary key
+        domain_name (str): The domain name (e.g., example.com)
+        registrar (str): Domain registrar (e.g., GoDaddy, Namecheap)
+        registration_date (datetime): When the domain was registered
+        expiration_date (datetime): When the domain registration expires
+        auto_renew (bool): Whether domain auto-renews
+        parent_domain_id (int): Foreign key to parent domain for subdomains
+        owner (str): Team/individual responsible for the domain
+        dns_provider (str): DNS service provider
+        notes (str): Additional domain-related notes
+        created_at (datetime): When this record was created
+        updated_at (datetime): When this record was last updated
+        is_active (bool): Whether the domain is currently active
+        
+    Relationships:
+        certificates: Certificates securing this domain
+        parent_domain: Parent domain for subdomains
+        subdomains: Child domains (subdomains)
+        dns_records: Associated DNS records
+    """
+    __tablename__ = 'domains'
+    
+    id = Column(Integer, primary_key=True)
+    domain_name = Column(String, unique=True, nullable=False)
+    registrar = Column(String)
+    registration_date = Column(DateTime, nullable=True)
+    expiration_date = Column(DateTime, nullable=True)
+    auto_renew = Column(Boolean, default=False)
+    parent_domain_id = Column(Integer, ForeignKey('domains.id'), nullable=True)
+    owner = Column(String, nullable=True)
+    dns_provider = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    is_active = Column(Boolean, default=True)
+    
+    # Relationships
+    certificates = relationship("Certificate", secondary="domain_certificates")
+    parent_domain = relationship("Domain", remote_side=[id], backref="subdomains")
+    dns_records = relationship("DomainDNSRecord", back_populates="domain", cascade="all, delete-orphan")
+
+    @validates('domain_name')
+    def validate_domain_name(self, key, domain_name):
+        """
+        Validate domain name format.
+        
+        Rules:
+        - Must not be empty
+        - Must contain at least one dot
+        - Must not start or end with dot or hyphen
+        - Must not contain consecutive dots
+        - Must only contain valid characters (a-z, A-Z, 0-9, -, .)
+        - Must be a valid IDN (if using punycode xn--)
+        
+        Args:
+            key: Field name being validated
+            domain_name: Domain name to validate
+            
+        Returns:
+            str: Validated domain name
+            
+        Raises:
+            ValueError: If domain name is invalid
+        """
+        if not domain_name:
+            raise ValueError("Domain name cannot be empty")
+        
+        # Convert to lowercase for consistency
+        domain_name = domain_name.lower()
+        
+        # Basic pattern for domain names
+        pattern = r'^(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$'
+        
+        # Special handling for IDN (punycode)
+        if domain_name.startswith('xn--'):
+            # Allow punycode format
+            idn_pattern = r'^xn--[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$'
+            if not re.match(idn_pattern, domain_name):
+                raise ValueError("Invalid IDN domain name format")
+            return domain_name
+        
+        # Validate against pattern
+        if not re.match(pattern, domain_name):
+            raise ValueError("Invalid domain name format")
+        
+        # Check for consecutive dots or hyphens
+        if '..' in domain_name or '--' in domain_name:
+            raise ValueError("Domain name cannot contain consecutive dots or hyphens")
+        
+        # Check TLD length (at least 2 characters)
+        if len(domain_name.split('.')[-1]) < 2:
+            raise ValueError("Invalid top-level domain")
+        
+        return domain_name
+
+class DomainDNSRecord(Base):
+    """
+    Represents DNS records associated with a domain.
+    
+    This model tracks DNS records for domains, including record types,
+    values, and TTL settings.
+    
+    Attributes:
+        id (int): Primary key
+        domain_id (int): Foreign key to associated domain
+        record_type (str): DNS record type (A, CNAME, MX, etc.)
+        name (str): Record name/host
+        value (str): Record value/target
+        ttl (int): Time to live in seconds
+        priority (int): Priority for MX/SRV records
+        created_at (datetime): When this record was created
+        updated_at (datetime): When this record was last updated
+        
+    Relationships:
+        domain: The domain this record belongs to
+    """
+    __tablename__ = 'domain_dns_records'
+    __table_args__ = (
+        UniqueConstraint('domain_id', 'record_type', 'name', name='unique_domain_record'),
+    )
+    
+    id = Column(Integer, primary_key=True)
+    domain_id = Column(Integer, ForeignKey('domains.id'))
+    record_type = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    value = Column(String, nullable=False)
+    ttl = Column(Integer, default=3600)
+    priority = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Relationships
+    domain = relationship("Domain", back_populates="dns_records")
+
+# Association table for domains and certificates
+domain_certificates = Table('domain_certificates', Base.metadata,
+    Column('domain_id', Integer, ForeignKey('domains.id'), primary_key=True),
+    Column('certificate_id', Integer, ForeignKey('certificates.id'), primary_key=True)
+) 

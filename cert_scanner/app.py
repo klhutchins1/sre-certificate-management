@@ -52,6 +52,7 @@ from .views.scannerView import render_scan_interface
 from .views.historyView import render_history_view
 from .views.searchView import render_search_view
 from .views.settingsView import render_settings_view
+from .views.domainsView import render_domain_list
 from .static.styles import load_css
 
 # Configure logging for the application
@@ -114,6 +115,7 @@ def render_sidebar():
         page_mapping = {
             "Dashboard": "📊 Dashboard",
             "Certificates": "🔐 Certificates",
+            "Domains": "🌐 Domains",
             "Hosts": "💻 Hosts",
             "Applications": "📦 Applications",
             "Scanner": "🔍 Scanner",
@@ -175,6 +177,8 @@ def main():
         render_dashboard(st.session_state.engine)
     elif current_view == "Certificates":
         render_certificate_list(st.session_state.engine)
+    elif current_view == "Domains":
+        render_domain_list(st.session_state.engine)
     elif current_view == "Hosts":
         render_hosts_view(st.session_state.engine)
     elif current_view == "Applications":

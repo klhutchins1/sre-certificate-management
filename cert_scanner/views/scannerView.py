@@ -1,37 +1,33 @@
 """
-Certificate Scanner View Module
+Domain and Certificate Scanner View Module
 
-This module provides the interface for scanning and discovering SSL/TLS certificates
-across hosts and networks. It offers a user-friendly interface for initiating scans,
-monitoring progress, and viewing results in real-time.
+This module provides a comprehensive interface for scanning and discovering:
+- SSL/TLS certificates
+- Domain information and registration details
+- DNS records
+- Host relationships
+- Certificate-domain associations
 
-Key Features:
-- Multiple input formats for scan targets
-- Batch scanning capabilities
-- Real-time scan progress monitoring
-- Detailed scan results display
-- Automatic certificate discovery
-- Error handling and reporting
-- Recent scan history tracking
-- Database integration for results storage
-
-The module handles various input formats, validates targets, manages scan operations,
-and provides immediate feedback on scan progress and results. It integrates with
-the database to store discovered certificates and their relationships with hosts.
+The scanner automatically creates and updates domain records while scanning
+certificates, providing a complete view of the domain's security infrastructure.
 """
 
 import streamlit as st
 from datetime import datetime
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse
+import socket
 from ..models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
+    Domain, DomainDNSRecord,
     HOST_TYPE_SERVER, ENV_PRODUCTION
 )
 from ..static.styles import load_warning_suppression, load_css
+from ..domain_scanner import DomainScanner, DomainInfo
+from ..scanner import CertificateScanner, CertificateInfo, ScanResult
 import json
-from typing import Tuple
-
+from typing import Tuple, Dict, List, Optional
+import pandas as pd
 
 def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     """
@@ -44,74 +40,44 @@ def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     Returns:
         Tuple[bool, int]: (is_valid, port_number)
     """
-    #print(f"DEBUG: Validating port: {port_str} from entry: {entry}")  # Debug log
     try:
         port = int(port_str)
-        #print(f"DEBUG: Converted port to integer: {port}")  # Debug log
         if port < 0:
-            #print(f"DEBUG: Port is negative: {port}")  # Debug log
             st.error(f"Invalid port number in {entry}: Port cannot be negative")
             return False, 0
         if port > 65535:
-            #print(f"DEBUG: Port is too large: {port}")  # Debug log
             st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
             return False, 0
-        #print(f"DEBUG: Port is valid: {port}")  # Debug log
         return True, port
     except ValueError as e:
-        #print(f"DEBUG: ValueError converting port: {str(e)}")  # Debug log
         st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
         return False, 0
 
 def render_scan_interface(engine) -> None:
-    """
-    Render the main certificate scanning interface.
-
-    This function provides a comprehensive interface for scanning SSL/TLS certificates,
-    including input validation, progress tracking, and results display. It handles:
-    - Multiple input formats for scan targets
-    - Real-time scan progress monitoring
-    - Result storage and display
-    - Error handling and reporting
-
-    Args:
-        engine: SQLAlchemy engine instance for database connections
-
-    Features:
-        - Flexible input formats:
-            - Standard hostnames
-            - Custom ports
-            - URLs with protocols
-            - IP addresses
-        - Input validation:
-            - Port range checking
-            - Hostname validation
-            - Format verification
-        - Progress tracking:
-            - Real-time progress bar
-            - Status updates
-            - Error reporting
-        - Results management:
-            - Success/failure tracking
-            - Database storage
-            - Recent scan history
-        - Error handling:
-            - Connection errors
-            - Certificate retrieval failures
-            - Database errors
-
-    The interface maintains state using Streamlit's session state for scan results
-    and provides comprehensive error handling for all operations.
-    """
+    """Render the main domain and certificate scanning interface."""
     # Initialize UI components and styles
     load_warning_suppression()
     load_css()
     
+    # Initialize scanners
+    if 'domain_scanner' not in st.session_state:
+        st.session_state.domain_scanner = DomainScanner()
+    if 'scanner' not in st.session_state:
+        from ..scanner import CertificateScanner
+        st.session_state.scanner = CertificateScanner()
+    
     # Clear transitioning flag if set
     if st.session_state.get('transitioning', False):
         st.session_state.transitioning = False
-        
-    st.title("Scan Certificates")
+    
+    st.title("Domain & Certificate Scanner")
+    st.markdown("""
+    This scanner performs comprehensive domain analysis including:
+    - SSL/TLS certificates
+    - Domain registration information
+    - DNS records
+    - Host relationships
+    """)
     
     # Initialize scan results state
     if 'scan_results' not in st.session_state:
@@ -128,10 +94,8 @@ def render_scan_interface(engine) -> None:
         # Handle pre-populated scan targets
         default_scan_targets = st.session_state.get('scan_targets', [])
         if default_scan_targets:
-            # Ensure we have a list of strings
             if isinstance(default_scan_targets, str):
                 default_scan_targets = [default_scan_targets]
-            # Clean up the targets
             default_scan_targets = [s.strip() for s in default_scan_targets if s.strip()]
             default_text = "\n".join(default_scan_targets)
         else:
@@ -139,7 +103,7 @@ def render_scan_interface(engine) -> None:
         
         # Scan input interface
         scan_input = st.text_area(
-            "Enter hostnames to scan (one per line)",
+            "Enter domains to scan (one per line)",
             value=default_text,
             height=150,
             placeholder="""example.com
@@ -151,28 +115,38 @@ internal.server.local:444"""
         # Input format help section
         with st.expander("ℹ️ Input Format Help"):
             st.markdown("""
-            Enter one host per line in any of these formats:
+            Enter one domain per line in any of these formats:
             ```
             example.com                    # Standard HTTPS (port 443)
             example.com:8443              # Custom port
             https://example.com           # URLs are automatically parsed
             http://internal.local:8080    # Any protocol and port
-            10.0.0.1                      # IP addresses
-            10.0.0.1:444                  # IP with custom port
             ```
-            The scanner will:
-            - Strip any protocol (http://, https://, etc.)
-            - Use port 443 if not specified
-            - Handle both hostnames and IP addresses
             
-            **Port Numbers:**
-            - Must be between 1 and 65535
-            - Common ports:
-              - 443: HTTPS (default)
-              - 8443: Alternative HTTPS
-              - 4443: Alternative HTTPS
-              - 8080: Alternative HTTP
+            The scanner will:
+            1. Gather domain information:
+               - Registration details
+               - DNS records
+               - Expiration dates
+            2. Check SSL/TLS certificates:
+               - All specified ports
+               - Certificate validity
+               - Chain verification
+            3. Create relationships:
+               - Domain-certificate associations
+               - Parent-child domain relationships
+               - Host mappings
             """)
+        
+        # Scan options
+        with st.expander("🔧 Scan Options"):
+            col_opt1, col_opt2 = st.columns(2)
+            with col_opt1:
+                check_dns = st.checkbox("Scan DNS Records", value=True)
+                check_whois = st.checkbox("Get WHOIS Info", value=True)
+            with col_opt2:
+                check_subdomains = st.checkbox("Include Subdomains", value=False)
+                check_related = st.checkbox("Find Related Domains", value=False)
         
         # Scan initiation button
         scan_button_clicked = st.button("Start Scan")
@@ -188,7 +162,7 @@ internal.server.local:444"""
             
             # Validate input
             if not scan_input.strip():
-                st.error("Please enter at least one hostname to scan")
+                st.error("Please enter at least one domain to scan")
                 return
             
             # Parse and validate scan targets
@@ -199,22 +173,14 @@ internal.server.local:444"""
             # Process each target
             for entry in entries:
                 try:
-                    # First check if input contains a scheme
+                    # Parse entry (existing parsing code)
                     has_scheme = entry.startswith(('http://', 'https://'))
                     
                     if has_scheme:
-                        # Parse as URL
                         parsed = urlparse(entry)
-                        #print(f"DEBUG: URL parse result: {parsed}")  # Debug log
-                        
-                        # Get hostname from netloc
                         hostname = parsed.netloc
-                        #print(f"DEBUG: Using netloc as hostname: {hostname}")  # Debug log
-                        
-                        # Check if port is in netloc
                         if ':' in hostname:
                             hostname, port_str = hostname.rsplit(':', 1)
-                            #print(f"DEBUG: Split hostname and port from netloc: {hostname}, {port_str}")  # Debug log
                             is_valid, port = validate_port(port_str, entry)
                             if not is_valid:
                                 validation_errors = True
@@ -225,30 +191,23 @@ internal.server.local:444"""
                                 validation_errors = True
                                 continue
                         else:
-                            port = 443  # Default port for URLs
+                            port = 443
                     else:
-                        # Handle hostname:port format
                         if ':' in entry:
                             hostname, port_str = entry.rsplit(':', 1)
-                            #print(f"DEBUG: Split hostname and port from entry: {hostname}, {port_str}")  # Debug log
-                            
-                            # Validate port number
                             is_valid, port = validate_port(port_str, entry)
                             if not is_valid:
                                 validation_errors = True
                                 continue
                         else:
                             hostname = entry
-                            port = 443  # Default port
+                            port = 443
                     
-                    # Validate hostname
                     hostname = hostname.strip('/')
                     if not hostname:
                         st.error(f"Invalid entry: {entry} - Hostname cannot be empty")
                         validation_errors = True
                         continue
-                    
-                    #print(f"DEBUG: Final hostname and port: {hostname}, {port}")  # Debug log
                     
                     scan_targets.append((hostname, port))
                 except Exception as e:
@@ -258,12 +217,11 @@ internal.server.local:444"""
             
             # Handle validation errors
             if validation_errors:
-                st.error("Please enter at least one valid hostname to scan")
+                st.error("Please correct the errors above")
                 return
             
             # Execute scans
             if scan_targets:
-                # Create progress tracking containers
                 progress_container = st.empty()
                 status_container = st.empty()
                 
@@ -279,327 +237,266 @@ internal.server.local:444"""
                 
                 # Execute scans with progress tracking
                 with status_container:
-                    with st.spinner('Scanning certificates...'):
-                        for i, (hostname, port) in enumerate(scan_targets):
-                            status_container.text(f'Scanning {hostname}:{port}...')
+                    with st.spinner('Scanning domains and certificates...'):
+                        # Calculate total steps correctly
+                        steps_per_domain = 1  # Base step for domain creation
+                        if check_whois:
+                            steps_per_domain += 1
+                        if check_dns:
+                            steps_per_domain += 1
+                        if True:  # Certificate scan is always performed
+                            steps_per_domain += 1
+                        
+                        total_steps = len(scan_targets) * steps_per_domain
+                        current_step = 0
+                        
+                        for hostname, port in scan_targets:
                             try:
-                                # Perform certificate scan
-                                cert_info = st.session_state.scanner.scan_certificate(hostname, port)
-                                if cert_info:
-                                    st.session_state.scan_results["success"].append(f"{hostname}:{port}")
-                                    # Save scan results to database
-                                    with Session(engine) as session:
-                                        try:
-                                            # Process certificate information
-                                            cert = session.query(Certificate).filter_by(
-                                                serial_number=cert_info.serial_number
-                                            ).first()
-                                            
-                                            if not cert:
-                                                cert = Certificate(
-                                                    serial_number=cert_info.serial_number,
-                                                    thumbprint=cert_info.thumbprint,
-                                                    common_name=cert_info.common_name,
-                                                    valid_from=cert_info.valid_from,
-                                                    valid_until=cert_info.expiration_date,
-                                                    _issuer=json.dumps(cert_info.issuer),
-                                                    _subject=json.dumps(cert_info.subject),
-                                                    _san=json.dumps(cert_info.san),
-                                                    key_usage=cert_info.key_usage,
-                                                    signature_algorithm=cert_info.signature_algorithm,
-                                                    chain_valid=cert_info.chain_valid,
-                                                    sans_scanned=False
-                                                )
-                                                session.add(cert)
-                                            else:
-                                                # Update existing certificate
-                                                cert.thumbprint = cert_info.thumbprint
-                                                cert.common_name = cert_info.common_name
-                                                cert.valid_from = cert_info.valid_from
-                                                cert.valid_until = cert_info.expiration_date
-                                                cert._issuer = json.dumps(cert_info.issuer)
-                                                cert._subject = json.dumps(cert_info.subject)
-                                                cert._san = json.dumps(cert_info.san)
-                                                cert.key_usage = cert_info.key_usage
-                                                cert.signature_algorithm = cert_info.signature_algorithm
-                                                cert.chain_valid = cert_info.chain_valid
-                                                cert.sans_scanned = False
-                                                cert.updated_at = datetime.now()
-                                            
-                                            # Process host information
-                                            host = session.query(Host).filter_by(
-                                                name=cert_info.hostname
-                                            ).first()
-                                            
-                                            if not host:
-                                                host = Host(
-                                                    name=cert_info.hostname,
-                                                    host_type=HOST_TYPE_SERVER,
-                                                    environment=ENV_PRODUCTION,
-                                                    last_seen=datetime.now()
-                                                )
-                                                session.add(host)
-                                            else:
-                                                host.last_seen = datetime.now()
-                                            
-                                            # Process IP addresses and bindings
-                                            for ip in cert_info.ip_addresses:
-                                                host_ip = session.query(HostIP).filter_by(
-                                                    host_id=host.id,
-                                                    ip_address=ip
-                                                ).first()
-                                                
-                                                if not host_ip:
-                                                    host_ip = HostIP(
-                                                        host_id=host.id,
-                                                        ip_address=ip,
-                                                        last_seen=datetime.now()
-                                                    )
-                                                    session.add(host_ip)
-                                                else:
-                                                    host_ip.last_seen = datetime.now()
-                                                
-                                                # Update certificate bindings
-                                                binding = session.query(CertificateBinding).filter_by(
-                                                    host_id=host.id,
-                                                    host_ip_id=host_ip.id,
-                                                    port=cert_info.port
-                                                ).first()
-                                                
-                                                if binding:
-                                                    binding.certificate_id = cert.id
-                                                    binding.last_seen = datetime.now()
-                                                else:
-                                                    binding = CertificateBinding(
-                                                        host_id=host.id,
-                                                        host_ip_id=host_ip.id,
-                                                        certificate_id=cert.id,
-                                                        port=cert_info.port,
-                                                        binding_type='IP',
-                                                        last_seen=datetime.now()
-                                                    )
-                                                    session.add(binding)
-                                            
-                                            # Record successful scan
-                                            scan = CertificateScan(
-                                                certificate=cert,
-                                                scan_date=datetime.now(),
-                                                status='Valid',
-                                                port=cert_info.port
-                                            )
-                                            session.add(scan)
-                                            
-                                            session.commit()
-                                            
-                                            # Update sans_scanned flag if this was a SAN scan
-                                            if st.session_state.get('scan_targets') and isinstance(st.session_state.scan_targets, list):
-                                                # Set sans_scanned to True since we've attempted the scan
-                                                cert.sans_scanned = True
-                                                session.commit()
-                                            
-                                        except Exception as e:
-                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
-                                            session.rollback()
-                                else:
-                                    # Handle failed certificate retrieval
-                                    st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
-                                    with Session(engine) as session:
-                                        try:
-                                            # Record failed scan
-                                            host = session.query(Host).filter_by(name=hostname).first()
-                                            if not host:
-                                                host = Host(
-                                                    name=hostname,
-                                                    host_type=HOST_TYPE_SERVER,
-                                                    environment=ENV_PRODUCTION,
-                                                    last_seen=datetime.now()
-                                                )
-                                                session.add(host)
-                                                session.flush()
-
-                                            scan = CertificateScan(
-                                                scan_date=datetime.now(),
-                                                status='Failed',
-                                                port=port,
-                                                host_id=host.id
-                                            )
-                                            session.add(scan)
-                                            session.commit()
-                                        except Exception as e:
-                                            logger.error(f"Failed to record failed scan: {str(e)}")
-                                            session.rollback()
-                            except Exception as e:
-                                # Handle other errors
-                                error_msg = f"Error scanning {hostname}:{port} - {str(e)}"
-                                st.error(error_msg)
-                                st.session_state.scan_results["error"].append(error_msg)
                                 with Session(engine) as session:
-                                    try:
-                                        # Record failed scan
-                                        host = session.query(Host).filter_by(name=hostname).first()
-                                        if not host:
-                                            host = Host(
-                                                name=hostname,
-                                                host_type=HOST_TYPE_SERVER,
-                                                environment=ENV_PRODUCTION,
-                                                last_seen=datetime.now()
-                                            )
-                                            session.add(host)
-                                            session.flush()
-
-                                        scan = CertificateScan(
-                                            scan_date=datetime.now(),
-                                            status='Failed',
-                                            port=port,
-                                            host_id=host.id
+                                    # Get or create domain
+                                    domain = session.query(Domain).filter_by(domain_name=hostname).first()
+                                    if not domain:
+                                        domain = Domain(
+                                            domain_name=hostname,
+                                            created_at=datetime.now(),
+                                            updated_at=datetime.now()
                                         )
-                                        session.add(scan)
-                                        session.commit()
-                                    except Exception as e:
-                                        logger.error(f"Failed to record failed scan: {str(e)}")
+                                        session.add(domain)
+                                    else:
+                                        domain.updated_at = datetime.now()
+                                    
+                                    current_step += 1
+                                    progress.progress(min(current_step / total_steps, 1.0))
+                                    
+                                    # Scan certificate and domain information
+                                    status_container.text(f'Scanning {hostname}:{port}...')
+                                    try:
+                                        # Get domain information if requested
+                                        if check_whois or check_dns:
+                                            try:
+                                                domain_info = st.session_state.domain_scanner.scan_domain(hostname)
+                                                if domain_info and domain_info.is_valid:
+                                                    domain.registrar = domain_info.registrar
+                                                    domain.registration_date = domain_info.registration_date
+                                                    domain.expiration_date = domain_info.expiration_date
+                                                    domain.owner = domain_info.registrant
+                                                    
+                                                    if check_dns and domain_info.dns_records:
+                                                        # Clear existing DNS records
+                                                        session.query(DomainDNSRecord).filter_by(domain_id=domain.id).delete()
+                                                        session.flush()
+                                                        
+                                                        # Add new DNS records
+                                                        seen_records = set()  # Track unique records
+                                                        for record in domain_info.dns_records:
+                                                            # Create unique key for record
+                                                            record_key = (record['type'], record['name'])
+                                                            if record_key in seen_records:
+                                                                continue  # Skip duplicate records
+                                                            seen_records.add(record_key)
+                                                            
+                                                            dns_record = DomainDNSRecord(
+                                                                domain=domain,
+                                                                record_type=record['type'],
+                                                                name=record['name'],
+                                                                value=record['value'],
+                                                                ttl=record['ttl'],
+                                                                priority=record.get('priority'),
+                                                                created_at=datetime.now(),
+                                                                updated_at=datetime.now()
+                                                            )
+                                                            session.add(dns_record)
+                                            except Exception as domain_error:
+                                                st.session_state.scan_results["warning"].append(f"{hostname} - Domain info error: {str(domain_error)}")
+                                        
+                                        # Scan certificate
+                                        scan_result = st.session_state.scanner.scan_certificate(hostname, port)
+                                        
+                                        # Process certificate information
+                                        if isinstance(scan_result, CertificateInfo):
+                                            # Handle old-style result
+                                            cert_info = scan_result
+                                            st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                        elif scan_result and scan_result.certificate_info:
+                                            cert_info = scan_result.certificate_info
+                                            st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                        elif scan_result and scan_result.error:
+                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - {scan_result.error}")
+                                            continue
+                                        else:
+                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - No certificate found")
+                                            continue
+                                        
+                                        # Process the certificate info
+                                        try:
+                                            with session.begin_nested():
+                                                cert = session.query(Certificate).filter_by(
+                                                    serial_number=cert_info.serial_number
+                                                ).first()
+                                                
+                                                if not cert:
+                                                    cert = Certificate(
+                                                        serial_number=cert_info.serial_number,
+                                                        thumbprint=cert_info.thumbprint,
+                                                        common_name=cert_info.common_name,
+                                                        valid_from=cert_info.valid_from,
+                                                        valid_until=cert_info.expiration_date,
+                                                        _issuer=json.dumps(cert_info.issuer),
+                                                        _subject=json.dumps(cert_info.subject),
+                                                        _san=json.dumps(cert_info.san),
+                                                        key_usage=cert_info.key_usage,
+                                                        signature_algorithm=cert_info.signature_algorithm,
+                                                        chain_valid=cert_info.chain_valid,
+                                                        sans_scanned=False,
+                                                        created_at=datetime.now(),
+                                                        updated_at=datetime.now()
+                                                    )
+                                                    session.add(cert)
+                                                else:
+                                                    cert.thumbprint = cert_info.thumbprint
+                                                    cert.common_name = cert_info.common_name
+                                                    cert.valid_from = cert_info.valid_from
+                                                    cert.valid_until = cert_info.expiration_date
+                                                    cert._issuer = json.dumps(cert_info.issuer)
+                                                    cert._subject = json.dumps(cert_info.subject)
+                                                    cert._san = json.dumps(cert_info.san)
+                                                    cert.key_usage = cert_info.key_usage
+                                                    cert.signature_algorithm = cert_info.signature_algorithm
+                                                    cert.chain_valid = cert_info.chain_valid
+                                                    cert.updated_at = datetime.now()
+                                                
+                                                # Associate certificate with domain
+                                                if cert not in domain.certificates:
+                                                    domain.certificates.append(cert)
+                                                
+                                                session.flush()
+                                        except Exception as cert_error:
+                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - Error processing certificate: {str(cert_error)}")
+                                            session.rollback()
+                                    except Exception as scan_error:
+                                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - Scan error: {str(scan_error)}")
                                         session.rollback()
-                            
-                            # Update progress
-                            progress.progress((i + 1) / len(scan_targets))
+                                    
+                                    current_step += 1
+                                    progress.progress(min(current_step / total_steps, 1.0))
+                                    
+                                    # Commit changes for this domain
+                                    try:
+                                        session.commit()
+                                    except Exception as commit_error:
+                                        st.session_state.scan_results["error"].append(f"{hostname} - Error saving changes: {str(commit_error)}")
+                                        session.rollback()
+                                    
+                            except Exception as e:
+                                st.session_state.scan_results["error"].append(f"{hostname} - Error: {str(e)}")
+                                current_step = min(current_step + steps_per_domain, total_steps)
+                                progress.progress(min(current_step / total_steps, 1.0))
+                                continue
                 
                 # Clear status after completion
                 status_container.empty()
+                
+                # Show success message and results
+                if st.session_state.scan_results["success"]:
+                    st.success(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.")
+                
+                if st.session_state.scan_results["error"]:
+                    st.error("Some scans failed:")
+                    for error in st.session_state.scan_results["error"]:
+                        st.write(f"- {error}")
+                
+                # Show results summary
+                st.divider()
+                st.subheader("Scan Results")
+                
+                # Display results in tabs
+                tab_domains, tab_certs, tab_dns = st.tabs([
+                    "🌐 Domains",
+                    "🔐 Certificates",
+                    "📝 DNS Records"
+                ])
+                
+                with tab_domains:
+                    with Session(engine) as session:
+                        for hostname, _ in scan_targets:
+                            domain = session.query(Domain).filter_by(domain_name=hostname).first()
+                            if domain:
+                                st.markdown(f"### {domain.domain_name}")
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.write("**Registrar:**", domain.registrar or "N/A")
+                                    st.write("**Registration Date:**", domain.registration_date.strftime("%Y-%m-%d") if domain.registration_date else "N/A")
+                                    st.write("**Owner:**", domain.owner or "N/A")
+                                with col2:
+                                    st.write("**Expiration Date:**", domain.expiration_date.strftime("%Y-%m-%d") if domain.expiration_date else "N/A")
+                                    st.write("**Certificates:**", len(domain.certificates))
+                                    st.write("**DNS Records:**", len(domain.dns_records))
+                
+                with tab_certs:
+                    with Session(engine) as session:
+                        for hostname, _ in scan_targets:
+                            domain = session.query(Domain).filter_by(domain_name=hostname).first()
+                            if domain and domain.certificates:
+                                st.markdown(f"### {domain.domain_name}")
+                                for cert in domain.certificates:
+                                    with st.expander(f"Certificate: {cert.common_name}"):
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.write("**Common Name:**", cert.common_name)
+                                            st.write("**Valid From:**", cert.valid_from.strftime("%Y-%m-%d"))
+                                            st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
+                                            st.write("**Serial Number:**", cert.serial_number)
+                                        with col2:
+                                            st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
+                                            st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
+                                            st.write("**SANs:**", ", ".join(cert.san))
+                                            st.write("**Signature Algorithm:**", cert.signature_algorithm)
+                
+                with tab_dns:
+                    with Session(engine) as session:
+                        for hostname, _ in scan_targets:
+                            domain = session.query(Domain).filter_by(domain_name=hostname).first()
+                            if domain and domain.dns_records:
+                                st.markdown(f"### {domain.domain_name}")
+                                records_df = []
+                                for record in domain.dns_records:
+                                    records_df.append({
+                                        'Type': record.record_type,
+                                        'Name': record.name,
+                                        'Value': record.value,
+                                        'TTL': record.ttl,
+                                        'Priority': record.priority or 'N/A'
+                                    })
+                                if records_df:
+                                    st.dataframe(pd.DataFrame(records_df))
                 
                 # Clear scan targets after successful scan
                 if 'scan_targets' in st.session_state:
                     del st.session_state.scan_targets
             else:
-                st.error("Please enter at least one valid hostname to scan")
+                st.error("Please enter at least one valid domain to scan")
     
     # Recent scans sidebar
     with col2:
         st.subheader("Recent Scans")
         with Session(engine) as session:
-            recent_scans = session.query(CertificateScan)\
-                .outerjoin(Certificate)\
-                .order_by(CertificateScan.scan_date.desc())\
+            recent_domains = session.query(Domain)\
+                .order_by(Domain.updated_at.desc())\
                 .limit(5)\
                 .all()
             
-            if recent_scans:
+            if recent_domains:
                 st.markdown("<div class='text-small'>", unsafe_allow_html=True)
-                for scan in recent_scans:
-                    scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                    if scan.certificate:
-                        cert_name = scan.certificate.common_name
-                        status_class = "text-success" if scan.status == 'Valid' else "text-danger"
-                        st.markdown(
-                            f"**{cert_name}** "
-                            f"<span class='text-muted'>"
-                            f"(🕒 {scan_time} • <span class='{status_class}'>{scan.status}</span>)</span>",
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        # Get host information for failed scan
-                        host = session.query(Host).filter_by(id=scan.host_id).first()
-                        host_info = f"{host.name}:{scan.port}" if host else "Unknown Host"
-                        st.markdown(
-                            f"**{host_info}** "
-                            f"<span class='text-muted'>"
-                            f"(🕒 {scan_time} • <span class='text-danger'>Failed</span>)</span>",
-                            unsafe_allow_html=True
-                        )
+                for domain in recent_domains:
+                    scan_time = domain.updated_at.strftime("%Y-%m-%d %H:%M")
+                    cert_count = len(domain.certificates)
+                    cert_status = "✅" if any(c.chain_valid for c in domain.certificates) else "❌"
+                    st.markdown(
+                        f"**{domain.domain_name}** "
+                        f"<span class='text-muted'>"
+                        f"(🕒 {scan_time} • {cert_status} {cert_count} certs)</span>",
+                        unsafe_allow_html=True
+                    )
                 st.markdown("</div>", unsafe_allow_html=True)
             else:
                 st.info("No recent scans")
-    
-    # Display scan results summary
-    if any(st.session_state.scan_results.values()):
-        st.divider()
-        st.subheader("Current Scan Results")
-        
-        if st.session_state.scan_results["success"]:
-            st.markdown("#### ✅ Successfully Scanned")
-            for host in st.session_state.scan_results["success"]:
-                st.markdown(f"- {host}")
-        
-        if st.session_state.scan_results["error"]:
-            st.markdown("#### ❌ Failed to Scan")
-            for host in st.session_state.scan_results["error"]:
-                st.markdown(f"- {host}")
-        
-        if st.session_state.scan_results["warning"]:
-            st.markdown("#### ⚠️ Warnings")
-            for host in st.session_state.scan_results["warning"]:
-                st.markdown(f"- {host}")
-        
-        st.success(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.")
-
-def render_scan_results() -> None:
-    """
-    Render the scan results section showing success, failures, and warnings.
-
-    This function displays a comprehensive summary of certificate scan results,
-    organized into three categories:
-    - Successful scans
-    - Failed scans
-    - Warning messages
-
-    Features:
-        - Categorized results display:
-            - Success section with valid certificates
-            - Error section with failed scans
-            - Warning section for potential issues
-        - Detailed information for each result:
-            - Hostname and port
-            - Scan timestamp
-            - Status indicators
-        - Visual status indicators:
-            - Success: Green checkmark
-            - Error: Red X
-            - Warning: Yellow triangle
-        - Formatted timestamps
-        - Monospace formatting for technical details
-
-    The function handles both string-based messages and scan result objects,
-    providing consistent formatting and visual indicators for each type.
-    Results are stored in Streamlit's session state for persistence between
-    reruns.
-    """
-    # Display successful scans
-    if st.session_state.scan_results["success"]:
-        st.markdown("### ✅ Successful Scans")
-        for scan in st.session_state.scan_results["success"]:
-            if isinstance(scan, str):
-                st.markdown(scan)
-            else:
-                scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                chain_status = "🔒 Valid Chain" if scan.certificate and scan.certificate.chain_valid else "⚠️ Unverified Chain"
-                st.markdown(
-                    f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
-                    f"(🕒 {scan_time} • <span class='text-success'>Valid</span> • {chain_status})</span>",
-                    unsafe_allow_html=True
-                )
-    
-    # Display failed scans
-    if st.session_state.scan_results["error"]:
-        st.markdown("### ❌ Failed Scans")
-        for scan in st.session_state.scan_results["error"]:
-            if isinstance(scan, str):
-                st.markdown(scan)
-            else:
-                scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(
-                    f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
-                    f"(🕒 {scan_time} • <span class='text-danger'>Failed</span>)</span>",
-                    unsafe_allow_html=True
-                )
-    
-    # Display warning messages
-    if st.session_state.scan_results["warning"]:
-        st.markdown("### ⚠️ Warnings")
-        for scan in st.session_state.scan_results["warning"]:
-            if isinstance(scan, str):
-                st.markdown(scan)
-            else:
-                scan_time = scan.scan_date.strftime("%Y-%m-%d %H:%M")
-                st.markdown(
-                    f"<span class='text-monospace d-block'>{scan.hostname}:{scan.port} "
-                    f"(🕒 {scan_time} • <span class='text-warning'>Warning</span>)</span>",
-                    unsafe_allow_html=True
-                )

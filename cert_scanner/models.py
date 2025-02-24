@@ -518,19 +518,11 @@ class Domain(Base):
     certificates = relationship("Certificate", secondary="domain_certificates")
     parent_domain = relationship("Domain", remote_side=[id], backref="subdomains")
     dns_records = relationship("DomainDNSRecord", back_populates="domain", cascade="all, delete-orphan")
-
+    
     @validates('domain_name')
     def validate_domain_name(self, key, domain_name):
         """
         Validate domain name format.
-        
-        Rules:
-        - Must not be empty
-        - Must contain at least one dot
-        - Must not start or end with dot or hyphen
-        - Must not contain consecutive dots
-        - Must only contain valid characters (a-z, A-Z, 0-9, -, .)
-        - Must be a valid IDN (if using punycode xn--)
         
         Args:
             key: Field name being validated
@@ -544,32 +536,37 @@ class Domain(Base):
         """
         if not domain_name:
             raise ValueError("Domain name cannot be empty")
-        
-        # Convert to lowercase for consistency
-        domain_name = domain_name.lower()
-        
-        # Basic pattern for domain names
-        pattern = r'^(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$'
-        
-        # Special handling for IDN (punycode)
-        if domain_name.startswith('xn--'):
-            # Allow punycode format
-            idn_pattern = r'^xn--[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$'
-            if not re.match(idn_pattern, domain_name):
-                raise ValueError("Invalid IDN domain name format")
-            return domain_name
-        
-        # Validate against pattern
+            
+        # Remove trailing dot if present
+        if domain_name.endswith('.'):
+            domain_name = domain_name[:-1]
+            
+        # Basic domain name validation
+        pattern = r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,}$'
         if not re.match(pattern, domain_name):
             raise ValueError("Invalid domain name format")
-        
-        # Check for consecutive dots or hyphens
-        if '..' in domain_name or '--' in domain_name:
-            raise ValueError("Domain name cannot contain consecutive dots or hyphens")
-        
-        # Check TLD length (at least 2 characters)
-        if len(domain_name.split('.')[-1]) < 2:
-            raise ValueError("Invalid top-level domain")
+            
+        # Check for double dots
+        if '..' in domain_name:
+            raise ValueError("Domain name cannot contain consecutive dots")
+            
+        # Check each segment
+        for segment in domain_name.split('.'):
+            # Check for empty segments
+            if not segment:
+                raise ValueError("Domain name cannot have empty segments")
+                
+            # Check for hyphens at start/end
+            if segment.startswith('-') or segment.endswith('-'):
+                raise ValueError("Domain segments cannot start or end with hyphens")
+                
+            # Check for invalid characters
+            if not all(c.isalnum() or c == '-' for c in segment):
+                raise ValueError("Domain segments can only contain letters, numbers, and hyphens")
+                
+            # Check segment length
+            if len(segment) > 63:
+                raise ValueError("Domain segments cannot be longer than 63 characters")
         
         return domain_name
 

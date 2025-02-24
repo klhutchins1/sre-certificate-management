@@ -391,14 +391,17 @@ class CertificateScanner:
         expanded_domains = self._expand_domains(domains)
         results = []
         for domain in expanded_domains:
-            result = self.scan_certificate(domain, port)
-            if isinstance(result, CertificateInfo):
-                # Convert old-style result to ScanResult
-                scan_result = ScanResult()
-                scan_result.certificate_info = result
-                results.append(scan_result)
-            else:
-                results.append(result)
+            try:
+                result = self.scan_certificate(domain, port)
+                if isinstance(result, CertificateInfo):
+                    # Convert old-style result to ScanResult
+                    scan_result = ScanResult()
+                    scan_result.certificate_info = result
+                    results.append(scan_result)
+                else:
+                    results.append(result)
+            except Exception as e:
+                results.append(ScanResult(error=str(e)))
         return results
     
     def _get_certificate(self, address: str, port: int) -> Optional[bytes]:
@@ -418,44 +421,55 @@ class CertificateScanner:
             # Load system root certificates
             context.load_default_certs()
             
-            # Create socket with timeout
-            sock = socket.create_connection((address, port), timeout=5)
             try:
-                ssock = context.wrap_socket(sock, server_hostname=address)
-                # Get certificate in binary form
-                cert_binary = ssock.getpeercert(binary_form=True)
-                if cert_binary:
-                    self.logger.info(f"Certificate retrieved successfully from {address}:{port}")
-                    # Store chain validation status
-                    self._last_cert_chain = True  # Certificate chain was validated
-                    return cert_binary
-                
-                self.logger.warning(f"No certificate found at {address}:{port}")
-                return None
-                
-            except ssl.SSLCertVerificationError as e:
-                self.logger.warning(f"Certificate validation failed for {address}:{port}: {str(e)}")
-                # Still return the certificate but mark it as unverified
+                # Create socket with timeout
+                sock = socket.create_connection((address, port), timeout=5)
                 try:
-                    context.verify_mode = ssl.CERT_NONE
                     ssock = context.wrap_socket(sock, server_hostname=address)
+                    # Get certificate in binary form
                     cert_binary = ssock.getpeercert(binary_form=True)
                     if cert_binary:
-                        self.logger.info(f"Retrieved unverified certificate from {address}:{port}")
-                        self._last_cert_chain = False  # Chain validation failed
+                        self.logger.info(f"Certificate retrieved successfully from {address}:{port}")
+                        # Store chain validation status
+                        self._last_cert_chain = True  # Certificate chain was validated
                         return cert_binary
-                except Exception as inner_e:
-                    self.logger.error(f"Failed to retrieve unverified certificate: {str(inner_e)}")
-                return None
+                    
+                    self.logger.warning(f"No certificate found at {address}:{port}")
+                    return None
+                    
+                except ssl.SSLCertVerificationError as e:
+                    self.logger.warning(f"Certificate validation failed for {address}:{port}: {str(e)}")
+                    # Still return the certificate but mark it as unverified
+                    try:
+                        context.verify_mode = ssl.CERT_NONE
+                        ssock = context.wrap_socket(sock, server_hostname=address)
+                        cert_binary = ssock.getpeercert(binary_form=True)
+                        if cert_binary:
+                            self.logger.info(f"Retrieved unverified certificate from {address}:{port}")
+                            self._last_cert_chain = False  # Chain validation failed
+                            return cert_binary
+                    except Exception as inner_e:
+                        self.logger.error(f"Failed to retrieve unverified certificate: {str(inner_e)}")
+                    return None
+                except ssl.SSLError as e:
+                    msg = f"SSL error: {str(e)}"
+                    self.logger.error(f"SSL error for {address}:{port}: {str(e)}")
+                    raise Exception(msg)
+                    
+            except socket.timeout:
+                msg = f"Socket timed out while checking certificate for {address}:{port}"
+                self.logger.error(msg)
+                raise Exception(msg)
+            except ConnectionRefusedError:
+                self.logger.warning(f"{address}:{port} is not reachable")
+                self.logger.error("Error while checking certificate: Connection refused")
+                raise Exception("Connection refused")
                 
-        except socket.timeout:
-            self.logger.error(f"Connection timed out for {address}:{port}")
-        except ConnectionRefusedError:
-            self.logger.error(f"Connection refused for {address}:{port}")
-        except ssl.SSLError as e:
-            self.logger.error(f"SSL error for {address}:{port}: {str(e)}")
         except Exception as e:
+            if isinstance(e, (socket.timeout, ConnectionRefusedError, ssl.SSLError)):
+                raise
             self.logger.error(f"Error retrieving certificate from {address}:{port}: {str(e)}")
+            raise
         finally:
             # Clean up sockets
             if ssock:

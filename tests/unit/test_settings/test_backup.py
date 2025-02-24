@@ -4,7 +4,7 @@ from pathlib import Path, WindowsPath
 import shutil
 import json
 from datetime import datetime
-from cert_scanner.views.settingsView import create_backup, restore_backup, list_backups
+from cert_scanner.backup import create_backup, restore_backup, list_backups
 from cert_scanner.settings import Settings
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -126,8 +126,6 @@ def test_restore_backup(test_env):
     # Store original settings
     settings = Settings()
     original_config = settings._config.copy()
-    original_backup_path = settings.get("paths.backups")
-    original_db_path = settings.get("paths.database")
 
     # Create initial backup
     success, message = create_backup()
@@ -168,20 +166,10 @@ def test_restore_backup(test_env):
     Session.close_all()
     engine.dispose()
 
-    # Modify config
-    modified_config = {
-        "paths": {
-            "database": str(test_env['db_file']),  # Use the actual test database path
-            "backups": str(test_env['backup_dir'])  # Use the actual test backup path
-        }
-    }
-    settings._config = modified_config
-    settings.save()
-
     # Get backup to restore
     backups = list_backups()
     assert len(backups) > 0, "No backups found"
-    backup_to_restore = backups[0]
+    backup_to_restore = backups[0]['manifest_file']
 
     # Close all database connections before restore
     Session.close_all()
@@ -216,13 +204,10 @@ def test_restore_backup(test_env):
 
 def test_restore_nonexistent_backup(test_env):
     """Test restoring from a nonexistent backup"""
-    fake_manifest = {
-        'config': 'nonexistent.yaml',
-        'database': 'nonexistent.db'
-    }
-    success, message = restore_backup(fake_manifest)
+    nonexistent_path = test_env['backup_dir'] / "nonexistent_backup.json"
+    success, message = restore_backup(str(nonexistent_path))
     assert not success
-    assert "not found" in message
+    assert "Failed to read manifest file" in message
 
 def test_backup_with_missing_database(test_env):
     """Test creating backup when database file is missing"""
@@ -231,13 +216,17 @@ def test_backup_with_missing_database(test_env):
     
     # Backup should still succeed, just without database
     success, message = create_backup()
-    assert success
+    assert success, "Backup should succeed even without database"
+    assert "successfully" in message
     
     # Check manifest
-    manifest_file = next(test_env['backup_dir'].glob("backup_*.json"))
+    manifest_files = list(test_env['backup_dir'].glob("backup_*.json"))
+    assert len(manifest_files) > 0, "No manifest file created"
+    
+    manifest_file = manifest_files[0]
     with open(manifest_file, 'r') as f:
         manifest = json.load(f)
-    assert manifest['database'] is None
+    assert manifest['database'] is None, "Database path should be None when database is missing"
 
 def test_backup_with_special_characters(test_env):
     """Test backup with special characters in paths"""
@@ -363,4 +352,31 @@ def test_multiple_backups_ordering(test_env):
                 file.unlink()
             test_env['backup_dir'].rmdir()
         except Exception as e:
-            print(f"Warning: Failed to clean up some test files: {e}") 
+            print(f"Warning: Failed to clean up some test files: {e}")
+
+def test_create_backup_success(test_env):
+    """Test successful backup creation"""
+    # Create test data
+    engine = create_engine(f"sqlite:///{test_env['db_file']}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    
+    # Create backup
+    success, message = create_backup()
+    assert success, f"Backup failed: {message}"
+    assert "successfully" in message
+    
+    # Verify backup files
+    backup_files = list(test_env['backup_dir'].glob("*"))
+    assert len(backup_files) == 3, "Expected 3 backup files (db, config, manifest)"
+    
+    # Verify manifest
+    manifest_files = list(test_env['backup_dir'].glob("backup_*.json"))
+    assert len(manifest_files) == 1, "Expected one manifest file"
+    
+    with open(manifest_files[0], 'r') as f:
+        manifest = json.load(f)
+        assert 'database' in manifest
+        assert 'config' in manifest
+        assert 'created' in manifest
+        assert 'timestamp' in manifest 

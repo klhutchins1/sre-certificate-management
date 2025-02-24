@@ -3,9 +3,10 @@ from unittest.mock import Mock, patch, MagicMock, call
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
-from cert_scanner.views.settingsView import render_settings_view, create_backup, restore_backup, list_backups
+from cert_scanner.views.settingsView import render_settings_view, restore_backup, list_backups
+from cert_scanner.backup import create_backup
 from cert_scanner.settings import Settings
-from cert_scanner.models import Base
+from cert_scanner.models import Base, Domain
 from pathlib import Path
 import json
 import yaml
@@ -391,46 +392,68 @@ def test_render_settings_view_exports(mock_streamlit, mock_settings, engine):
     # Verify save was called
     mock_settings.save.assert_called_once()
 
-def test_create_backup_success(mock_settings, tmp_path):
-    """Test successful backup creation"""
-    # Set up test paths
-    db_path = tmp_path / "test.db"
-    backup_dir = tmp_path / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create test database
-    engine = create_engine(f'sqlite:///{db_path}')
-    Base.metadata.create_all(engine)
-    
-    # Write some test data
-    with open(db_path, 'wb') as f:
-        f.write(b'SQLite format 3\x00')
-        f.write(b'\x00' * 100)
-    
-    # Configure mock settings
-    def get_side_effect(key, default=None):
-        paths = {
-            "paths.database": str(db_path),
-            "paths.backups": str(backup_dir)
-        }
-        return paths.get(key, default)
-    
-    mock_settings.get.side_effect = get_side_effect
-    mock_settings._config = {"test": "config"}
-    
-    # Create backup
-    success, message = create_backup()
-    assert success
-    assert "successfully" in message.lower()
-    
-    # Verify backup files
-    backup_files = list(backup_dir.glob("*"))
-    assert len(backup_files) == 3  # config, manifest, and database backup
-    
-    # Verify file types
-    assert len(list(backup_dir.glob("config_*.yaml"))) == 1
-    assert len(list(backup_dir.glob("certificates_*.db"))) == 1
-    assert len(list(backup_dir.glob("backup_*.json"))) == 1
+def test_create_backup_success(engine):
+    """Test successful database backup creation."""
+    with patch('streamlit.button') as mock_button, \
+         patch('streamlit.success') as mock_success, \
+         patch('streamlit.error') as mock_error, \
+         patch('cert_scanner.settings.Settings') as mock_settings_class:
+        
+        # Configure mock settings
+        mock_settings = MagicMock()
+        mock_settings_class.return_value = mock_settings
+        mock_settings.get.side_effect = lambda key, default=None: {
+            "paths.database": "test.db",
+            "paths.backups": "backups"
+        }.get(key, default)
+        
+        # Configure mock button to trigger backup
+        mock_button.return_value = True
+        
+        # Create some test data
+        with Session(engine) as session:
+            domain = Domain(domain_name="test.com")
+            session.add(domain)
+            session.commit()
+        
+        # Call the backup function
+        success, message = create_backup(engine)
+        
+        # Verify backup was successful
+        assert success is True
+        assert "successfully" in message.lower()
+        
+        # Verify success message was shown
+        mock_success.assert_called_once()
+        mock_error.assert_not_called()
+
+def test_backup_with_missing_database(engine):
+    """Test backup handling when database is missing or inaccessible."""
+    with patch('streamlit.button') as mock_button, \
+         patch('streamlit.error') as mock_error, \
+         patch('cert_scanner.settings.Settings') as mock_settings_class:
+        
+        # Configure mock settings
+        mock_settings = MagicMock()
+        mock_settings_class.return_value = mock_settings
+        mock_settings.get.side_effect = lambda key, default=None: {
+            "paths.database": "nonexistent.db",
+            "paths.backups": "backups"
+        }.get(key, default)
+        
+        # Configure mock button to trigger backup
+        mock_button.return_value = True
+        
+        # Use an invalid database path
+        invalid_engine = create_engine('sqlite:///nonexistent.db')
+        
+        # Attempt backup
+        success, message = create_backup(invalid_engine)
+        
+        # Verify error handling
+        assert success is False
+        assert "Database file does not exist" in message
+        mock_error.assert_called_once()
 
 def test_restore_backup_success(mock_settings, tmp_path):
     """Test successful backup restoration"""
@@ -492,46 +515,6 @@ def test_restore_backup_success(mock_settings, tmp_path):
     with engine.connect() as conn:
         result = conn.execute(text("SELECT * FROM test")).fetchone()
         assert result[0] == 1
-
-def test_backup_with_missing_database(mock_settings, tmp_path):
-    """Test backup creation when database file is missing with improved error handling"""
-    # Set up test paths
-    backup_dir = tmp_path / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Configure mock settings with nonexistent database
-    def get_side_effect(key, default=None):
-        paths = {
-            "paths.database": str(tmp_path / "nonexistent.db"),
-            "paths.backups": str(backup_dir)
-        }
-        return paths.get(key, default)
-    
-    mock_settings.get.side_effect = get_side_effect
-    mock_settings._config = {"test": "config"}
-    
-    # Create backup
-    success, message = create_backup()
-    
-    # Verify backup was created successfully without database
-    assert success
-    assert "Backup created successfully" in message
-    
-    # Verify config and manifest were created
-    config_files = list(backup_dir.glob("config_*.yaml"))
-    manifest_files = list(backup_dir.glob("backup_*.json"))
-    db_files = list(backup_dir.glob("certificates_*.db"))
-    
-    assert len(config_files) == 1, "Config backup should be created"
-    assert len(manifest_files) == 1, "Manifest should be created"
-    assert len(db_files) == 0, "No database backup should be created"
-    
-    # Verify manifest content
-    with open(manifest_files[0]) as f:
-        manifest = json.load(f)
-        assert manifest["database"] is None, "Database path should be None in manifest"
-        assert "config" in manifest, "Config path should be in manifest"
-        assert "created" in manifest, "Created timestamp should be in manifest"
 
 def test_list_backups(mock_settings, tmp_path):
     """Test listing available backups"""

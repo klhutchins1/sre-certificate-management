@@ -5,7 +5,7 @@ import ssl
 from unittest.mock import Mock, patch, MagicMock, call
 import OpenSSL
 from OpenSSL.crypto import X509, X509Name
-from cert_scanner.scanner import CertificateScanner, CertificateInfo
+from cert_scanner.scanner import CertificateScanner, CertificateInfo, ScanResult
 import logging
 
 @pytest.fixture
@@ -140,20 +140,26 @@ def test_get_certificate(mock_ssl_context, mock_socket, scanner):
     mock_ssl_socket.getpeercert.assert_called_once_with(binary_form=True)
     assert cert_data == mock_ssl_socket.getpeercert.return_value
 
-@patch('socket.socket')
-def test_get_certificate_errors(mock_socket, scanner):
-    """Test certificate retrieval error handling"""
+def test_get_certificate_errors(scanner):
+    """Test error handling in certificate retrieval."""
     # Test connection refused
-    mock_socket.side_effect = ConnectionRefusedError
-    assert scanner._get_certificate("test.com", 443) is None
+    with pytest.raises(Exception) as exc_info:
+        scanner._get_certificate("localhost", 1234)  # Non-existent port
+    assert "Connection refused" in str(exc_info.value)
     
     # Test timeout
-    mock_socket.side_effect = socket.timeout
-    assert scanner._get_certificate("test.com", 443) is None
+    with patch('socket.create_connection') as mock_connect:
+        mock_connect.side_effect = socket.timeout()
+        with pytest.raises(Exception) as exc_info:
+            scanner._get_certificate("localhost", 443)
+        assert "Socket timed out while checking certificate for localhost:443" in str(exc_info.value)
     
-    # Test DNS resolution failure
-    mock_socket.side_effect = socket.gaierror
-    assert scanner._get_certificate("test.com", 443) is None
+    # Test SSL error
+    with patch('ssl.SSLContext.wrap_socket') as mock_wrap:
+        mock_wrap.side_effect = ssl.SSLError("SSL error occurred")
+        with pytest.raises(Exception) as exc_info:
+            scanner._get_certificate("localhost", 443)
+        assert "SSL error: SSL error occurred" in str(exc_info.value)
 
 def test_scan_certificate(scanner):
     """Test complete certificate scanning process"""
@@ -176,8 +182,10 @@ def test_scan_certificate(scanner):
         
         result = scanner.scan_certificate("test.com")
         assert result is not None
-        assert result.hostname == "test.com"
-        assert result.ip_addresses == ["192.168.1.1"]
+        assert result.error is None
+        assert result.certificate_info is not None
+        assert result.certificate_info.hostname == "test.com"
+        assert result.certificate_info.ip_addresses == ["192.168.1.1"]
 
 def test_scan_domains(scanner):
     """Test scanning multiple domains"""
@@ -229,7 +237,9 @@ def test_scan_certificate_custom_port(scanner):
         
         result = scanner.scan_certificate("test.com", port=8443)
         assert result is not None
-        assert result.port == 8443
+        assert result.error is None
+        assert result.certificate_info is not None
+        assert result.certificate_info.port == 8443
         mock_process.assert_called_once()
 
 def test_process_certificate_with_multiple_sans(scanner):
@@ -333,42 +343,39 @@ def test_process_certificate_with_extended_fields(scanner):
             "C": "US"
         }
 
-def test_scan_certificate_logging(scanner):
-    """Test that certificate scanning is properly logged"""
-    # Test connection error
-    with patch.object(scanner, '_get_certificate') as mock_get_cert:
-        def raise_connection_error(*args, **kwargs):
-            scanner.logger.warning("test.com:443 is not reachable")
-            scanner.logger.error("Error while checking certificate: Connection refused")
-            return None
-        mock_get_cert.side_effect = raise_connection_error
-        
-        result = scanner.scan_certificate("test.com")
-        assert result is None
-        scanner.logger.warning.assert_called_with("test.com:443 is not reachable")
-        scanner.logger.error.assert_called_with("Error while checking certificate: Connection refused")
+def test_scan_certificate_logging(scanner, caplog):
+    """Test logging during certificate scanning."""
+    caplog.set_level(logging.WARNING)
     
-    scanner.logger.reset_mock()
+    # Test connection refused logging
+    try:
+        scanner._get_certificate("localhost", 1234)  # This should fail
+    except:
+        pass
+    assert "localhost:1234 is not reachable" in caplog.text
+    assert "Error while checking certificate: Connection refused" in caplog.text
     
-    # Test timeout
-    with patch.object(scanner, '_get_certificate') as mock_get_cert:
-        def raise_timeout(*args, **kwargs):
-            scanner.logger.error("Socket timed out while checking certificate for test.com:443")
-            return None
-        mock_get_cert.side_effect = raise_timeout
-        
-        result = scanner.scan_certificate("test.com")
-        assert result is None
-        scanner.logger.error.assert_called_with("Socket timed out while checking certificate for test.com:443")
+    caplog.clear()
     
-    scanner.logger.reset_mock()
+    # Test timeout logging
+    with patch('socket.create_connection') as mock_connect:
+        mock_connect.side_effect = socket.timeout()
+        try:
+            scanner._get_certificate("localhost", 443)
+        except:
+            pass
+    assert "Socket timed out while checking certificate for localhost:443" in caplog.text
     
-    # Test certificate processing error
-    with patch.object(scanner, '_get_certificate', return_value=b"cert_data"), \
-         patch.object(scanner, '_process_certificate', side_effect=Exception("Test error")):
-        result = scanner.scan_certificate("test.com")
-        assert result is None
-        scanner.logger.error.assert_called_with("Error scanning test.com:443 - Test error")
+    caplog.clear()
+    
+    # Test SSL error logging
+    with patch('ssl.SSLContext.wrap_socket') as mock_wrap:
+        mock_wrap.side_effect = ssl.SSLError("SSL error occurred")
+        try:
+            scanner._get_certificate("localhost", 443)
+        except:
+            pass
+    assert "SSL error for localhost:443: SSL error occurred" in caplog.text
 
 def test_scan_domains_empty_list(scanner):
     """Test scanning with empty domain list"""
@@ -381,28 +388,30 @@ def test_scan_domains_with_failures(scanner):
     """Test scanning multiple domains with some failures"""
     domains = ["valid.com", "invalid.com"]
     
-    def mock_scan(domain, port=443):
-        if domain == "valid.com":
-            return CertificateInfo(
-                hostname=domain,
-                ip_addresses=["192.168.1.1"],
-                port=port,
-                common_name=domain,
-                expiration_date=datetime.now(),
-                serial_number="123",
-                thumbprint="abc",
-                san=[domain],
-                issuer={"CN": "Test CA"},
-                subject={"CN": domain},
-                valid_from=datetime.now()
-            )
-        scanner.logger.error.assert_not_called()  # Should not log here
-        return None
-    
-    with patch.object(scanner, 'scan_certificate', side_effect=mock_scan):
+    with patch.object(scanner, 'scan_certificate') as mock_scan_cert:
+        def scan_side_effect(domain, port=443):
+            if domain == "valid.com":
+                cert_info = CertificateInfo(
+                    hostname=domain,
+                    ip_addresses=["192.168.1.1"],
+                    port=port,
+                    common_name=domain,
+                    expiration_date=datetime.now(),
+                    serial_number="123",
+                    thumbprint="abc",
+                    san=[domain],
+                    issuer={"CN": "Test CA"},
+                    subject={"CN": domain},
+                    valid_from=datetime.now()
+                )
+                return ScanResult(certificate_info=cert_info)
+            return ScanResult(error="Failed to scan")
+        
+        mock_scan_cert.side_effect = scan_side_effect
         results = scanner.scan_domains(domains)
-        assert len(results) == 1
-        assert results[0].hostname == "valid.com" 
+        assert len(results) == 2
+        assert results[0].certificate_info is not None
+        assert results[1].error is not None
 
 def test_process_certificate_with_key_usage(scanner):
     """Test processing certificate with key usage information"""

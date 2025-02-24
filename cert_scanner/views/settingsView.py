@@ -51,6 +51,7 @@ from ..exports import (
 )
 from ..static.styles import load_warning_suppression, load_css
 from sqlalchemy.engine import Engine
+from ..backup import create_backup
 
 
 logger = logging.getLogger(__name__)
@@ -193,52 +194,6 @@ def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[b
         message = f"Failed to restore backup: {str(e)}"
         st.error(message)
         return False, message
-
-def create_backup():
-    """Create a backup of the database and configuration"""
-    try:
-        settings = Settings()
-        
-        # Get paths and ensure they're resolved
-        db_path = Path(_normalize_path(settings.get("paths.database"))).resolve()
-        backup_dir = WindowsPath(_normalize_path(settings.get("paths.backups"))).resolve()
-        
-        # Create backup directory if it doesn't exist
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate timestamp for backup files
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Backup database if it exists
-        db_backup = None
-        if os.path.exists(str(db_path)):
-            db_backup = backup_dir / f"certificates_{timestamp}.db"
-            shutil.copy2(str(db_path), str(db_backup))
-        
-        # Backup configuration
-        config = settings._config
-        config_backup = backup_dir / f"config_{timestamp}.yaml"
-        with open(str(config_backup), 'w', encoding='utf-8') as f:
-            yaml.safe_dump(config, f)
-        
-        # Create manifest
-        manifest = {
-            "timestamp": timestamp,
-            "created": datetime.now().isoformat(),
-            "database": str(db_backup) if db_backup else None,
-            "config": str(config_backup)
-        }
-        
-        manifest_file = backup_dir / f"backup_{timestamp}.json"
-        with open(str(manifest_file), 'w', encoding='utf-8') as f:
-            json.dump(manifest, f, indent=2)
-        
-        st.success("Backup created successfully")
-        return True, "Backup created successfully"
-    except Exception as e:
-        error_msg = f"Failed to create backup: {str(e)}"
-        st.error(error_msg)
-        return False, error_msg
 
 def render_settings_view(engine) -> None:
     """

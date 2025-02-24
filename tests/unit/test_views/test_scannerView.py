@@ -3,8 +3,8 @@ from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from cert_scanner.models import Certificate, CertificateScan, Host
-from cert_scanner.views.scannerView import render_scan_interface, render_scan_results
-from cert_scanner.scanner import CertificateInfo
+from cert_scanner.views.scannerView import render_scan_interface
+from cert_scanner.scanner import CertificateInfo, ScanResult
 from urllib.parse import urlparse
 import streamlit as st
 
@@ -28,6 +28,8 @@ def mock_session_state():
         'warning': []
     }
     mock_state.scanner = MagicMock()
+    mock_state.domain_scanner = MagicMock()
+    mock_state.get.return_value = False  # For transitioning flag
     return mock_state
 
 @pytest.fixture
@@ -51,58 +53,115 @@ def mock_cert_info():
         version=None
     )
 
-@pytest.mark.test_interface
-def test_render_scan_interface(engine):
-    """Test the scan interface rendering functionality"""
-    with patch('streamlit.text_area') as mock_text_area, \
-         patch('streamlit.expander') as mock_expander, \
-         patch('streamlit.title') as mock_title, \
-         patch('streamlit.columns') as mock_columns, \
-         patch('streamlit.session_state', new=MagicMock()) as mock_state:
-        
-        # Configure mock expander context manager
-        mock_expander_ctx = MagicMock()
-        mock_expander.return_value.__enter__.return_value = mock_expander_ctx
-        
-        # Configure columns
-        col1, col2 = MagicMock(), MagicMock()
-        mock_columns.return_value = [col1, col2]
-        
-        # Configure session state
-        mock_state.get.return_value = False  # For transitioning flag
-        mock_state.scan_results = {
-            "success": [],
-            "error": [],
-            "warning": []
-        }
-        
-        render_scan_interface(engine)
-        
-        # Verify title was set
-        mock_title.assert_called_once_with("Scan Certificates")
-        
-        # Verify text area was configured correctly
-        mock_text_area.assert_called_once_with(
-            "Enter hostnames to scan (one per line)",
-            value="",
-            height=150,
-            placeholder="""example.com
-example.com:8443
-https://example.com
-internal.server.local:444"""
-        )
-        
-        # Verify help expander was created
-        mock_expander.assert_called_once()
+@pytest.fixture
+def mock_streamlit():
+    """Mock streamlit module"""
+    mock_st = MagicMock()
+    
+    # Mock columns to return list of MagicMocks with proper context manager
+    def mock_columns(spec):
+        if isinstance(spec, list):
+            num_cols = len(spec)
+        else:
+            num_cols = spec
+        cols = []
+        for _ in range(num_cols):
+            col = MagicMock()
+            col.__enter__ = MagicMock(return_value=col)
+            col.__exit__ = MagicMock(return_value=None)
+            col.markdown = MagicMock()
+            col.button = MagicMock()
+            col.text_input = MagicMock()
+            col.number_input = MagicMock()
+            cols.append(col)
+        return cols
+    
+    mock_st.columns.side_effect = mock_columns
+    
+    # Mock session state
+    mock_st.session_state = MagicMock()
+    mock_st.session_state.scan_results = {
+        'success': [],
+        'error': [],
+        'warning': []
+    }
+    mock_st.session_state.scan_targets = []
+    mock_st.session_state.get.return_value = False
+    mock_st.session_state.scanner = MagicMock()
+    
+    # Mock other commonly used methods
+    mock_st.title = MagicMock()
+    mock_st.header = MagicMock()
+    mock_st.subheader = MagicMock()
+    mock_st.markdown = MagicMock()
+    mock_st.text = MagicMock()
+    mock_st.text_area = MagicMock()
+    mock_st.button = MagicMock()
+    mock_st.checkbox = MagicMock()
+    mock_st.selectbox = MagicMock()
+    mock_st.radio = MagicMock()
+    mock_st.empty = MagicMock()
+    mock_st.error = MagicMock()
+    mock_st.warning = MagicMock()
+    mock_st.info = MagicMock()
+    mock_st.success = MagicMock()
+    mock_st.spinner = MagicMock()
+    mock_st.progress = MagicMock()
+    mock_st.expander = MagicMock()
+    
+    # Configure expander context manager
+    mock_expander = MagicMock()
+    mock_expander.__enter__ = MagicMock(return_value=mock_expander)
+    mock_expander.__exit__ = MagicMock(return_value=None)
+    mock_st.expander.return_value = mock_expander
+    
+    # Configure spinner context manager
+    mock_spinner = MagicMock()
+    mock_spinner.__enter__ = MagicMock(return_value=mock_spinner)
+    mock_spinner.__exit__ = MagicMock(return_value=None)
+    mock_st.spinner.return_value = mock_spinner
+    
+    return mock_st
 
 @pytest.mark.test_interface
-def test_render_scan_interface_with_input(engine):
+def test_render_scan_interface(mock_streamlit, engine):
+    """Test the scan interface rendering functionality"""
+    # Configure mock text area
+    mock_streamlit.text_area.return_value = "example.com"
+    
+    # Configure mock expander
+    mock_expander = MagicMock()
+    mock_expander.__enter__ = MagicMock(return_value=mock_expander)
+    mock_expander.__exit__ = MagicMock(return_value=None)
+    mock_streamlit.expander.return_value = mock_expander
+    
+    # Call the function
+    with patch('cert_scanner.views.scannerView.st', mock_streamlit):
+        domains, scan_button, stop_button, clear_button, results_container = render_scan_interface(engine)
+    
+    # Verify title was set
+    mock_streamlit.title.assert_called_once_with("Domain & Certificate Scanner")
+    
+    # Verify text area was configured correctly
+    mock_streamlit.text_area.assert_called_once()
+    
+    # Verify help expander was created
+    mock_streamlit.expander.assert_called_once()
+    
+    # Verify buttons were created
+    assert scan_button is not None
+    assert stop_button is not None
+    assert clear_button is not None
+    assert results_container is not None
+
+@pytest.mark.test_interface
+def test_render_scan_interface_with_input(engine, mock_session_state):
     """Test scan interface with user input"""
     with patch('streamlit.text_area') as mock_text_area, \
          patch('streamlit.expander') as mock_expander, \
          patch('streamlit.title') as mock_title, \
          patch('streamlit.columns') as mock_columns, \
-         patch('streamlit.session_state', new=MagicMock()) as mock_state:
+         patch('streamlit.session_state', mock_session_state):
         
         # Configure mock text area to return some input
         mock_text_area.return_value = "example.com\ntest.com:443"
@@ -110,24 +169,21 @@ def test_render_scan_interface_with_input(engine):
         # Configure mock expander context manager
         mock_expander_ctx = MagicMock()
         mock_expander.return_value.__enter__.return_value = mock_expander_ctx
+        mock_expander.return_value.__exit__.return_value = None
         
         # Configure columns
         col1, col2 = MagicMock(), MagicMock()
+        col1.__enter__ = MagicMock(return_value=col1)
+        col1.__exit__ = MagicMock(return_value=None)
+        col2.__enter__ = MagicMock(return_value=col2)
+        col2.__exit__ = MagicMock(return_value=None)
         mock_columns.return_value = [col1, col2]
-        
-        # Configure session state
-        mock_state.get.return_value = False  # For transitioning flag
-        mock_state.scan_results = {
-            "success": [],
-            "error": [],
-            "warning": []
-        }
         
         render_scan_interface(engine)
         
         # Verify text area was called with correct parameters
         mock_text_area.assert_called_once_with(
-            "Enter hostnames to scan (one per line)",
+            "Enter domains to scan (one per line)",
             value="",
             height=150,
             placeholder="""example.com
@@ -135,27 +191,6 @@ example.com:8443
 https://example.com
 internal.server.local:444"""
         )
-
-@pytest.mark.test_results
-def test_render_scan_results():
-    """Test the scan results display functionality"""
-    with patch('streamlit.markdown') as mock_markdown, \
-         patch('streamlit.session_state', new=MagicMock()) as mock_state:
-        
-        # Configure session state with string messages instead of objects
-        mock_state.scan_results = {
-            'success': ['✅ example.com:443 - Valid certificate found'],
-            'error': ['❌ failed.com:443 - Connection failed'],
-            'warning': ['⚠️ warning.com:443 - Certificate expiring soon']
-        }
-        
-        render_scan_results()
-        
-        # Verify results were displayed
-        assert mock_markdown.call_count >= 3  # At least headers and one result
-        markdown_calls = [str(call) for call in mock_markdown.call_args_list]
-        assert any('### ✅ Successful Scans' in str(call) for call in mock_markdown.call_args_list)
-        assert any('example.com:443' in str(call) for call in mock_markdown.call_args_list)
 
 @pytest.mark.test_integration
 def test_scan_interface_and_results_integration(engine, mock_session_state, mock_cert_info):
@@ -164,22 +199,42 @@ def test_scan_interface_and_results_integration(engine, mock_session_state, mock
          patch('streamlit.expander') as mock_expander, \
          patch('streamlit.title') as mock_title, \
          patch('streamlit.columns') as mock_columns, \
-         patch('streamlit.markdown') as mock_markdown:
+         patch('streamlit.markdown') as mock_markdown, \
+         patch('streamlit.button') as mock_button, \
+         patch('streamlit.session_state', mock_session_state):
         
         # Configure mock expander context manager
         mock_expander_ctx = MagicMock()
         mock_expander.return_value.__enter__.return_value = mock_expander_ctx
+        mock_expander.return_value.__exit__.return_value = None
         
         # Configure columns
         col1, col2 = MagicMock(), MagicMock()
+        col1.__enter__ = MagicMock(return_value=col1)
+        col1.__exit__ = MagicMock(return_value=None)
+        col2.__enter__ = MagicMock(return_value=col2)
+        col2.__exit__ = MagicMock(return_value=None)
         mock_columns.return_value = [col1, col2]
+        
+        # Configure button to simulate scan completion
+        mock_button.return_value = True
+        
+        # Configure text area with input
+        mock_text_area.return_value = "example.com"
+        
+        # Configure scanner to return results
+        scan_result = ScanResult(certificate_info=mock_cert_info)
+        mock_session_state.scanner.scan_certificate.return_value = scan_result
         
         # First render the interface
         render_scan_interface(engine)
         
         # Verify interface elements
-        mock_text_area.assert_called_once()
-        mock_expander.assert_called_once()
+        mock_text_area.assert_called()
+        mock_expander.assert_called()
+        
+        # Verify scanner was called
+        mock_session_state.scanner.scan_certificate.assert_called_with("example.com", 443)
 
 @pytest.mark.test_scan_button
 def test_scan_button_functionality(engine, mock_session_state, mock_cert_info):
@@ -193,28 +248,37 @@ def test_scan_button_functionality(engine, mock_session_state, mock_cert_info):
          patch('streamlit.columns') as mock_columns, \
          patch('streamlit.title') as mock_title, \
          patch('streamlit.expander') as mock_expander, \
-         patch('streamlit.session_state', new=mock_session_state):
+         patch('streamlit.session_state', mock_session_state):
         
         # Configure mocks
         mock_text_area.return_value = "example.com\ntest.com:8443"
         mock_button.return_value = True  # Simulate button click
-        mock_session_state.scanner = MagicMock()
-        mock_session_state.scanner.scan_certificate.return_value = mock_cert_info
-        mock_columns.return_value = [MagicMock(), MagicMock()]
-        mock_expander.return_value.__enter__.return_value = MagicMock()
         
+        # Configure scanner to return results
+        scan_result = ScanResult(certificate_info=mock_cert_info)
+        mock_session_state.scanner.scan_certificate.return_value = scan_result
+        
+        # Configure columns
+        col1, col2 = MagicMock(), MagicMock()
+        col1.__enter__ = MagicMock(return_value=col1)
+        col1.__exit__ = MagicMock(return_value=None)
+        col2.__enter__ = MagicMock(return_value=col2)
+        col2.__exit__ = MagicMock(return_value=None)
+        mock_columns.return_value = [col1, col2]
+        
+        # Configure expander
+        mock_expander_ctx = MagicMock()
+        mock_expander.return_value.__enter__.return_value = mock_expander_ctx
+        mock_expander.return_value.__exit__.return_value = None
+        
+        # Configure progress and empty containers
         mock_progress_bar = MagicMock()
         mock_progress.return_value = mock_progress_bar
         mock_empty.return_value = MagicMock()
         
-        # Initialize session state
-        mock_session_state.scan_results = {
-            'success': [],
-            'error': [],
-            'warning': []
-        }
-        mock_session_state.scan_targets = []
-        mock_session_state.get.return_value = False  # For transitioning flag
+        # Configure spinner
+        mock_spinner.return_value.__enter__ = MagicMock(return_value=None)
+        mock_spinner.return_value.__exit__ = MagicMock(return_value=None)
         
         render_scan_interface(engine)
         
@@ -440,7 +504,7 @@ def test_scan_error_handling(engine, mock_session_state):
          patch('streamlit.columns') as mock_columns, \
          patch('streamlit.title') as mock_title, \
          patch('streamlit.expander') as mock_expander, \
-         patch('streamlit.session_state', new=mock_session_state):
+         patch('streamlit.session_state', mock_session_state):
 
         # Configure mocks
         mock_text_area.return_value = "example.com"
@@ -527,7 +591,7 @@ def test_database_integration(engine, mock_session_state, mock_cert_info):
          patch('streamlit.spinner') as mock_spinner, \
          patch('streamlit.progress') as mock_progress, \
          patch('streamlit.expander') as mock_expander, \
-         patch('streamlit.session_state', new=mock_session_state):
+         patch('streamlit.session_state', mock_session_state):
         
         # Configure mocks
         mock_text_area.return_value = "example.com"

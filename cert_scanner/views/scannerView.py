@@ -145,8 +145,8 @@ internal.server.local:444"""
                 check_dns = st.checkbox("Scan DNS Records", value=True)
                 check_whois = st.checkbox("Get WHOIS Info", value=True)
             with col_opt2:
-                check_subdomains = st.checkbox("Include Subdomains", value=False)
-                check_related = st.checkbox("Find Related Domains", value=False)
+                check_subdomains = st.checkbox("Include Subdomains", value=True)
+                check_related = st.checkbox("Find Related Domains", value=True)
         
         # Scan initiation button
         scan_button_clicked = st.button("Start Scan")
@@ -265,6 +265,7 @@ internal.server.local:444"""
                                     else:
                                         domain.updated_at = datetime.now()
                                     
+                                    # Increment step for domain creation/update
                                     current_step += 1
                                     progress.progress(min(current_step / total_steps, 1.0))
                                     
@@ -306,8 +307,23 @@ internal.server.local:444"""
                                                                 updated_at=datetime.now()
                                                             )
                                                             session.add(dns_record)
+                                                
+                                                # Increment step for WHOIS/DNS scan
+                                                if check_whois:
+                                                    current_step += 1
+                                                    progress.progress(min(current_step / total_steps, 1.0))
+                                                if check_dns:
+                                                    current_step += 1
+                                                    progress.progress(min(current_step / total_steps, 1.0))
+                                                    
                                             except Exception as domain_error:
                                                 st.session_state.scan_results["warning"].append(f"{hostname} - Domain info error: {str(domain_error)}")
+                                                # Still increment steps even if there's an error
+                                                if check_whois:
+                                                    current_step += 1
+                                                if check_dns:
+                                                    current_step += 1
+                                                progress.progress(min(current_step / total_steps, 1.0))
                                         
                                         # Scan certificate
                                         scan_result = st.session_state.scanner.scan_certificate(hostname, port)
@@ -317,19 +333,63 @@ internal.server.local:444"""
                                             # Handle old-style result
                                             cert_info = scan_result
                                             st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                            scan_status = "Success"
                                         elif scan_result and scan_result.certificate_info:
                                             cert_info = scan_result.certificate_info
                                             st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                            scan_status = "Success"
                                         elif scan_result and scan_result.error:
                                             st.session_state.scan_results["error"].append(f"{hostname}:{port} - {scan_result.error}")
+                                            scan_status = f"Error: {scan_result.error}"
+                                            # Increment certificate scan step on error
+                                            current_step += 1
+                                            progress.progress(min(current_step / total_steps, 1.0))
                                             continue
                                         else:
                                             st.session_state.scan_results["error"].append(f"{hostname}:{port} - No certificate found")
+                                            scan_status = "No certificate found"
+                                            # Increment certificate scan step when no cert found
+                                            current_step += 1
+                                            progress.progress(min(current_step / total_steps, 1.0))
                                             continue
                                         
                                         # Process the certificate info
                                         try:
                                             with session.begin_nested():
+                                                # First create or update the host record
+                                                host = session.query(Host).filter_by(name=hostname).first()
+                                                if not host:
+                                                    host = Host(
+                                                        name=hostname,
+                                                        host_type=HOST_TYPE_SERVER,  # Default to server type
+                                                        environment=ENV_PRODUCTION,   # Default to production
+                                                        last_seen=datetime.now()
+                                                    )
+                                                    session.add(host)
+                                                else:
+                                                    host.last_seen = datetime.now()
+                                                
+                                                # Create or update IP addresses
+                                                if cert_info.ip_addresses:
+                                                    # Get existing IPs to avoid duplicates
+                                                    existing_ips = {ip.ip_address for ip in host.ip_addresses}
+                                                    for ip_addr in cert_info.ip_addresses:
+                                                        if ip_addr not in existing_ips:
+                                                            host_ip = HostIP(
+                                                                host=host,
+                                                                ip_address=ip_addr,
+                                                                is_active=True,
+                                                                last_seen=datetime.now()
+                                                            )
+                                                            session.add(host_ip)
+                                                        else:
+                                                            # Update last_seen for existing IP
+                                                            for ip in host.ip_addresses:
+                                                                if ip.ip_address == ip_addr:
+                                                                    ip.last_seen = datetime.now()
+                                                                    ip.is_active = True
+                                                
+                                                # Process certificate
                                                 cert = session.query(Certificate).filter_by(
                                                     serial_number=cert_info.serial_number
                                                 ).first()
@@ -347,7 +407,7 @@ internal.server.local:444"""
                                                         key_usage=cert_info.key_usage,
                                                         signature_algorithm=cert_info.signature_algorithm,
                                                         chain_valid=cert_info.chain_valid,
-                                                        sans_scanned=False,
+                                                        sans_scanned=True,
                                                         created_at=datetime.now(),
                                                         updated_at=datetime.now()
                                                     )
@@ -363,11 +423,53 @@ internal.server.local:444"""
                                                     cert.key_usage = cert_info.key_usage
                                                     cert.signature_algorithm = cert_info.signature_algorithm
                                                     cert.chain_valid = cert_info.chain_valid
+                                                    cert.sans_scanned = True
                                                     cert.updated_at = datetime.now()
                                                 
                                                 # Associate certificate with domain
                                                 if cert not in domain.certificates:
                                                     domain.certificates.append(cert)
+                                                
+                                                # Create certificate binding
+                                                # Find the IP that matches the scanned port
+                                                host_ip = None
+                                                if cert_info.ip_addresses:
+                                                    for ip in host.ip_addresses:
+                                                        if ip.ip_address in cert_info.ip_addresses:
+                                                            host_ip = ip
+                                                            break
+                                                
+                                                # Create or update binding
+                                                binding = session.query(CertificateBinding).filter_by(
+                                                    host=host,
+                                                    host_ip=host_ip,
+                                                    port=port
+                                                ).first()
+                                                
+                                                if not binding:
+                                                    binding = CertificateBinding(
+                                                        host=host,
+                                                        host_ip=host_ip,
+                                                        certificate=cert,
+                                                        port=port,
+                                                        binding_type='IP',  # Default to IP binding
+                                                        last_seen=datetime.now(),
+                                                        manually_added=False
+                                                    )
+                                                    session.add(binding)
+                                                else:
+                                                    binding.certificate = cert
+                                                    binding.last_seen = datetime.now()
+                                                
+                                                # Create scan history record
+                                                scan_record = CertificateScan(
+                                                    certificate=cert,
+                                                    host=host,
+                                                    scan_date=datetime.now(),
+                                                    status=scan_status,
+                                                    port=port
+                                                )
+                                                session.add(scan_record)
                                                 
                                                 session.flush()
                                         except Exception as cert_error:
@@ -460,15 +562,30 @@ internal.server.local:444"""
                                 st.markdown(f"### {domain.domain_name}")
                                 records_df = []
                                 for record in domain.dns_records:
+                                    # Convert Priority to string to avoid type mixing
+                                    priority = str(record.priority) if record.priority is not None else 'N/A'
                                     records_df.append({
                                         'Type': record.record_type,
                                         'Name': record.name,
                                         'Value': record.value,
-                                        'TTL': record.ttl,
-                                        'Priority': record.priority or 'N/A'
+                                        'TTL': int(record.ttl),  # Ensure TTL is integer
+                                        'Priority': priority  # Priority as string
                                     })
                                 if records_df:
-                                    st.dataframe(pd.DataFrame(records_df))
+                                    df = pd.DataFrame(records_df)
+                                    # Configure column types explicitly
+                                    st.dataframe(
+                                        df,
+                                        column_config={
+                                            'Type': st.column_config.TextColumn('Type'),
+                                            'Name': st.column_config.TextColumn('Name'),
+                                            'Value': st.column_config.TextColumn('Value'),
+                                            'TTL': st.column_config.NumberColumn('TTL', format='%d'),
+                                            'Priority': st.column_config.TextColumn('Priority')
+                                        },
+                                        hide_index=True,
+                                        use_container_width=True
+                                    )
                 
                 # Clear scan targets after successful scan
                 if 'scan_targets' in st.session_state:

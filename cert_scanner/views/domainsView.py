@@ -17,30 +17,93 @@ from collections import defaultdict
 
 from ..models import Domain, DomainDNSRecord, Certificate
 
+class VirtualDomain:
+    """Represents a domain that exists as a parent but is not in our database."""
+    def __init__(self, domain_name):
+        self.domain_name = domain_name
+        self.registrar = None
+        self.registration_date = None
+        self.expiration_date = None
+        self.owner = None
+        self.is_active = True
+        self.updated_at = datetime.now()
+        self.certificates = []
+        self.dns_records = []
+
 def get_domain_hierarchy(domains):
     """
-    Organize domains into a hierarchy of root domains and subdomains.
+    Organize domains into a hierarchy of parent domains and subdomains.
     
     Args:
         domains: List of Domain objects
         
     Returns:
-        dict: Hierarchical structure of domains
+        tuple: (root_domains, hierarchy)
     """
-    hierarchy = defaultdict(list)
-    root_domains = []
+    root_domains_dict = {}  # Store actual Domain objects for root domains
+    domain_tree = defaultdict(list)  # Store domain hierarchy
     
-    # First pass: identify root domains and build initial hierarchy
+    # First pass: identify all domains and their potential parents
+    all_domain_names = {domain.domain_name for domain in domains}
+    
+    # Helper function to get parent domain name
+    def get_parent_domain(domain_name):
+        parts = domain_name.split('.')
+        if len(parts) > 2:
+            return '.'.join(parts[1:])  # Remove leftmost part
+        return None
+    
+    # First, identify all potential parent domains
+    potential_parents = set()
     for domain in domains:
-        parts = domain.domain_name.split('.')
-        if len(parts) == 2:  # Root domain (e.g., example.com)
-            root_domains.append(domain)
-        else:
-            # Find the root domain
-            root_name = '.'.join(parts[-2:])  # Get the base domain
-            hierarchy[root_name].append(domain)
+        parent = get_parent_domain(domain.domain_name)
+        if parent:
+            potential_parents.add(parent)
     
-    return root_domains, hierarchy
+    # Now organize domains
+    for domain in domains:
+        parent_name = get_parent_domain(domain.domain_name)
+        if parent_name:
+            # This is a subdomain
+            if parent_name in all_domain_names:
+                # Parent exists in our list
+                domain_tree[parent_name].append(domain)
+            else:
+                # Parent doesn't exist in our list
+                if parent_name in potential_parents:
+                    # But it is a parent of another domain
+                    domain_tree[parent_name].append(domain)
+                else:
+                    # No other domains share this parent
+                    root_domains_dict[domain.domain_name] = domain
+        else:
+            # This is a root domain
+            root_domains_dict[domain.domain_name] = domain
+    
+    # Add parent domains that don't exist in our database but have children
+    for parent_name in potential_parents:
+        if parent_name not in all_domain_names and domain_tree[parent_name]:
+            # Create a "virtual" root domain for display purposes
+            root_domains_dict[parent_name] = None
+    
+    # Sort subdomains within each parent
+    for parent_name in domain_tree:
+        domain_tree[parent_name].sort(key=lambda d: d.domain_name)
+    
+    # Convert root_domains_dict to sorted list, putting real domains first
+    root_domains = sorted(
+        [d for d in root_domains_dict.values() if d is not None],
+        key=lambda d: d.domain_name
+    )
+    
+    # Add virtual parent domains at the end
+    virtual_roots = sorted(
+        [name for name, d in root_domains_dict.items() if d is None]
+    )
+    for name in virtual_roots:
+        root_domains.append(VirtualDomain(name))
+    
+    return root_domains, domain_tree
 
 def render_domain_list(engine):
     """
@@ -100,12 +163,33 @@ def render_domain_list(engine):
             st.subheader("Domains")
             # Create hierarchical domain selection
             domain_options = []
-            for root in sorted(root_domains, key=lambda d: d.domain_name):
-                domain_options.append(f"📁 {root.domain_name}")
+            
+            def add_domain_to_options(domain, prefix="", level=0):
+                """Recursively add domain and its subdomains to options."""
+                display_name = domain.domain_name
+                if level == 0:
+                    # Always show folder icon for domains that have children
+                    if display_name in domain_hierarchy:
+                        domain_options.append(f"📁 {display_name}")
+                    else:
+                        # Only show plain domain if it's a real domain
+                        if not isinstance(domain, VirtualDomain):
+                            domain_options.append(display_name)
+                else:
+                    # Use a subtle indicator for subdomains
+                    domain_options.append(f"{prefix}└─ {display_name}")
+                
                 # Add subdomains
-                subdomains = domain_hierarchy[root.domain_name]
-                for subdomain in sorted(subdomains, key=lambda d: d.domain_name):
-                    domain_options.append(f"  └─ {subdomain.domain_name}")
+                if display_name in domain_hierarchy:
+                    for subdomain in domain_hierarchy[display_name]:
+                        add_domain_to_options(subdomain, prefix + "  ", level + 1)
+            
+            # Add all root domains and their hierarchies
+            for root in root_domains:
+                if isinstance(root, VirtualDomain) or root.domain_name in domain_hierarchy:
+                    add_domain_to_options(root)
+                else:
+                    domain_options.append(root.domain_name)
             
             if domain_options:
                 selected_option = st.radio(
@@ -114,93 +198,102 @@ def render_domain_list(engine):
                     label_visibility="collapsed"
                 )
                 # Extract actual domain name from selection
-                selected_domain = selected_option.replace("📁 ", "").replace("  └─ ", "")
+                selected_domain = selected_option.replace("📁 ", "").replace("└─ ", "").replace("  ", "")
             else:
                 st.info("No domains match your search.")
                 return
         
         with col_details:
             if selected_domain:
-                domain = next(d for d in filtered_domains if d.domain_name == selected_domain)
-                st.subheader(domain.domain_name)
+                # Find the selected domain, handling both real and virtual domains
+                try:
+                    domain = next(d for d in filtered_domains if d.domain_name == selected_domain)
+                except StopIteration:
+                    # If not found in filtered_domains, it might be a virtual domain
+                    domain = next((d for d in root_domains if d.domain_name == selected_domain), None)
                 
-                # Domain Information
-                with st.expander("🌐 Domain Information", expanded=True):
-                    col1, col2 = st.columns(2)
+                if domain:
+                    st.subheader(domain.domain_name)
                     
-                    # If this is a subdomain, try to get registrar info from root domain
-                    parts = domain.domain_name.split('.')
-                    is_subdomain = len(parts) > 2
-                    root_domain = None
+                    # Domain Information
+                    with st.expander("🌐 Domain Information", expanded=True):
+                        col1, col2 = st.columns(2)
+                        
+                        # If this is a subdomain, try to get registrar info from root domain
+                        parts = domain.domain_name.split('.')
+                        is_subdomain = len(parts) > 2
+                        root_domain = None
+                        
+                        if is_subdomain:
+                            root_name = '.'.join(parts[-2:])
+                            root_domain = next((d for d in filtered_domains if d.domain_name == root_name), None)
+                        
+                        with col1:
+                            if is_subdomain and root_domain and not isinstance(root_domain, VirtualDomain):
+                                st.markdown("**Root Domain:** `{}`".format(root_domain.domain_name))
+                                st.markdown("**Registrar:** {}".format(root_domain.registrar or "N/A"))
+                                st.markdown("**Registration Date:** {}".format(
+                                    root_domain.registration_date.strftime("%Y-%m-%d") if root_domain.registration_date else "N/A"
+                                ))
+                                st.markdown("**Owner:** {}".format(root_domain.owner or "N/A"))
+                            else:
+                                st.markdown("**Registrar:** {}".format(domain.registrar or "N/A"))
+                                st.markdown("**Registration Date:** {}".format(
+                                    domain.registration_date.strftime("%Y-%m-%d") if domain.registration_date else "N/A"
+                                ))
+                                st.markdown("**Owner:** {}".format(domain.owner or "N/A"))
+                        with col2:
+                            if is_subdomain and root_domain and not isinstance(root_domain, VirtualDomain):
+                                st.write("**Expiration Date:**", root_domain.expiration_date.strftime("%Y-%m-%d") if root_domain.expiration_date else "N/A")
+                            else:
+                                st.write("**Expiration Date:**", domain.expiration_date.strftime("%Y-%m-%d") if domain.expiration_date else "N/A")
+                            st.write("**Status:**", "Active" if domain.is_active else "Inactive")
+                            st.write("**Last Updated:**", domain.updated_at.strftime("%Y-%m-%d %H:%M"))
                     
-                    if is_subdomain:
-                        root_name = '.'.join(parts[-2:])
-                        root_domain = next((d for d in root_domains if d.domain_name == root_name), None)
+                    # Show subdomains if this is a root domain
+                    if domain.domain_name in domain_hierarchy:
+                        with st.expander("🔄 Subdomains"):
+                            for subdomain in sorted(domain_hierarchy[domain.domain_name], key=lambda d: d.domain_name):
+                                st.markdown(f"- `{subdomain.domain_name}`")
                     
-                    with col1:
-                        if is_subdomain and root_domain:
-                            st.markdown("**Root Domain:** `{}`".format(root_domain.domain_name))
-                            st.markdown("**Registrar:** {}".format(root_domain.registrar or "N/A"))
-                            st.markdown("**Registration Date:** {}".format(
-                                root_domain.registration_date.strftime("%Y-%m-%d") if root_domain.registration_date else "N/A"
-                            ))
-                            st.markdown("**Owner:** {}".format(root_domain.owner or "N/A"))
+                    # Only show certificates and DNS records for real domains
+                    if not isinstance(domain, VirtualDomain):
+                        # Certificates
+                        if domain.certificates:
+                            st.markdown("### 🔐 Certificates")
+                            for cert in domain.certificates:
+                                with st.expander(f"Certificate: `{cert.common_name}`"):
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.markdown("**Common Name:** `{}`".format(cert.common_name))
+                                        st.markdown("**Valid From:** {}".format(cert.valid_from.strftime("%Y-%m-%d")))
+                                        st.markdown("**Valid Until:** {}".format(cert.valid_until.strftime("%Y-%m-%d")))
+                                        st.markdown("**Serial Number:** {}".format(cert.serial_number))
+                                    with col2:
+                                        st.markdown("**Issuer:** {}".format(cert.issuer.get('CN', 'Unknown')))
+                                        st.markdown("**Chain Valid:** {}".format("✅" if cert.chain_valid else "❌"))
+                                        st.markdown("**SANs:** {}".format(", ".join(f"`{san}`" for san in cert.san)))
+                                        st.markdown("**Signature Algorithm:** {}".format(cert.signature_algorithm))
                         else:
-                            st.markdown("**Registrar:** {}".format(domain.registrar or "N/A"))
-                            st.markdown("**Registration Date:** {}".format(
-                                domain.registration_date.strftime("%Y-%m-%d") if domain.registration_date else "N/A"
-                            ))
-                            st.markdown("**Owner:** {}".format(domain.owner or "N/A"))
-                    with col2:
-                        if is_subdomain and root_domain:
-                            st.write("**Expiration Date:**", root_domain.expiration_date.strftime("%Y-%m-%d") if root_domain.expiration_date else "N/A")
+                            st.info("No certificates found for this domain.")
+                        
+                        # DNS Records
+                        if domain.dns_records:
+                            st.markdown("### 📝 DNS Records")
+                            records_df = []
+                            for record in domain.dns_records:
+                                records_df.append({
+                                    'Type': str(record.record_type),
+                                    'Name': str(record.name),
+                                    'Value': str(record.value),
+                                    'TTL': int(record.ttl),
+                                    'Priority': str(record.priority if record.priority is not None else 'N/A')
+                                })
+                            if records_df:
+                                st.dataframe(
+                                    pd.DataFrame(records_df),
+                                    hide_index=True,
+                                    use_container_width=True
+                                )
                         else:
-                            st.write("**Expiration Date:**", domain.expiration_date.strftime("%Y-%m-%d") if domain.expiration_date else "N/A")
-                        st.write("**Status:**", "Active" if domain.is_active else "Inactive")
-                        st.write("**Last Updated:**", domain.updated_at.strftime("%Y-%m-%d %H:%M"))
-                
-                # Show subdomains if this is a root domain
-                if not is_subdomain and domain.domain_name in domain_hierarchy:
-                    with st.expander("🔄 Subdomains"):
-                        for subdomain in sorted(domain_hierarchy[domain.domain_name], key=lambda d: d.domain_name):
-                            st.markdown(f"- `{subdomain.domain_name}`")
-                
-                # Certificates
-                if domain.certificates:
-                    st.markdown("### 🔐 Certificates")
-                    for cert in domain.certificates:
-                        with st.expander(f"Certificate: `{cert.common_name}`"):
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.markdown("**Common Name:** `{}`".format(cert.common_name))
-                                st.markdown("**Valid From:** {}".format(cert.valid_from.strftime("%Y-%m-%d")))
-                                st.markdown("**Valid Until:** {}".format(cert.valid_until.strftime("%Y-%m-%d")))
-                                st.markdown("**Serial Number:** {}".format(cert.serial_number))
-                            with col2:
-                                st.markdown("**Issuer:** {}".format(cert.issuer.get('CN', 'Unknown')))
-                                st.markdown("**Chain Valid:** {}".format("✅" if cert.chain_valid else "❌"))
-                                st.markdown("**SANs:** {}".format(", ".join(f"`{san}`" for san in cert.san)))
-                                st.markdown("**Signature Algorithm:** {}".format(cert.signature_algorithm))
-                else:
-                    st.info("No certificates found for this domain.")
-                
-                # DNS Records
-                if domain.dns_records:
-                    st.markdown("### 📝 DNS Records")
-                    records_df = []
-                    for record in domain.dns_records:
-                        records_df.append({
-                            'Type': record.record_type,
-                            'Name': record.name,
-                            'Value': record.value,
-                            'TTL': record.ttl,
-                            'Priority': record.priority or 'N/A'
-                        })
-                    if records_df:
-                        st.dataframe(
-                            pd.DataFrame(records_df),
-                            hide_index=True,
-                            use_container_width=True
-                        )
-                else:
-                    st.info("No DNS records found for this domain.") 
+                            st.info("No DNS records found for this domain.") 

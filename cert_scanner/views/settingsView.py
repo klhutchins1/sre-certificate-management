@@ -371,6 +371,113 @@ def render_settings_view(engine) -> None:
             help="List of custom external domain patterns"
         )
         
+        # Additional scanning rate limits
+        st.divider()
+        st.subheader("Additional Rate Limits")
+        st.markdown("""
+        Configure rate limits for additional scanning operations. Values represent requests per minute.
+        
+        Examples:
+        - 10 = 1 request every 6 seconds
+        - 30 = 1 request every 2 seconds
+        - 60 = 1 request per second
+        """)
+        
+        # WHOIS rate limit
+        try:
+            current_whois_rate = int(settings.get("scanning.whois.rate_limit", 10))
+            whois_rate_limit = st.number_input(
+                "WHOIS Rate Limit (requests/minute)",
+                min_value=1,
+                value=max(1, current_whois_rate),
+                help="Rate limit for WHOIS queries"
+            )
+        except ValueError:
+            whois_rate_limit = 10
+            st.warning("Invalid WHOIS rate limit value, using default: 10")
+        
+        # DNS rate limit
+        try:
+            current_dns_rate = int(settings.get("scanning.dns.rate_limit", 30))
+            dns_rate_limit = st.number_input(
+                "DNS Rate Limit (requests/minute)",
+                min_value=1,
+                value=max(1, current_dns_rate),
+                help="Rate limit for DNS queries"
+            )
+        except ValueError:
+            dns_rate_limit = 30
+            st.warning("Invalid DNS rate limit value, using default: 30")
+        
+        # CT logs rate limit
+        try:
+            current_ct_rate = int(settings.get("scanning.ct.rate_limit", 10))
+            ct_rate_limit = st.number_input(
+                "Certificate Transparency Rate Limit (requests/minute)",
+                min_value=1,
+                value=max(1, current_ct_rate),
+                help="Rate limit for Certificate Transparency log queries"
+            )
+        except ValueError:
+            ct_rate_limit = 10
+            st.warning("Invalid CT rate limit value, using default: 10")
+        
+        # Timeout Settings
+        st.divider()
+        st.subheader("Timeout Settings")
+        st.markdown("""
+        Configure timeout values for various operations (in seconds).
+        
+        These settings control how long to wait for responses before giving up:
+        - Socket timeout: How long to wait for initial connection
+        - Request timeout: How long to wait for HTTP/HTTPS responses
+        - DNS timeout: How long to wait for DNS responses
+        """)
+        
+        # Socket timeout
+        try:
+            current_socket_timeout = int(settings.get("scanning.timeouts.socket", 5))
+            socket_timeout = st.number_input(
+                "Socket Timeout (seconds)",
+                min_value=1,
+                max_value=30,
+                value=max(1, current_socket_timeout),
+                help="Maximum time to wait for socket connections"
+            )
+        except ValueError:
+            socket_timeout = 5
+            st.warning("Invalid socket timeout value, using default: 5")
+        
+        # Request timeout
+        try:
+            current_request_timeout = int(settings.get("scanning.timeouts.request", 10))
+            request_timeout = st.number_input(
+                "Request Timeout (seconds)",
+                min_value=1,
+                max_value=30,
+                value=max(1, current_request_timeout),
+                help="Maximum time to wait for HTTP/HTTPS requests"
+            )
+        except ValueError:
+            request_timeout = 10
+            st.warning("Invalid request timeout value, using default: 10")
+        
+        # DNS timeout
+        try:
+            current_dns_timeout = float(settings.get("scanning.timeouts.dns", 3.0))
+            dns_timeout = st.number_input(
+                "DNS Timeout (seconds)",
+                min_value=0.1,
+                max_value=10.0,
+                value=max(0.1, current_dns_timeout),
+                step=0.1,
+                format="%.1f",
+                help="Maximum time to wait for DNS responses"
+            )
+        except ValueError:
+            dns_timeout = 3.0
+            st.warning("Invalid DNS timeout value, using default: 3.0")
+        
         # Save scanning settings
         if st.button("Save Scanning Settings"):
             # Update rate limits
@@ -383,6 +490,16 @@ def render_settings_view(engine) -> None:
             # Update external scanning settings
             settings.update("scanning.external.rate_limit", external_rate_limit)
             settings.update("scanning.external.domains", [d.strip() for d in external_domains.split("\n") if d.strip()])
+            
+            # Update additional rate limits
+            settings.update("scanning.whois.rate_limit", whois_rate_limit)
+            settings.update("scanning.dns.rate_limit", dns_rate_limit)
+            settings.update("scanning.ct.rate_limit", ct_rate_limit)
+            
+            # Update timeout settings
+            settings.update("scanning.timeouts.socket", socket_timeout)
+            settings.update("scanning.timeouts.request", request_timeout)
+            settings.update("scanning.timeouts.dns", dns_timeout)
             
             if settings.save():
                 st.success("Scanning settings updated successfully!")

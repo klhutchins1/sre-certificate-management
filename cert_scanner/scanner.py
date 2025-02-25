@@ -142,14 +142,14 @@ class CertificateScanner:
         """
         self.logger = logger or logging.getLogger(__name__)
         
-        # Initialize rate limiting configuration
-        self.default_rate_limit = settings.get('scanning.default_rate_limit', 60)  # Default 60 requests/minute (1/sec)
+        # Initialize rate limiting configuration - More conservative defaults
+        self.default_rate_limit = settings.get('scanning.default_rate_limit', 30)  # Default 30 requests/minute (1/2sec)
         
         # Initialize domain-specific rate limiting configuration
         self.internal_domains = set(settings.get('scanning.internal.domains', []))
         self.external_domains = set(settings.get('scanning.external.domains', []))
-        self.internal_rate_limit = settings.get('scanning.internal.rate_limit', 60)  # Default 1/sec
-        self.external_rate_limit = settings.get('scanning.external.rate_limit', 30)  # Default 1/2sec
+        self.internal_rate_limit = settings.get('scanning.internal.rate_limit', 60)  # Default 1/sec for internal
+        self.external_rate_limit = settings.get('scanning.external.rate_limit', 20)  # Default 1/3sec for external
         
         # Initialize rate limiting state with request timestamps
         self.request_timestamps = deque(maxlen=max(self.default_rate_limit, 
@@ -241,7 +241,7 @@ class CertificateScanner:
         Apply rate limiting based on domain type.
         
         Args:
-            domain (str): Domain being scanned
+            domain: Domain being scanned
             
         This method implements intelligent rate limiting by:
         1. Determining appropriate rate limit based on domain type
@@ -255,10 +255,13 @@ class CertificateScanner:
         # Determine rate limit based on domain type
         if domain_type == 'internal':
             rate_limit = self.internal_rate_limit
+            self.logger.debug(f"Using internal rate limit ({rate_limit} req/min) for {domain}")
         elif domain_type == 'external':
             rate_limit = self.external_rate_limit
+            self.logger.debug(f"Using external rate limit ({rate_limit} req/min) for {domain}")
         else:
             rate_limit = self.default_rate_limit
+            self.logger.debug(f"Using default rate limit ({rate_limit} req/min) for {domain}")
             
         # Calculate time per request in seconds
         time_per_request = 60.0 / rate_limit
@@ -271,7 +274,7 @@ class CertificateScanner:
         if len(self.request_timestamps) >= rate_limit:
             sleep_time = self.request_timestamps[0] + 60 - current_time
             if sleep_time > 0:
-                self.logger.debug(f"Rate limiting ({domain_type}): sleeping for {sleep_time:.2f} seconds")
+                self.logger.info(f"Rate limiting ({domain_type}): sleeping for {sleep_time:.2f} seconds")
                 time.sleep(sleep_time)
                 current_time = time.time()
                 
@@ -401,11 +404,17 @@ class CertificateScanner:
                 else:
                     results.append(result)
             except Exception as e:
-                results.append(ScanResult(error=str(e)))
+                # Convert common errors to friendly messages
+                error_msg = str(e)
+                if "[Errno 11001]" in error_msg:
+                    error_msg = f"Could not find '{domain}' in DNS records. This usually means either:\n1. The domain name is misspelled\n2. The domain doesn't exist\n3. DNS servers are not responding"
+                elif "getaddrinfo failed" in error_msg:
+                    error_msg = f"DNS lookup failed for '{domain}' - Could not resolve hostname"
+                results.append(ScanResult(error=error_msg))
         return results
     
     def _get_certificate(self, address: str, port: int) -> Optional[bytes]:
-        """Get certificate from host with timeout and chain validation."""
+        """Get certificate from host with timeout."""
         sock = None
         ssock = None
         
@@ -413,57 +422,47 @@ class CertificateScanner:
             # Log the attempt
             self.logger.info(f"Attempting to retrieve certificate from {address}:{port}")
             
-            # Create SSL context with chain validation
-            context = ssl.create_default_context()
-            context.check_hostname = False  # We'll do our own hostname validation
-            context.verify_mode = ssl.CERT_REQUIRED  # Require certificate verification
+            # Get timeout from settings
+            socket_timeout = settings.get('scanning.timeouts.socket', 5)
             
-            # Load system root certificates
-            context.load_default_certs()
+            # Create SSL context without validation
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            context.set_ciphers('ALL')
             
             try:
                 # Create socket with timeout
-                sock = socket.create_connection((address, port), timeout=5)
+                sock = socket.create_connection((address, port), timeout=socket_timeout)
                 try:
                     ssock = context.wrap_socket(sock, server_hostname=address)
                     # Get certificate in binary form
                     cert_binary = ssock.getpeercert(binary_form=True)
                     if cert_binary:
-                        self.logger.info(f"Certificate retrieved successfully from {address}:{port}")
-                        # Store chain validation status
-                        self._last_cert_chain = True  # Certificate chain was validated
+                        self.logger.info(f"Certificate retrieved from {address}:{port}")
                         return cert_binary
                     
-                    self.logger.warning(f"No certificate found at {address}:{port}")
+                    msg = f"The server at {address}:{port} accepted the connection but did not present a certificate. This might mean HTTPS is not configured or SSL is handled by a proxy."
+                    self.logger.warning(msg)
                     return None
                     
-                except ssl.SSLCertVerificationError as e:
-                    self.logger.warning(f"Certificate validation failed for {address}:{port}: {str(e)}")
-                    # Still return the certificate but mark it as unverified
-                    try:
-                        context.verify_mode = ssl.CERT_NONE
-                        ssock = context.wrap_socket(sock, server_hostname=address)
-                        cert_binary = ssock.getpeercert(binary_form=True)
-                        if cert_binary:
-                            self.logger.info(f"Retrieved unverified certificate from {address}:{port}")
-                            self._last_cert_chain = False  # Chain validation failed
-                            return cert_binary
-                    except Exception as inner_e:
-                        self.logger.error(f"Failed to retrieve unverified certificate: {str(inner_e)}")
-                    return None
                 except ssl.SSLError as e:
-                    msg = f"SSL error: {str(e)}"
-                    self.logger.error(f"SSL error for {address}:{port}: {str(e)}")
+                    if "alert internal error" in str(e):
+                        msg = f"The server at {address}:{port} actively rejected the SSL/TLS connection."
+                    else:
+                        msg = f"SSL/TLS connection failed: {str(e)}"
+                    self.logger.error(f"SSL error for {address}:{port}: {msg}")
                     raise Exception(msg)
                     
             except socket.timeout:
-                msg = f"Socket timed out while checking certificate for {address}:{port}"
+                msg = f"The server at {address}:{port} did not respond within {socket_timeout} seconds"
                 self.logger.error(msg)
                 raise Exception(msg)
             except ConnectionRefusedError:
+                msg = f"Nothing is listening for HTTPS connections at {address}:{port}"
                 self.logger.warning(f"{address}:{port} is not reachable")
-                self.logger.error("Error while checking certificate: Connection refused")
-                raise Exception("Connection refused")
+                self.logger.error(msg)
+                raise Exception(msg)
                 
         except Exception as e:
             if isinstance(e, (socket.timeout, ConnectionRefusedError, ssl.SSLError)):
@@ -696,7 +695,11 @@ class CertificateScanner:
                         ip_list.append(ip_address)
                 return ip_list
             except socket.gaierror as e:
-                self.logger.error(f'DNS resolution failed for {address}:{port}: {e}')
+                if "[Errno 11001]" in str(e):
+                    error_msg = f"Could not find '{address}' in DNS records."
+                else:
+                    error_msg = f"DNS lookup failed for '{address}' - {str(e)}"
+                self.logger.error(f'DNS resolution failed for {address}:{port}: {error_msg}')
                 return []
         
     def _extract_name_dict(self, x509_name) -> Dict[str, str]:

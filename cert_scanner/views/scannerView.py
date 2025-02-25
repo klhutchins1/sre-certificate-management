@@ -17,6 +17,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse
 import socket
+import logging
 from ..models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
     Domain, DomainDNSRecord,
@@ -28,6 +29,21 @@ from ..scanner import CertificateScanner, CertificateInfo, ScanResult
 import json
 from typing import Tuple, Dict, List, Optional
 import pandas as pd
+from ..subdomain_scanner import SubdomainScanner
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create console handler if it doesn't exist
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    # Set UTF-8 encoding for the handler
+    console_handler.stream.reconfigure(encoding='utf-8')
+    logger.addHandler(console_handler)
 
 def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     """
@@ -63,8 +79,9 @@ def render_scan_interface(engine) -> None:
     if 'domain_scanner' not in st.session_state:
         st.session_state.domain_scanner = DomainScanner()
     if 'scanner' not in st.session_state:
-        from ..scanner import CertificateScanner
         st.session_state.scanner = CertificateScanner()
+    if 'subdomain_scanner' not in st.session_state:
+        st.session_state.subdomain_scanner = SubdomainScanner()
     
     # Clear transitioning flag if set
     if st.session_state.get('transitioning', False):
@@ -91,26 +108,40 @@ def render_scan_interface(engine) -> None:
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        # Handle pre-populated scan targets
-        default_scan_targets = st.session_state.get('scan_targets', [])
-        if default_scan_targets:
-            if isinstance(default_scan_targets, str):
-                default_scan_targets = [default_scan_targets]
-            default_scan_targets = [s.strip() for s in default_scan_targets if s.strip()]
-            default_text = "\n".join(default_scan_targets)
-        else:
-            default_text = ""
+        # Create two columns for input and options
+        input_col, options_col = st.columns([3, 2])
         
-        # Scan input interface
-        scan_input = st.text_area(
-            "Enter domains to scan (one per line)",
-            value=default_text,
-            height=150,
-            placeholder="""example.com
+        with input_col:
+            # Handle pre-populated scan targets
+            default_scan_targets = st.session_state.get('scan_targets', [])
+            if default_scan_targets:
+                if isinstance(default_scan_targets, str):
+                    default_scan_targets = [default_scan_targets]
+                default_scan_targets = [s.strip() for s in default_scan_targets if s.strip()]
+                default_text = "\n".join(default_scan_targets)
+            else:
+                default_text = ""
+            
+            # Scan input interface
+            scan_input = st.text_area(
+                "Enter domains to scan (one per line)",
+                value=default_text,
+                height=150,
+                placeholder="""example.com
 example.com:8443
 https://example.com
 internal.server.local:444"""
-        )
+            )
+        
+        with options_col:
+            st.markdown("### Scan Options")
+            check_dns = st.checkbox("Scan DNS Records", value=True)
+            check_whois = st.checkbox("Get WHOIS Info", value=True)
+            check_subdomains = st.checkbox("Include Subdomains", value=True)
+            check_related = st.checkbox("Find Related Domains", value=True)
+        
+        # Scan initiation button below both columns
+        scan_button_clicked = st.button("Start Scan", type="primary")
         
         # Input format help section
         with st.expander("ℹ️ Input Format Help"):
@@ -138,21 +169,9 @@ internal.server.local:444"""
                - Host mappings
             """)
         
-        # Scan options
-        with st.expander("🔧 Scan Options"):
-            col_opt1, col_opt2 = st.columns(2)
-            with col_opt1:
-                check_dns = st.checkbox("Scan DNS Records", value=True)
-                check_whois = st.checkbox("Get WHOIS Info", value=True)
-            with col_opt2:
-                check_subdomains = st.checkbox("Include Subdomains", value=True)
-                check_related = st.checkbox("Find Related Domains", value=True)
-        
-        # Scan initiation button
-        scan_button_clicked = st.button("Start Scan")
-        
         # Handle scan initiation
         if scan_button_clicked:
+            logger.info("[SCAN] Starting new scan session")
             # Reset scan results
             st.session_state.scan_results = {
                 "success": [],
@@ -222,6 +241,7 @@ internal.server.local:444"""
             
             # Execute scans
             if scan_targets:
+                logger.info(f"[SCAN] Processing {len(scan_targets)} scan targets")
                 progress_container = st.empty()
                 status_container = st.empty()
                 
@@ -238,7 +258,57 @@ internal.server.local:444"""
                 # Execute scans with progress tracking
                 with status_container:
                     with st.spinner('Scanning domains and certificates...'):
-                        # Calculate total steps correctly
+                        # Expand scan targets with subdomains if enabled
+                        expanded_targets = []
+                        total_domains = len(scan_targets)
+                        current_domain = 0
+                        
+                        for hostname, port in scan_targets:
+                            current_domain += 1
+                            expanded_targets.append((hostname, port))
+                            
+                            if check_subdomains:
+                                try:
+                                    logger.info(f"[SCAN] Searching for subdomains of {hostname}")
+                                    status_container.text(f'Searching for subdomains of {hostname}...')
+                                    
+                                    # Update progress for subdomain search
+                                    progress.progress(current_domain / (total_domains * 2))
+                                    
+                                    # Get subdomains using all available methods
+                                    subdomains = st.session_state.subdomain_scanner.scan_subdomains(hostname)
+                                    
+                                    # Process each subdomain individually
+                                    valid_subdomains = []
+                                    for subdomain in subdomains:
+                                        # Clean up subdomain and validate
+                                        subdomain = subdomain.strip()
+                                        if subdomain and subdomain != hostname:  # Avoid duplicating the main domain
+                                            # Check if this subdomain is already in our targets
+                                            if not any(target[0] == subdomain for target in expanded_targets):
+                                                valid_subdomains.append(subdomain)
+                                                expanded_targets.append((subdomain, port))
+                                                logger.info(f"[SCAN] Added subdomain to scan targets: {subdomain}")
+                                    
+                                    if valid_subdomains:
+                                        # Show discovered subdomains in a more readable format
+                                        st.info(f"Found {len(valid_subdomains)} subdomains for {hostname}:")
+                                        for i, subdomain in enumerate(sorted(valid_subdomains)):
+                                            if i < 10:  # Show first 10 directly
+                                                st.write(f"- {subdomain}")
+                                            elif i == 10:  # Show count for the rest
+                                                st.write(f"- ... and {len(valid_subdomains) - 10} more")
+                                                break
+                                    
+                                except Exception as e:
+                                    logger.error(f"[SCAN] Error searching subdomains for {hostname}: {str(e)}")
+                                    st.warning(f"Error searching subdomains for {hostname}: {str(e)}")
+                        
+                        # Update scan targets with expanded list
+                        scan_targets = expanded_targets
+                        logger.info(f"[SCAN] Total targets after subdomain expansion: {len(scan_targets)}")
+                        
+                        # Calculate total steps for progress bar
                         steps_per_domain = 1  # Base step for domain creation
                         if check_whois:
                             steps_per_domain += 1
@@ -253,6 +323,7 @@ internal.server.local:444"""
                         for hostname, port in scan_targets:
                             try:
                                 with Session(engine) as session:
+                                    logger.info(f"[SCAN] Processing target: {hostname}:{port}")
                                     # Get or create domain
                                     domain = session.query(Domain).filter_by(domain_name=hostname).first()
                                     if not domain:
@@ -269,226 +340,240 @@ internal.server.local:444"""
                                     current_step += 1
                                     progress.progress(min(current_step / total_steps, 1.0))
                                     
-                                    # Scan certificate and domain information
-                                    status_container.text(f'Scanning {hostname}:{port}...')
-                                    try:
-                                        # Get domain information if requested
-                                        if check_whois or check_dns:
-                                            try:
-                                                domain_info = st.session_state.domain_scanner.scan_domain(hostname)
-                                                if domain_info and domain_info.is_valid:
-                                                    domain.registrar = domain_info.registrar
-                                                    domain.registration_date = domain_info.registration_date
-                                                    domain.expiration_date = domain_info.expiration_date
-                                                    domain.owner = domain_info.registrant
-                                                    
-                                                    if check_dns and domain_info.dns_records:
-                                                        # Clear existing DNS records
-                                                        session.query(DomainDNSRecord).filter_by(domain_id=domain.id).delete()
-                                                        session.flush()
-                                                        
-                                                        # Add new DNS records
-                                                        seen_records = set()  # Track unique records
-                                                        for record in domain_info.dns_records:
-                                                            # Create unique key for record
-                                                            record_key = (record['type'], record['name'])
-                                                            if record_key in seen_records:
-                                                                continue  # Skip duplicate records
-                                                            seen_records.add(record_key)
-                                                            
-                                                            dns_record = DomainDNSRecord(
-                                                                domain=domain,
-                                                                record_type=record['type'],
-                                                                name=record['name'],
-                                                                value=record['value'],
-                                                                ttl=record['ttl'],
-                                                                priority=record.get('priority'),
-                                                                created_at=datetime.now(),
-                                                                updated_at=datetime.now()
-                                                            )
-                                                            session.add(dns_record)
-                                                
-                                                # Increment step for WHOIS/DNS scan
-                                                if check_whois:
-                                                    current_step += 1
-                                                    progress.progress(min(current_step / total_steps, 1.0))
-                                                if check_dns:
-                                                    current_step += 1
-                                                    progress.progress(min(current_step / total_steps, 1.0))
-                                                    
-                                            except Exception as domain_error:
-                                                st.session_state.scan_results["warning"].append(f"{hostname} - Domain info error: {str(domain_error)}")
-                                                # Still increment steps even if there's an error
-                                                if check_whois:
-                                                    current_step += 1
-                                                if check_dns:
-                                                    current_step += 1
-                                                progress.progress(min(current_step / total_steps, 1.0))
-                                        
-                                        # Scan certificate
-                                        scan_result = st.session_state.scanner.scan_certificate(hostname, port)
-                                        
-                                        # Process certificate information
-                                        if isinstance(scan_result, CertificateInfo):
-                                            # Handle old-style result
-                                            cert_info = scan_result
-                                            st.session_state.scan_results["success"].append(f"{hostname}:{port}")
-                                            scan_status = "Success"
-                                        elif scan_result and scan_result.certificate_info:
-                                            cert_info = scan_result.certificate_info
-                                            st.session_state.scan_results["success"].append(f"{hostname}:{port}")
-                                            scan_status = "Success"
-                                        elif scan_result and scan_result.error:
-                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - {scan_result.error}")
-                                            scan_status = f"Error: {scan_result.error}"
-                                            # Increment certificate scan step on error
-                                            current_step += 1
-                                            progress.progress(min(current_step / total_steps, 1.0))
-                                            continue
-                                        else:
-                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - No certificate found")
-                                            scan_status = "No certificate found"
-                                            # Increment certificate scan step when no cert found
-                                            current_step += 1
-                                            progress.progress(min(current_step / total_steps, 1.0))
-                                            continue
-                                        
-                                        # Process the certificate info
+                                    # Get domain information first, independent of certificate scanning
+                                    if check_whois or check_dns:
                                         try:
-                                            with session.begin_nested():
-                                                # First create or update the host record
-                                                host = session.query(Host).filter_by(name=hostname).first()
-                                                if not host:
-                                                    host = Host(
-                                                        name=hostname,
-                                                        host_type=HOST_TYPE_SERVER,  # Default to server type
-                                                        environment=ENV_PRODUCTION,   # Default to production
-                                                        last_seen=datetime.now()
-                                                    )
-                                                    session.add(host)
-                                                else:
-                                                    host.last_seen = datetime.now()
+                                            logger.info(f"[SCAN] Domain info gathering for {hostname} - WHOIS: {'enabled' if check_whois else 'disabled'}, DNS: {'enabled' if check_dns else 'disabled'}")
+                                            status_container.text(f'Getting domain information for {hostname}...')
+                                            domain_info = st.session_state.domain_scanner.scan_domain(
+                                                hostname,
+                                                get_whois=check_whois,
+                                                get_dns=check_dns
+                                            )
+                                            if domain_info:
+                                                if check_whois:
+                                                    logger.info(f"[SCAN] Updating WHOIS information for {hostname}")
+                                                    if domain_info.registrar:
+                                                        domain.registrar = domain_info.registrar
+                                                    if domain_info.registration_date:
+                                                        domain.registration_date = domain_info.registration_date
+                                                    if domain_info.expiration_date:
+                                                        domain.expiration_date = domain_info.expiration_date
+                                                    if domain_info.registrant:
+                                                        domain.owner = domain_info.registrant
                                                 
-                                                # Create or update IP addresses
-                                                if cert_info.ip_addresses:
-                                                    # Get existing IPs to avoid duplicates
-                                                    existing_ips = {ip.ip_address for ip in host.ip_addresses}
-                                                    for ip_addr in cert_info.ip_addresses:
-                                                        if ip_addr not in existing_ips:
-                                                            host_ip = HostIP(
-                                                                host=host,
-                                                                ip_address=ip_addr,
-                                                                is_active=True,
-                                                                last_seen=datetime.now()
-                                                            )
-                                                            session.add(host_ip)
-                                                        else:
-                                                            # Update last_seen for existing IP
-                                                            for ip in host.ip_addresses:
-                                                                if ip.ip_address == ip_addr:
-                                                                    ip.last_seen = datetime.now()
-                                                                    ip.is_active = True
+                                                if check_dns and domain_info.dns_records:
+                                                    logger.info(f"[SCAN] Updating DNS records for {hostname}")
+                                                    # Clear existing DNS records
+                                                    session.query(DomainDNSRecord).filter_by(domain_id=domain.id).delete()
+                                                    session.flush()
+                                                    
+                                                    # Add new DNS records
+                                                    seen_records = set()
+                                                    for record in domain_info.dns_records:
+                                                        record_key = (record['type'], record['name'])
+                                                        if record_key in seen_records:
+                                                            continue
+                                                        seen_records.add(record_key)
+                                                        
+                                                        dns_record = DomainDNSRecord(
+                                                            domain=domain,
+                                                            record_type=record['type'],
+                                                            name=record['name'],
+                                                            value=record['value'],
+                                                            ttl=record['ttl'],
+                                                            priority=record.get('priority'),
+                                                            created_at=datetime.now(),
+                                                            updated_at=datetime.now()
+                                                        )
+                                                        session.add(dns_record)
+                                                        logger.debug(f"Added DNS record: {record['type']} {record['name']}")
                                                 
-                                                # Process certificate
-                                                cert = session.query(Certificate).filter_by(
-                                                    serial_number=cert_info.serial_number
-                                                ).first()
-                                                
-                                                if not cert:
-                                                    cert = Certificate(
-                                                        serial_number=cert_info.serial_number,
-                                                        thumbprint=cert_info.thumbprint,
-                                                        common_name=cert_info.common_name,
-                                                        valid_from=cert_info.valid_from,
-                                                        valid_until=cert_info.expiration_date,
-                                                        _issuer=json.dumps(cert_info.issuer),
-                                                        _subject=json.dumps(cert_info.subject),
-                                                        _san=json.dumps(cert_info.san),
-                                                        key_usage=cert_info.key_usage,
-                                                        signature_algorithm=cert_info.signature_algorithm,
-                                                        chain_valid=cert_info.chain_valid,
-                                                        sans_scanned=True,
-                                                        created_at=datetime.now(),
-                                                        updated_at=datetime.now()
-                                                    )
-                                                    session.add(cert)
-                                                else:
-                                                    cert.thumbprint = cert_info.thumbprint
-                                                    cert.common_name = cert_info.common_name
-                                                    cert.valid_from = cert_info.valid_from
-                                                    cert.valid_until = cert_info.expiration_date
-                                                    cert._issuer = json.dumps(cert_info.issuer)
-                                                    cert._subject = json.dumps(cert_info.subject)
-                                                    cert._san = json.dumps(cert_info.san)
-                                                    cert.key_usage = cert_info.key_usage
-                                                    cert.signature_algorithm = cert_info.signature_algorithm
-                                                    cert.chain_valid = cert_info.chain_valid
-                                                    cert.sans_scanned = True
-                                                    cert.updated_at = datetime.now()
-                                                
-                                                # Associate certificate with domain
-                                                if cert not in domain.certificates:
-                                                    domain.certificates.append(cert)
-                                                
-                                                # Create certificate binding
-                                                # Find the IP that matches the scanned port
-                                                host_ip = None
-                                                if cert_info.ip_addresses:
-                                                    for ip in host.ip_addresses:
-                                                        if ip.ip_address in cert_info.ip_addresses:
-                                                            host_ip = ip
-                                                            break
-                                                
-                                                # Create or update binding
-                                                binding = session.query(CertificateBinding).filter_by(
+                                                # Commit domain info changes immediately
+                                                session.commit()
+                                                logger.info(f"[SCAN] Domain information updated for {hostname}")
+                                            
+                                            # Increment step for WHOIS/DNS scan
+                                            if check_whois:
+                                                current_step += 1
+                                                progress.progress(min(current_step / total_steps, 1.0))
+                                            if check_dns:
+                                                current_step += 1
+                                                progress.progress(min(current_step / total_steps, 1.0))
+                                            
+                                        except Exception as domain_error:
+                                            logger.error(f"[SCAN] Error gathering domain info for {hostname}: {str(domain_error)}")
+                                            st.session_state.scan_results["warning"].append(f"{hostname} - Domain info error: {str(domain_error)}")
+                                            # Still increment steps even if there's an error
+                                            if check_whois:
+                                                current_step += 1
+                                            if check_dns:
+                                                current_step += 1
+                                            progress.progress(min(current_step / total_steps, 1.0))
+                                    
+                                    # Now try certificate scanning
+                                    logger.info(f"[SCAN] Starting certificate scan for {hostname}:{port}")
+                                    status_container.text(f'Scanning certificate for {hostname}:{port}...')
+                                    scan_result = st.session_state.scanner.scan_certificate(hostname, port)
+                                    
+                                    # Process certificate information
+                                    if isinstance(scan_result, CertificateInfo):
+                                        # Handle old-style result
+                                        cert_info = scan_result
+                                        st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                        scan_status = "Success"
+                                    elif scan_result and scan_result.certificate_info:
+                                        cert_info = scan_result.certificate_info
+                                        st.session_state.scan_results["success"].append(f"{hostname}:{port}")
+                                        scan_status = "Success"
+                                    elif scan_result and scan_result.error:
+                                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - {scan_result.error}")
+                                        scan_status = f"Error: {scan_result.error}"
+                                        # Increment certificate scan step on error
+                                        current_step += 1
+                                        progress.progress(min(current_step / total_steps, 1.0))
+                                        continue
+                                    else:
+                                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - No certificate found")
+                                        scan_status = "No certificate found"
+                                        # Increment certificate scan step when no cert found
+                                        current_step += 1
+                                        progress.progress(min(current_step / total_steps, 1.0))
+                                        continue
+                                    
+                                    # Process the certificate info
+                                    try:
+                                        with session.begin_nested():
+                                            # First create or update the host record
+                                            host = session.query(Host).filter_by(name=hostname).first()
+                                            if not host:
+                                                host = Host(
+                                                    name=hostname,
+                                                    host_type=HOST_TYPE_SERVER,  # Default to server type
+                                                    environment=ENV_PRODUCTION,   # Default to production
+                                                    last_seen=datetime.now()
+                                                )
+                                                session.add(host)
+                                            else:
+                                                host.last_seen = datetime.now()
+                                            
+                                            # Create or update IP addresses
+                                            if cert_info.ip_addresses:
+                                                # Get existing IPs to avoid duplicates
+                                                existing_ips = {ip.ip_address for ip in host.ip_addresses}
+                                                for ip_addr in cert_info.ip_addresses:
+                                                    if ip_addr not in existing_ips:
+                                                        host_ip = HostIP(
+                                                            host=host,
+                                                            ip_address=ip_addr,
+                                                            is_active=True,
+                                                            last_seen=datetime.now()
+                                                        )
+                                                        session.add(host_ip)
+                                                    else:
+                                                        # Update last_seen for existing IP
+                                                        for ip in host.ip_addresses:
+                                                            if ip.ip_address == ip_addr:
+                                                                ip.last_seen = datetime.now()
+                                                                ip.is_active = True
+                                            
+                                            # Process certificate
+                                            cert = session.query(Certificate).filter_by(
+                                                serial_number=cert_info.serial_number
+                                            ).first()
+                                            
+                                            if not cert:
+                                                cert = Certificate(
+                                                    serial_number=cert_info.serial_number,
+                                                    thumbprint=cert_info.thumbprint,
+                                                    common_name=cert_info.common_name,
+                                                    valid_from=cert_info.valid_from,
+                                                    valid_until=cert_info.expiration_date,
+                                                    _issuer=json.dumps(cert_info.issuer),
+                                                    _subject=json.dumps(cert_info.subject),
+                                                    _san=json.dumps(cert_info.san),
+                                                    key_usage=cert_info.key_usage,
+                                                    signature_algorithm=cert_info.signature_algorithm,
+                                                    chain_valid=cert_info.chain_valid,
+                                                    sans_scanned=True,
+                                                    created_at=datetime.now(),
+                                                    updated_at=datetime.now()
+                                                )
+                                                session.add(cert)
+                                            else:
+                                                cert.thumbprint = cert_info.thumbprint
+                                                cert.common_name = cert_info.common_name
+                                                cert.valid_from = cert_info.valid_from
+                                                cert.valid_until = cert_info.expiration_date
+                                                cert._issuer = json.dumps(cert_info.issuer)
+                                                cert._subject = json.dumps(cert_info.subject)
+                                                cert._san = json.dumps(cert_info.san)
+                                                cert.key_usage = cert_info.key_usage
+                                                cert.signature_algorithm = cert_info.signature_algorithm
+                                                cert.chain_valid = cert_info.chain_valid
+                                                cert.sans_scanned = True
+                                                cert.updated_at = datetime.now()
+                                            
+                                            # Associate certificate with domain
+                                            if cert not in domain.certificates:
+                                                domain.certificates.append(cert)
+                                            
+                                            # Create certificate binding
+                                            # Find the IP that matches the scanned port
+                                            host_ip = None
+                                            if cert_info.ip_addresses:
+                                                for ip in host.ip_addresses:
+                                                    if ip.ip_address in cert_info.ip_addresses:
+                                                        host_ip = ip
+                                                        break
+                                            
+                                            # Create or update binding
+                                            binding = session.query(CertificateBinding).filter_by(
+                                                host=host,
+                                                host_ip=host_ip,
+                                                port=port
+                                            ).first()
+                                            
+                                            if not binding:
+                                                binding = CertificateBinding(
                                                     host=host,
                                                     host_ip=host_ip,
-                                                    port=port
-                                                ).first()
-                                                
-                                                if not binding:
-                                                    binding = CertificateBinding(
-                                                        host=host,
-                                                        host_ip=host_ip,
-                                                        certificate=cert,
-                                                        port=port,
-                                                        binding_type='IP',  # Default to IP binding
-                                                        last_seen=datetime.now(),
-                                                        manually_added=False
-                                                    )
-                                                    session.add(binding)
-                                                else:
-                                                    binding.certificate = cert
-                                                    binding.last_seen = datetime.now()
-                                                
-                                                # Create scan history record
-                                                scan_record = CertificateScan(
                                                     certificate=cert,
-                                                    host=host,
-                                                    scan_date=datetime.now(),
-                                                    status=scan_status,
-                                                    port=port
+                                                    port=port,
+                                                    binding_type='IP',  # Default to IP binding
+                                                    last_seen=datetime.now(),
+                                                    manually_added=False
                                                 )
-                                                session.add(scan_record)
-                                                
-                                                session.flush()
-                                        except Exception as cert_error:
-                                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - Error processing certificate: {str(cert_error)}")
-                                            session.rollback()
-                                    except Exception as scan_error:
-                                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - Scan error: {str(scan_error)}")
+                                                session.add(binding)
+                                            else:
+                                                binding.certificate = cert
+                                                binding.last_seen = datetime.now()
+                                            
+                                            # Create scan history record
+                                            scan_record = CertificateScan(
+                                                certificate=cert,
+                                                host=host,
+                                                scan_date=datetime.now(),
+                                                status=scan_status,
+                                                port=port
+                                            )
+                                            session.add(scan_record)
+                                            
+                                            session.flush()
+                                    except Exception as cert_error:
+                                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - Error processing certificate: {str(cert_error)}")
                                         session.rollback()
-                                    
-                                    current_step += 1
-                                    progress.progress(min(current_step / total_steps, 1.0))
-                                    
-                                    # Commit changes for this domain
-                                    try:
-                                        session.commit()
-                                    except Exception as commit_error:
-                                        st.session_state.scan_results["error"].append(f"{hostname} - Error saving changes: {str(commit_error)}")
-                                        session.rollback()
-                                    
+                                
+                                current_step += 1
+                                progress.progress(min(current_step / total_steps, 1.0))
+                                
+                                # Commit changes for this domain
+                                try:
+                                    session.commit()
+                                except Exception as commit_error:
+                                    st.session_state.scan_results["error"].append(f"{hostname} - Error saving changes: {str(commit_error)}")
+                                    session.rollback()
+                                
                             except Exception as e:
                                 st.session_state.scan_results["error"].append(f"{hostname} - Error: {str(e)}")
                                 current_step = min(current_step + steps_per_domain, total_steps)
@@ -505,6 +590,13 @@ internal.server.local:444"""
                 if st.session_state.scan_results["error"]:
                     st.error("Some scans failed:")
                     for error in st.session_state.scan_results["error"]:
+                        # Clean up error message for display
+                        if isinstance(error, str):
+                            # Remove the port number from the display if it's the default 443
+                            error = error.replace(":443", "")
+                            # Remove any raw error codes
+                            if "[Errno" in error:
+                                error = error.split(" - ", 1)[0] + " - " + error.split("] ")[-1]
                         st.write(f"- {error}")
                 
                 # Show results summary

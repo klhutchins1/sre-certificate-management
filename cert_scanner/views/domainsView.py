@@ -105,6 +105,19 @@ def get_domain_hierarchy(domains):
     
     return root_domains, domain_tree
 
+def get_root_domain_info(domain_name, domains):
+    """
+    Get registration information from the root domain.
+    For example: w1.mercurypay.com would get info from mercurypay.com
+    """
+    parts = domain_name.split('.')
+    if len(parts) > 2:
+        root_name = '.'.join(parts[-2:])  # Get root domain (e.g., mercurypay.com)
+        # Find the root domain in our domains list
+        root_domain = next((d for d in domains if d.domain_name == root_name), None)
+        return root_domain
+    return None
+
 def render_domain_list(engine):
     """
     Render the main domain management interface.
@@ -176,13 +189,14 @@ def render_domain_list(engine):
                         if not isinstance(domain, VirtualDomain):
                             domain_options.append(display_name)
                 else:
-                    # Use a subtle indicator for subdomains
-                    domain_options.append(f"{prefix}└─ {display_name}")
+                    # Create cascading effect with increasing dashes
+                    indent = "└" + ("─" * (level))
+                    domain_options.append(f"{indent}{display_name}")
                 
                 # Add subdomains
                 if display_name in domain_hierarchy:
                     for subdomain in domain_hierarchy[display_name]:
-                        add_domain_to_options(subdomain, prefix + "  ", level + 1)
+                        add_domain_to_options(subdomain, "", level + 1)
             
             # Add all root domains and their hierarchies
             for root in root_domains:
@@ -198,7 +212,9 @@ def render_domain_list(engine):
                     label_visibility="collapsed"
                 )
                 # Extract actual domain name from selection
-                selected_domain = selected_option.replace("📁 ", "").replace("└─ ", "").replace("  ", "")
+                selected_domain = selected_option.replace("📁 ", "").strip()
+                if "└" in selected_domain:
+                    selected_domain = selected_domain.split("└")[-1].replace("─", "").strip()
             else:
                 st.info("No domains match your search.")
                 return
@@ -219,34 +235,20 @@ def render_domain_list(engine):
                     with st.expander("🌐 Domain Information", expanded=True):
                         col1, col2 = st.columns(2)
                         
-                        # If this is a subdomain, try to get registrar info from root domain
-                        parts = domain.domain_name.split('.')
-                        is_subdomain = len(parts) > 2
-                        root_domain = None
-                        
-                        if is_subdomain:
-                            root_name = '.'.join(parts[-2:])
-                            root_domain = next((d for d in filtered_domains if d.domain_name == root_name), None)
+                        # Get registration info from root domain if this is a subdomain
+                        root_domain = get_root_domain_info(domain.domain_name, domains)
+                        display_domain = root_domain if root_domain else domain
                         
                         with col1:
-                            if is_subdomain and root_domain and not isinstance(root_domain, VirtualDomain):
+                            if root_domain:
                                 st.markdown("**Root Domain:** `{}`".format(root_domain.domain_name))
-                                st.markdown("**Registrar:** {}".format(root_domain.registrar or "N/A"))
-                                st.markdown("**Registration Date:** {}".format(
-                                    root_domain.registration_date.strftime("%Y-%m-%d") if root_domain.registration_date else "N/A"
-                                ))
-                                st.markdown("**Owner:** {}".format(root_domain.owner or "N/A"))
-                            else:
-                                st.markdown("**Registrar:** {}".format(domain.registrar or "N/A"))
-                                st.markdown("**Registration Date:** {}".format(
-                                    domain.registration_date.strftime("%Y-%m-%d") if domain.registration_date else "N/A"
-                                ))
-                                st.markdown("**Owner:** {}".format(domain.owner or "N/A"))
+                            st.markdown("**Registrar:** {}".format(display_domain.registrar or "N/A"))
+                            st.markdown("**Registration Date:** {}".format(
+                                display_domain.registration_date.strftime("%Y-%m-%d") if display_domain.registration_date else "N/A"
+                            ))
+                            st.markdown("**Owner:** {}".format(display_domain.owner or "N/A"))
                         with col2:
-                            if is_subdomain and root_domain and not isinstance(root_domain, VirtualDomain):
-                                st.write("**Expiration Date:**", root_domain.expiration_date.strftime("%Y-%m-%d") if root_domain.expiration_date else "N/A")
-                            else:
-                                st.write("**Expiration Date:**", domain.expiration_date.strftime("%Y-%m-%d") if domain.expiration_date else "N/A")
+                            st.write("**Expiration Date:**", display_domain.expiration_date.strftime("%Y-%m-%d") if display_domain.expiration_date else "N/A")
                             st.write("**Status:**", "Active" if domain.is_active else "Inactive")
                             st.write("**Last Updated:**", domain.updated_at.strftime("%Y-%m-%d %H:%M"))
                     
@@ -296,4 +298,4 @@ def render_domain_list(engine):
                                     use_container_width=True
                                 )
                         else:
-                            st.info("No DNS records found for this domain.") 
+                            st.info("No DNS records found for this domain.")

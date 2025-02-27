@@ -14,6 +14,8 @@ import time
 from typing import Set, List, Optional
 from .domain_scanner import DomainScanner
 from .scanner import CertificateScanner
+from .models import IgnoredDomain
+from .db import get_session
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -221,6 +223,30 @@ class SubdomainScanner:
         """
         if not methods:
             methods = ['cert', 'ct']
+        
+        # Check if domain is in ignore list
+        session = get_session()
+        try:
+            # First check exact matches
+            ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
+            if ignored:
+                logger.info(f"[IGNORE] Skipping {domain} - Domain is in ignore list" + (f" ({ignored.reason})" if ignored.reason else ""))
+                return set()
+            
+            # Then check wildcard patterns
+            wildcard_patterns = session.query(IgnoredDomain).filter(
+                IgnoredDomain.pattern.like('*.*')
+            ).all()
+            
+            for pattern in wildcard_patterns:
+                if pattern.pattern.startswith('*.'):
+                    suffix = pattern.pattern[2:]  # Remove *. from pattern
+                    if domain.endswith(suffix):
+                        logger.info(f"[IGNORE] Skipping {domain} - Matches wildcard pattern {pattern.pattern}" + 
+                                  (f" ({pattern.reason})" if pattern.reason else ""))
+                        return set()
+        finally:
+            session.close()
         
         all_subdomains = set()
         logger.info(f"[SCAN] Starting passive subdomain discovery for {domain} using methods: {methods}")

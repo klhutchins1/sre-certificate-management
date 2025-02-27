@@ -30,6 +30,7 @@ from ..models import Application, CertificateBinding, Certificate
 from ..constants import APP_TYPES, app_types
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
+from .notifications import notifications, show_notifications, clear_notifications, initialize_notifications
 
 
 def render_applications_view(engine) -> None:
@@ -56,6 +57,10 @@ def render_applications_view(engine) -> None:
     load_warning_suppression()
     load_css()
     
+    # Initialize notifications and create container
+    initialize_notifications()
+    notifications._create_container()
+    
     # Header section with title and add button
     st.markdown('<div class="title-row">', unsafe_allow_html=True)
     col1, col2 = st.columns([3, 1])
@@ -71,7 +76,7 @@ def render_applications_view(engine) -> None:
     
     # Display success messages if any
     if 'success_message' in st.session_state:
-        st.success(st.session_state.success_message)
+        notifications.add(st.session_state.success_message, "success")
         del st.session_state.success_message
     
     # Application creation form
@@ -104,11 +109,11 @@ def render_applications_view(engine) -> None:
                     with Session(engine) as session:
                         # Input validation
                         if not app_name:
-                            st.error("Application Name is required")
+                            notifications.add("Application Name is required", "error")
                             return
                         
                         if len(app_name) > 255:
-                            st.error("Application Name must be 255 characters or less")
+                            notifications.add("Application Name must be 255 characters or less", "error")
                             return
                         
                         # Create and save new application
@@ -125,7 +130,7 @@ def render_applications_view(engine) -> None:
                         st.session_state['show_add_app_form'] = False
                         st.rerun()
                 except Exception as e:
-                    st.error(f"Error adding application: {str(e)}")
+                    notifications.add(f"Error adding application: {str(e)}", "error")
     
     st.divider()
     
@@ -135,7 +140,8 @@ def render_applications_view(engine) -> None:
     
     with SessionManager(engine) as session:
         if not session:
-            st.error("Database connection failed")
+            notifications.add("Database connection failed", "error")
+            show_notifications()
             return
         
         # Calculate metrics
@@ -168,7 +174,8 @@ def render_applications_view(engine) -> None:
         )
         
         if not applications:
-            st.info("No applications found. Use the 'Add Application' button above to create one.")
+            notifications.add("No applications found. Use the 'Add Application' button above to create one.", "info")
+            show_notifications()
             return
 
         # View type selector
@@ -271,87 +278,47 @@ def render_applications_view(engine) -> None:
                 """)
             )
             
+            # Configure column for Created date
             gb.configure_column(
                 "Created",
-                type=["dateColumnFilter"],
-                minWidth=120,
-                valueFormatter="value ? new Date(value).toLocaleDateString() : ''"
+                type=["dateColumn"],
+                minWidth=120
             )
             
-            gb.configure_column("_id", hide=True)
-            
-            # Grid selection configuration
-            gb.configure_selection(
-                selection_mode="single",
-                use_checkbox=False,
-                pre_selected_rows=[]
+            # Configure hidden ID column
+            gb.configure_column(
+                "_id",
+                hide=True
             )
             
-            # Additional grid options
-            grid_options = {
-                'animateRows': True,
-                'enableRangeSelection': True,
-                'suppressAggFuncInHeader': True,
-                'suppressMovableColumns': True,
-                'rowHeight': 35,
-                'headerHeight': 40
-            }
+            # Configure grid options
+            grid_options = gb.build()
             
-            if view_type == "Application Type":
-                grid_options.update({
-                    'groupDefaultExpanded': 1,
-                    'groupDisplayType': 'groupRows',
-                    'groupSelectsChildren': True,
-                    'suppressGroupClickSelection': True
-                })
-            
-            gb.configure_grid_options(**grid_options)
-            
-            gridOptions = gb.build()
-            
-            # Render the AG Grid
+            # Render the grid
             grid_response = AgGrid(
                 df,
-                gridOptions=gridOptions,
-                update_mode=GridUpdateMode.SELECTION_CHANGED,
+                gridOptions=grid_options,
+                height=400,
                 data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.VALUE_CHANGED,
                 fit_columns_on_grid_load=True,
-                theme="streamlit",
-                allow_unsafe_jscode=True,
-                key=f"app_grid_{view_type}",
-                height=600
+                allow_unsafe_jscode=True
             )
             
-            # Handle grid row selection
-            try:
-                selected_rows = grid_response.get('selected_rows', [])
-                
-                if isinstance(selected_rows, pd.DataFrame):
-                    selected_rows = selected_rows.to_dict('records')
-                
-                if selected_rows and len(selected_rows) > 0:
-                    selected_row = selected_rows[0]
-                    
-                    # Skip group rows in Application Type view
-                    if view_type == "Application Type" and not selected_row.get('Application'):
-                        return
-                    
-                    # Get and display selected application details
-                    selected_app = next(
-                        (app for app in applications if app.id == selected_row['_id']),
-                        None
-                    )
-                    
-                    if selected_app:
-                        st.divider()
-                        render_application_details(selected_app)
-            except Exception as e:
-                st.error(f"Error handling selection: {str(e)}")
-            
-            # Add bottom spacing
-            st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
+            # Handle grid selection for application details
+            selected_rows = grid_response['selected_rows']
+            if selected_rows:
+                selected_app_id = selected_rows[0]['_id']
+                selected_app = session.query(Application).get(selected_app_id)
+                if selected_app:
+                    render_application_details(selected_app)
         else:
-            st.warning("No application data available")
+            notifications.add("No application data available", "warning")
+            show_notifications()
+            return
+
+    # Show all notifications at the end of the view
+    show_notifications()
 
 def render_application_details(application: Application) -> None:
     """
@@ -487,4 +454,4 @@ def render_application_details(application: Application) -> None:
                         except Exception as e:
                             st.error(f"Error removing binding: {str(e)}")
         else:
-            st.info("No certificate bindings found for this application.") 
+            notifications.add("No certificate bindings found for this application.", "info") 

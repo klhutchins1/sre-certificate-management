@@ -16,6 +16,9 @@ import logging
 import re
 import socket
 import time
+from sqlalchemy.orm import Session
+from .models import IgnoredDomain
+from .db import get_session
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -372,6 +375,38 @@ class DomainScanner:
             )
         
         try:
+            # Check if domain is in ignore list
+            session = get_session()
+            try:
+                # First check exact matches
+                ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
+                if ignored:
+                    logger.info(f"[IGNORE] Skipping {domain} - Domain is in ignore list" + (f" ({ignored.reason})" if ignored.reason else ""))
+                    return DomainInfo(
+                        domain_name=domain,
+                        is_valid=False,
+                        error=f"Domain is in ignore list" + (f" ({ignored.reason})" if ignored.reason else "")
+                    )
+                
+                # Then check wildcard patterns
+                wildcard_patterns = session.query(IgnoredDomain).filter(
+                    IgnoredDomain.pattern.like('*.*')
+                ).all()
+                
+                for pattern in wildcard_patterns:
+                    if pattern.pattern.startswith('*.'):
+                        suffix = pattern.pattern[2:]  # Remove *. from pattern
+                        if domain.endswith(suffix):
+                            logger.info(f"[IGNORE] Skipping {domain} - Matches wildcard pattern {pattern.pattern}" + 
+                                      (f" ({pattern.reason})" if pattern.reason else ""))
+                            return DomainInfo(
+                                domain_name=domain,
+                                is_valid=False,
+                                error=f"Domain matches ignored pattern {pattern.pattern}" + (f" ({pattern.reason})" if pattern.reason else "")
+                            )
+            finally:
+                session.close()
+            
             whois_info = {}
             dns_records = []
             

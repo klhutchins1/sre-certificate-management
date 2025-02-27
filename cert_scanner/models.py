@@ -613,4 +613,62 @@ class DomainDNSRecord(Base):
 domain_certificates = Table('domain_certificates', Base.metadata,
     Column('domain_id', Integer, ForeignKey('domains.id'), primary_key=True),
     Column('certificate_id', Integer, ForeignKey('certificates.id'), primary_key=True)
-) 
+)
+
+#------------------------------------------------------------------------------
+# Ignore List Models
+#------------------------------------------------------------------------------
+
+class IgnoredDomain(Base):
+    """
+    Represents a domain pattern that should be ignored during scanning.
+    
+    This model tracks domains that should be skipped during scanning operations.
+    It supports both exact matches and wildcard patterns.
+    
+    Attributes:
+        id (int): Primary key
+        pattern (str): Domain pattern to ignore (e.g., "test.example.com" or "*.test.com")
+        reason (str): Optional reason for ignoring this domain
+        created_at (datetime): When this ignore rule was created
+        created_by (str): Who created this ignore rule (for future use)
+    """
+    __tablename__ = 'ignored_domains'
+    
+    id = Column(Integer, primary_key=True)
+    pattern = Column(String, nullable=False, unique=True)
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    created_by = Column(String, nullable=True)
+    
+    def matches(self, domain: str) -> bool:
+        """Check if a domain matches this ignore pattern."""
+        if self.pattern.startswith('*.'):
+            # Wildcard pattern
+            suffix = self.pattern[2:]  # Remove *. from pattern
+            return domain.endswith(suffix)
+        else:
+            # Exact match
+            return domain == self.pattern
+
+class IgnoredCertificate(Base):
+    """
+    Represents a certificate that should be ignored.
+    
+    This model tracks certificates that should be hidden from views
+    and skipped during scanning operations.
+    
+    Attributes:
+        id (int): Primary key
+        serial_number (str): Certificate serial number to ignore
+        reason (str): Optional reason for ignoring this certificate
+        created_at (datetime): When this ignore rule was created
+        created_by (str): Who created this ignore rule (for future use)
+    """
+    __tablename__ = 'ignored_certificates'
+    
+    id = Column(Integer, primary_key=True)
+    serial_number = Column(String, nullable=False, unique=True)
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    created_by = Column(String, nullable=True) 

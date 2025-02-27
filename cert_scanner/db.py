@@ -31,7 +31,7 @@ import json
 # Third-party imports
 import streamlit as st
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 
 # Local application imports
 from .models import Base
@@ -188,11 +188,40 @@ def migrate_database(engine):
     """Perform database migrations to update schema."""
     try:
         inspector = inspect(engine)
+        current_time = datetime.now().isoformat()
         
-        # Check if certificates table exists
+        # Create new tables if they don't exist
+        if 'ignored_domains' not in inspector.get_table_names():
+            logger.info("Creating ignored_domains table")
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    CREATE TABLE ignored_domains (
+                        id INTEGER PRIMARY KEY,
+                        pattern TEXT NOT NULL UNIQUE,
+                        reason TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        created_by TEXT
+                    )
+                """))
+                conn.commit()
+        
+        if 'ignored_certificates' not in inspector.get_table_names():
+            logger.info("Creating ignored_certificates table")
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    CREATE TABLE ignored_certificates (
+                        id INTEGER PRIMARY KEY,
+                        serial_number TEXT NOT NULL UNIQUE,
+                        reason TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        created_by TEXT
+                    )
+                """))
+                conn.commit()
+        
+        # Check if certificates table exists and perform existing migrations
         if 'certificates' in inspector.get_table_names():
             columns = [col['name'] for col in inspector.get_columns('certificates')]
-            current_time = datetime.now().isoformat()
             
             # Add chain_valid column if it doesn't exist
             if 'chain_valid' not in columns:
@@ -378,23 +407,13 @@ def init_database(db_path=None):
 # Session Management
 #------------------------------------------------------------------------------
 
-def get_session(engine):
-    """
-    Create a new database session.
-    
-    Args:
-        engine: SQLAlchemy engine instance
-        
-    Returns:
-        SQLAlchemy session object or None if engine is invalid
-        
-    Features:
-        - Sets expire_on_commit=False to prevent stale data issues
-        - Configures session for thread safety
-        - Handles invalid engine gracefully
-    """
-    if not engine:
-        return None
+# Create global engine instance
+settings = Settings()
+db_path = settings.get("paths.database", "data/certificates.db")
+engine = create_engine(f"sqlite:///{db_path}")
+
+def get_session() -> Session:
+    """Get a new database session using the global engine."""
     return sessionmaker(
         bind=engine,
         expire_on_commit=False,  # Prevent stale data issues

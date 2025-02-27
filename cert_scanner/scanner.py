@@ -37,6 +37,8 @@ import OpenSSL.crypto
 # Local application imports
 from .settings import settings
 from .domain_scanner import DomainScanner, DomainInfo
+from .models import IgnoredDomain
+from .db import get_session
 
 #------------------------------------------------------------------------------
 # Domain Configuration
@@ -359,6 +361,37 @@ class CertificateScanner:
                 return result
         
         try:
+            # Check if domain is in ignore list
+            session = get_session()
+            try:
+                # Convert address to lowercase for case-insensitive comparison
+                address_lower = address.lower()
+                
+                # First check exact matches (case-insensitive)
+                ignored = session.query(IgnoredDomain).filter(
+                    IgnoredDomain.pattern.ilike(address_lower)
+                ).first()
+                if ignored:
+                    self.logger.info(f"[IGNORE] Skipping {address} - Domain is in ignore list" + (f" ({ignored.reason})" if ignored.reason else ""))
+                    result.error = f"Domain is in ignore list" + (f" ({ignored.reason})" if ignored.reason else "")
+                    return result
+                
+                # Then check wildcard patterns
+                wildcard_patterns = session.query(IgnoredDomain).filter(
+                    IgnoredDomain.pattern.like('*.*')
+                ).all()
+                
+                for pattern in wildcard_patterns:
+                    if pattern.pattern.startswith('*.'):
+                        suffix = pattern.pattern[2:].lower()  # Remove *. from pattern and convert to lowercase
+                        if address_lower.endswith(suffix):
+                            self.logger.info(f"[IGNORE] Skipping {address} - Matches wildcard pattern {pattern.pattern}" + 
+                                          (f" ({pattern.reason})" if pattern.reason else ""))
+                            result.error = f"Domain matches ignored pattern {pattern.pattern}" + (f" ({pattern.reason})" if pattern.reason else "")
+                            return result
+            finally:
+                session.close()
+            
             # Apply rate limiting before scanning certificate
             self._apply_rate_limit(address)
             

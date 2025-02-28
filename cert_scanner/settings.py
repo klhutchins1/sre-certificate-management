@@ -46,22 +46,37 @@ DEFAULT_CONFIG = {
     },
     "scanning": {
         "default_rate_limit": 60,             # Default to 1 request per second
+        "whois": {
+            "rate_limit": 30,                 # 30 requests per minute (1 every 2 seconds)
+            "timeout": 10                     # 10 second timeout for WHOIS queries
+        },
+        "dns": {
+            "rate_limit": 60,                 # 60 requests per minute (1 per second)
+            "timeout": 5                      # 5 second timeout for DNS queries
+        },
         "internal": {
             "rate_limit": 60,                 # Default to 1 request per second for internal domains
             "delay": 0,                       # Default delay between scans in seconds
-            "domains": []                     # Custom internal domain patterns
+            "domains": [".local", ".internal", ".corp", ".lan"]
         },
         "external": {
             "rate_limit": 30,                 # Default to 1 request per 2 seconds for external domains
             "delay": 0,                       # Default delay between scans in seconds
             "domains": []                     # Custom external domain patterns
+        },
+        "ct": {
+            "rate_limit": 10
+        },
+        "timeouts": {
+            "socket": 5,
+            "request": 10,
+            "dns": 3.0
         }
     },
     "alerts": {
         "expiry_warnings": [                  # Certificate expiration warning thresholds
-            {"days": 90, "level": "info"},
-            {"days": 30, "level": "warning"},
-            {"days": 7, "level": "critical"}
+            {"days": 60, "level": "critical"},
+            {"days": 30, "level": "warning"}
         ],
         "failed_scans": {
             "consecutive_failures": 3          # Number of failures before alerting
@@ -76,6 +91,44 @@ DEFAULT_CONFIG = {
         "csv": {
             "delimiter": ",",                    # CSV field delimiter
             "encoding": "utf-8"                  # CSV file encoding
+        }
+    },
+    "ignore_lists": {
+        "domains": {
+            "enabled": True,
+            "hide_from_results": True,
+            "skip_scanning": True,
+            "default_patterns": [
+                "*.local",
+                "*.test",
+                "*.example",
+                "*.invalid",
+                "*.localhost",
+                "*test*",
+                "*dev*",
+                "*stage*",
+                "*qa*",
+                "*sandbox*"
+            ],
+            "pattern_types": {
+                "prefix": "*.example.com",      # Matches any subdomain of example.com
+                "contains": "*test*",           # Matches if 'test' appears anywhere
+                "suffix": "*.test.com",         # Matches domains ending in .test.com
+                "exact": "example.com"          # Exact domain match
+            }
+        },
+        "certificates": {
+            "enabled": True,
+            "hide_from_results": True,
+            "skip_scanning": True,
+            "match_by": "common_name",          # Match by CN instead of serial number
+            "default_patterns": [
+                "*test*",
+                "*dev*",
+                "*stage*",
+                "*qa*",
+                "*sandbox*"
+            ]
         }
     }
 }

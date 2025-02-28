@@ -24,7 +24,7 @@ scanning:
   external:
     delay: 0
     domains: []
-    rate_limit: 30
+    rate_limit: 60
   internal:
     delay: 0
     domains: []

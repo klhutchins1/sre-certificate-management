@@ -656,11 +656,12 @@ class IgnoredCertificate(Base):
     Represents a certificate that should be ignored.
     
     This model tracks certificates that should be hidden from views
-    and skipped during scanning operations.
+    and skipped during scanning operations based on their Common Name (CN)
+    pattern.
     
     Attributes:
         id (int): Primary key
-        serial_number (str): Certificate serial number to ignore
+        pattern (str): Common Name pattern to ignore (supports wildcards)
         reason (str): Optional reason for ignoring this certificate
         created_at (datetime): When this ignore rule was created
         created_by (str): Who created this ignore rule (for future use)
@@ -668,7 +669,49 @@ class IgnoredCertificate(Base):
     __tablename__ = 'ignored_certificates'
     
     id = Column(Integer, primary_key=True)
-    serial_number = Column(String, nullable=False, unique=True)
+    pattern = Column(String, nullable=False, unique=True)
     reason = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
-    created_by = Column(String, nullable=True) 
+    created_by = Column(String, nullable=True)
+    
+    def matches(self, common_name: str) -> bool:
+        """
+        Check if a certificate's Common Name matches this ignore pattern.
+        
+        Args:
+            common_name: The certificate's Common Name to check
+            
+        Returns:
+            bool: True if the CN matches the ignore pattern
+            
+        Examples:
+            - pattern="*test*" matches "test.example.com" and "mytest.com"
+            - pattern="*.test.com" matches "sub.test.com" but not "test.com"
+            - pattern="test.com" only matches "test.com" exactly
+        """
+        if not common_name:
+            return False
+            
+        pattern = self.pattern.lower()
+        common_name = common_name.lower()
+        
+        # Handle different pattern types
+        if pattern.startswith('*.') and pattern.count('*') == 1:
+            # Suffix wildcard (*.example.com)
+            suffix = pattern[2:]
+            return common_name.endswith(suffix) and '.' in common_name
+        elif pattern.startswith('*') and pattern.endswith('*'):
+            # Contains pattern (*test*)
+            search_term = pattern.strip('*')
+            return search_term in common_name
+        elif pattern.startswith('*'):
+            # Prefix wildcard (*test.com)
+            suffix = pattern[1:]
+            return common_name.endswith(suffix)
+        elif pattern.endswith('*'):
+            # Suffix wildcard (test*)
+            prefix = pattern[:-1]
+            return common_name.startswith(prefix)
+        else:
+            # Exact match
+            return common_name == pattern 

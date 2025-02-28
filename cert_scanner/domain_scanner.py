@@ -22,17 +22,6 @@ from .db import get_session
 
 # Configure logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Create console handler if it doesn't exist
-if not logger.handlers:
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(formatter)
-    # Set UTF-8 encoding for the handler
-    console_handler.stream.reconfigure(encoding='utf-8')
-    logger.addHandler(console_handler)
 
 class DomainInfo:
     """Data class representing domain information."""
@@ -79,11 +68,12 @@ class DomainScanner:
         
         # Load rate limits from settings
         from .settings import settings
-        self.whois_rate_limit = settings.get('scanning.whois.rate_limit', 10)  # Default 10/min
-        self.dns_rate_limit = settings.get('scanning.dns.rate_limit', 30)      # Default 30/min
+        self.whois_rate_limit = settings.get('scanning.whois.rate_limit', 30)  # Default 30/min
+        self.dns_rate_limit = settings.get('scanning.dns.rate_limit', 60)      # Default 60/min
         
         # Load timeout settings
-        self.dns_timeout = settings.get('scanning.timeouts.dns', 3.0)         # Default 3.0 seconds
+        self.whois_timeout = settings.get('scanning.whois.timeout', 10.0)     # Default 10.0 seconds
+        self.dns_timeout = settings.get('scanning.dns.timeout', 5.0)          # Default 5.0 seconds
         
         logger.info(f"Initialized DomainScanner with WHOIS rate limit: {self.whois_rate_limit}/min, DNS rate limit: {self.dns_rate_limit}/min, DNS timeout: {self.dns_timeout}s")
     
@@ -297,62 +287,68 @@ class DomainScanner:
         records = []
         logger.info(f"[DNS] Starting record lookup for {domain}")
         
+        # Apply rate limiting once per domain for all record types
+        self.last_dns_query_time = self._apply_rate_limit(
+            self.last_dns_query_time,
+            self.dns_rate_limit,
+            "DNS"
+        )
+        
         # Configure DNS resolver with timeout
         resolver = dns.resolver.Resolver()
         resolver.timeout = self.dns_timeout
         resolver.lifetime = self.dns_timeout
         
-        for record_type in self.dns_record_types:
+        try:
+            # Check if domain exists first to avoid querying non-existent domains
             try:
-                # Apply rate limiting for each DNS query
-                self.last_dns_query_time = self._apply_rate_limit(
-                    self.last_dns_query_time,
-                    self.dns_rate_limit,
-                    "DNS"
-                )
-                
-                logger.debug(f"[DNS] Querying {record_type} records for {domain}")
-                answers = resolver.resolve(domain, record_type)
-                for rdata in answers:
-                    record = {
-                        'type': record_type,
-                        'name': domain,
-                        'value': str(rdata),
-                        'ttl': answers.ttl
-                    }
-                    
-                    # Add priority for MX records
-                    if record_type == 'MX':
-                        record['priority'] = rdata.preference
-                    
-                    # Add special handling for SOA records
-                    if record_type == 'SOA':
-                        record['serial'] = rdata.serial
-                        record['refresh'] = rdata.refresh
-                        record['retry'] = rdata.retry
-                        record['expire'] = rdata.expire
-                        record['minimum'] = rdata.minimum
-                    
-                    records.append(record)
-                    logger.info(f"[DNS] Found {record_type} record for {domain}: {str(rdata)}")
-            except dns.resolver.NoAnswer:
-                logger.debug(f"[DNS] No {record_type} records found for {domain}")
-                continue
+                # Try A record first as it's most common
+                resolver.resolve(domain, 'A')
             except dns.resolver.NXDOMAIN:
-                error_msg = f"The domain '{domain}' does not exist in DNS records"
-                logger.warning(f"[DNS] {error_msg}")
-                raise Exception(error_msg)
-            except dns.resolver.NoNameservers:
-                error_msg = f"No DNS servers could be reached to resolve '{domain}'"
-                logger.warning(f"[DNS] {error_msg}")
-                continue
-            except Exception as e:
-                error_msg = f"Error looking up DNS records for '{domain}' - The domain may not exist or DNS servers are not responding"
-                logger.warning(f"[DNS] {error_msg}: {str(e)}")
-                continue
-        
-        logger.info(f"[DNS] Found {len(records)} total records for {domain}")
-        return records
+                logger.warning(f"[DNS] The domain '{domain}' does not exist in DNS records")
+                raise
+            except Exception:
+                # Domain exists but might not have A records, continue with other types
+                pass
+            
+            # Query all record types without additional rate limiting
+            for record_type in self.dns_record_types:
+                try:
+                    logger.debug(f"[DNS] Querying {record_type} records for {domain}")
+                    answers = resolver.resolve(domain, record_type)
+                    for rdata in answers:
+                        record = {
+                            'type': record_type,
+                            'name': domain,
+                            'value': str(rdata),
+                            'ttl': answers.ttl
+                        }
+                        
+                        # Add priority for MX records
+                        if record_type == 'MX':
+                            record['priority'] = rdata.preference
+                        
+                        # Add special handling for SOA records
+                        if record_type == 'SOA':
+                            record['serial'] = rdata.serial
+                            record['refresh'] = rdata.refresh
+                            record['retry'] = rdata.retry
+                            record['expire'] = rdata.expire
+                            record['minimum'] = rdata.minimum
+                        
+                        records.append(record)
+                        logger.debug(f"[DNS] Found {record_type} record for {domain}: {str(rdata)}")
+                except Exception as e:
+                    logger.debug(f"[DNS] No {record_type} records found for {domain}: {str(e)}")
+                    continue
+            
+            logger.info(f"[DNS] Found {len(records)} total records for {domain}")
+            return records
+            
+        except Exception as e:
+            error_msg = f"Error getting DNS records for {domain}: {str(e)}"
+            logger.warning(error_msg)
+            raise
     
     def scan_domain(self, domain: str, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
         """

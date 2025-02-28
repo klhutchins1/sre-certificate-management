@@ -33,7 +33,6 @@ from ..subdomain_scanner import SubdomainScanner
 
 # Configure logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 # Create console handler if it doesn't exist
 if not logger.handlers:
@@ -82,6 +81,15 @@ def render_scan_interface(engine) -> None:
         st.session_state.scanner = CertificateScanner()
     if 'subdomain_scanner' not in st.session_state:
         st.session_state.subdomain_scanner = SubdomainScanner()
+    
+    # Initialize session state for tracking scanned domains
+    if 'scanned_domains' not in st.session_state:
+        st.session_state.scanned_domains = set()
+    
+    # Reset scanned domains when starting a new scan
+    if st.button("Reset Scan History"):
+        st.session_state.scanned_domains = set()
+        st.success("Scan history has been reset")
     
     # Clear transitioning flag if set
     if st.session_state.get('transitioning', False):
@@ -172,7 +180,7 @@ internal.server.local:444"""
         # Handle scan initiation
         if scan_button_clicked:
             logger.info("[SCAN] Starting new scan session")
-            # Reset scan results
+            # Reset scan results but keep scanned domains history
             st.session_state.scan_results = {
                 "success": [],
                 "error": [],
@@ -228,7 +236,14 @@ internal.server.local:444"""
                         validation_errors = True
                         continue
                     
-                    scan_targets.append((hostname, port))
+                    # Add validated target if not already scanned in this session
+                    if hostname not in st.session_state.scanned_domains:
+                        scan_targets.append((hostname, port))
+                        st.session_state.scanned_domains.add(hostname)
+                    else:
+                        logger.info(f"[SCAN] Skipping {hostname} - Already scanned in this session")
+                        st.session_state.scan_results["warning"].append(f"{hostname} - Skipped (already scanned in this session)")
+                        continue
                 except Exception as e:
                     st.error(f"Error parsing {entry}: Please check the format")
                     validation_errors = True
@@ -276,29 +291,31 @@ internal.server.local:444"""
                                     progress.progress(current_domain / (total_domains * 2))
                                     
                                     # Get subdomains using all available methods
-                                    subdomains = st.session_state.subdomain_scanner.scan_subdomains(hostname)
+                                    subdomains = st.session_state.subdomain_scanner.scan_subdomains(
+                                        hostname,
+                                        methods=['cert', 'ct'] if check_ct_logs else ['cert']
+                                    )
                                     
-                                    # Process each subdomain individually
-                                    valid_subdomains = []
-                                    for subdomain in subdomains:
-                                        # Clean up subdomain and validate
-                                        subdomain = subdomain.strip()
-                                        if subdomain and subdomain != hostname:  # Avoid duplicating the main domain
-                                            # Check if this subdomain is already in our targets
-                                            if not any(target[0] == subdomain for target in expanded_targets):
+                                    if subdomains:
+                                        valid_subdomains = []
+                                        for subdomain in subdomains:
+                                            # Only add subdomains we haven't scanned yet
+                                            if (subdomain not in st.session_state.scanned_domains and 
+                                                not any(target[0] == subdomain for target in expanded_targets)):
                                                 valid_subdomains.append(subdomain)
                                                 expanded_targets.append((subdomain, port))
-                                                logger.info(f"[SCAN] Added subdomain to scan targets: {subdomain}")
-                                    
-                                    if valid_subdomains:
-                                        # Show discovered subdomains in a more readable format
-                                        st.info(f"Found {len(valid_subdomains)} subdomains for {hostname}:")
-                                        for i, subdomain in enumerate(sorted(valid_subdomains)):
-                                            if i < 10:  # Show first 10 directly
+                                                st.session_state.scanned_domains.add(subdomain)
+                                                logger.info(f"[SCAN] Added new subdomain to scan targets: {subdomain}")
+                                        
+                                        if valid_subdomains:
+                                            st.write(f"Found {len(valid_subdomains)} new subdomains for {hostname}:")
+                                            # Show first 10 subdomains
+                                            for subdomain in valid_subdomains[:10]:
                                                 st.write(f"- {subdomain}")
-                                            elif i == 10:  # Show count for the rest
+                                            if len(valid_subdomains) > 10:
                                                 st.write(f"- ... and {len(valid_subdomains) - 10} more")
-                                                break
+                                        else:
+                                            logger.info(f"[SCAN] No new subdomains found for {hostname}")
                                     
                                 except Exception as e:
                                     logger.error(f"[SCAN] Error searching subdomains for {hostname}: {str(e)}")
@@ -306,7 +323,7 @@ internal.server.local:444"""
                         
                         # Update scan targets with expanded list
                         scan_targets = expanded_targets
-                        logger.info(f"[SCAN] Total targets after subdomain expansion: {len(scan_targets)}")
+                        logger.info(f"[SCAN] Total unique targets to scan: {len(scan_targets)}")
                         
                         # Calculate total steps for progress bar
                         steps_per_domain = 1  # Base step for domain creation

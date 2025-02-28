@@ -211,13 +211,50 @@ def migrate_database(engine):
                 conn.execute(text("""
                     CREATE TABLE ignored_certificates (
                         id INTEGER PRIMARY KEY,
-                        serial_number TEXT NOT NULL UNIQUE,
+                        pattern TEXT NOT NULL UNIQUE,
                         reason TEXT,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         created_by TEXT
                     )
                 """))
                 conn.commit()
+        else:
+            # Check if we need to migrate from serial_number to pattern
+            columns = [col['name'] for col in inspector.get_columns('ignored_certificates')]
+            if 'serial_number' in columns and 'pattern' not in columns:
+                logger.info("Migrating ignored_certificates table from serial_number to pattern")
+                with engine.connect() as conn:
+                    # Create new pattern column
+                    conn.execute(text("ALTER TABLE ignored_certificates ADD COLUMN pattern TEXT"))
+                    
+                    # Copy data from serial_number to pattern (if needed)
+                    conn.execute(text("UPDATE ignored_certificates SET pattern = serial_number WHERE pattern IS NULL"))
+                    
+                    # Create temporary table with new schema
+                    conn.execute(text("""
+                        CREATE TABLE ignored_certificates_new (
+                            id INTEGER PRIMARY KEY,
+                            pattern TEXT NOT NULL UNIQUE,
+                            reason TEXT,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            created_by TEXT
+                        )
+                    """))
+                    
+                    # Copy data to new table
+                    conn.execute(text("""
+                        INSERT INTO ignored_certificates_new (pattern, reason, created_at, created_by)
+                        SELECT pattern, reason, created_at, created_by FROM ignored_certificates
+                    """))
+                    
+                    # Drop old table
+                    conn.execute(text("DROP TABLE ignored_certificates"))
+                    
+                    # Rename new table to original name
+                    conn.execute(text("ALTER TABLE ignored_certificates_new RENAME TO ignored_certificates"))
+                    
+                    conn.commit()
+                    logger.info("Successfully migrated ignored_certificates table")
         
         # Check if certificates table exists and perform existing migrations
         if 'certificates' in inspector.get_table_names():

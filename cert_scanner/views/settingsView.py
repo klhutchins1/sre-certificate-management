@@ -52,6 +52,9 @@ from ..exports import (
 from ..static.styles import load_warning_suppression, load_css
 from sqlalchemy.engine import Engine
 from ..backup import create_backup
+from ..models import IgnoredDomain, IgnoredCertificate
+from sqlalchemy.orm import Session
+import re
 
 
 logger = logging.getLogger(__name__)
@@ -260,7 +263,7 @@ def render_settings_view(engine) -> None:
     settings = Settings()
     
     # Create tabbed interface for settings sections
-    tabs = st.tabs(["Paths", "Scanning", "Alerts", "Exports"])
+    tabs = st.tabs(["Paths", "Scanning", "Alerts", "Exports", "Ignore Lists"])
     
     # Path Settings Tab
     with tabs[0]:
@@ -646,6 +649,213 @@ def render_settings_view(engine) -> None:
                         st.success(f"Hosts exported to PDF: {output_path}")
                 except Exception as e:
                     st.error(f"Failed to export hosts to PDF: {str(e)}")
+
+    # Ignore Lists Tab
+    with tabs[4]:
+        st.header("Ignore Lists")
+        
+        # Create tabs for different ignore lists
+        ignore_tabs = st.tabs(["🚫 Domains", "🔒 Certificates"])
+        
+        # Ignored Domains tab
+        with ignore_tabs[0]:
+            st.subheader("Ignored Domains")
+            st.markdown("""
+            Add domains or patterns to ignore during scanning. Supports:
+            - Exact matches (e.g., test.example.com)
+            - Wildcard patterns (e.g., *.test.com)
+            """)
+            
+            # Add new domain pattern
+            with st.form(key="domain_form"):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    new_domain_pattern = st.text_input(
+                        "Domain Pattern",
+                        value="",
+                        key="new_domain_pattern",
+                        placeholder="example.com or *.example.com"
+                    )
+                    domain_reason = st.text_input(
+                        "Reason (optional)",
+                        value="",
+                        key="domain_reason",
+                        placeholder="Why should this domain be ignored?"
+                    )
+                with col2:
+                    submit_domain = st.form_submit_button("Add Domain")
+                
+                if submit_domain:
+                    if new_domain_pattern:
+                        try:
+                            with Session(engine) as session:
+                                # Check if pattern already exists
+                                existing = session.query(IgnoredDomain).filter_by(pattern=new_domain_pattern).first()
+                                if existing:
+                                    st.error(f"Pattern '{new_domain_pattern}' is already in the ignore list")
+                                else:
+                                    # Validate pattern format
+                                    if new_domain_pattern.startswith('*') and new_domain_pattern.endswith('*'):
+                                        # Contains pattern (*test*)
+                                        search_term = new_domain_pattern.strip('*')
+                                        if not re.match(r'^[a-zA-Z0-9-]+$', search_term):
+                                            st.error("Invalid contains pattern: Can only contain letters, numbers, and hyphens")
+                                            return
+                                    elif new_domain_pattern.startswith("*."):
+                                        # Prefix wildcard (*.example.com)
+                                        base_domain = new_domain_pattern[2:]
+                                        if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$', base_domain):
+                                            st.error("Invalid wildcard domain pattern")
+                                            return
+                                    elif new_domain_pattern.startswith('*'):
+                                        # Suffix match (*test.com)
+                                        suffix = new_domain_pattern[1:]
+                                        if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$', suffix):
+                                            st.error("Invalid suffix pattern")
+                                            return
+                                    elif new_domain_pattern.endswith('*'):
+                                        # Prefix match (test*)
+                                        prefix = new_domain_pattern[:-1]
+                                        if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$', prefix):
+                                            st.error("Invalid prefix pattern")
+                                            return
+                                    else:
+                                        # Exact domain match
+                                        if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$', new_domain_pattern):
+                                            st.error("Invalid domain format")
+                                            return
+                                    
+                                    # Add new ignored domain
+                                    ignored = IgnoredDomain(
+                                        pattern=new_domain_pattern,
+                                        reason=domain_reason if domain_reason else None,
+                                        created_at=datetime.now()
+                                    )
+                                    session.add(ignored)
+                                    session.commit()
+                                    st.success(f"Added '{new_domain_pattern}' to ignore list")
+                                    st.rerun()  # Rerun to clear the form and refresh the list
+                        except Exception as e:
+                            st.error(f"Error adding domain pattern: {str(e)}")
+                    else:
+                        st.error("Please enter a domain pattern")
+            
+            # Show existing ignored domains
+            st.divider()
+            try:
+                with Session(engine) as session:
+                    ignored_domains = session.query(IgnoredDomain).order_by(IgnoredDomain.created_at.desc()).all()
+                    if ignored_domains:
+                        for domain in ignored_domains:
+                            col1, col2 = st.columns([4, 1])
+                            with col1:
+                                st.markdown(f"**{domain.pattern}**")
+                                if domain.reason:
+                                    st.caption(f"Reason: {domain.reason}")
+                                st.caption(f"Added: {domain.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                            with col2:
+                                if st.button("Remove", key=f"remove_domain_{domain.id}"):
+                                    try:
+                                        session.delete(domain)
+                                        session.commit()
+                                        st.success(f"Removed '{domain.pattern}' from ignore list")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error removing domain: {str(e)}")
+                    else:
+                        st.info("No ignored domains configured")
+            except Exception as e:
+                st.error(f"Error loading ignored domains: {str(e)}")
+        
+        # Ignored Certificates tab
+        with ignore_tabs[1]:
+            st.subheader("Ignored Certificates")
+            st.markdown("""
+            Add certificate patterns to ignore based on Common Name (CN). Supports:
+            - Contains pattern: *test* (matches any CN containing 'test')
+            - Prefix wildcard: *.example.com (matches any subdomain)
+            - Suffix wildcard: test* (matches CNs starting with 'test')
+            - Exact match: test.example.com
+            
+            Examples:
+            - *dev* will match: dev.example.com, mydev.com, devtest.com
+            - *test* will match: test.com, mytest.example.com, testing.com
+            """)
+            
+            # Add new certificate pattern
+            with st.form(key="cert_form"):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    new_pattern = st.text_input(
+                        "Certificate CN Pattern",
+                        value="",
+                        key="new_pattern",
+                        placeholder="e.g., *test* or *.example.com"
+                    )
+                    cert_reason = st.text_input(
+                        "Reason (optional)",
+                        value="",
+                        key="cert_reason",
+                        placeholder="Why should certificates matching this pattern be ignored?"
+                    )
+                with col2:
+                    submit_cert = st.form_submit_button("Add Pattern")
+                
+                if submit_cert:
+                    if new_pattern:
+                        try:
+                            with Session(engine) as session:
+                                # Check if pattern already exists
+                                existing = session.query(IgnoredCertificate).filter_by(pattern=new_pattern).first()
+                                if existing:
+                                    st.error(f"Pattern '{new_pattern}' is already in the ignore list")
+                                else:
+                                    # Basic pattern validation
+                                    if new_pattern.count('*') > 2:
+                                        st.error("Invalid pattern: Maximum of two wildcards allowed")
+                                        return
+                                    
+                                    # Add new ignored certificate pattern
+                                    ignored = IgnoredCertificate(
+                                        pattern=new_pattern,
+                                        reason=cert_reason if cert_reason else None,
+                                        created_at=datetime.now()
+                                    )
+                                    session.add(ignored)
+                                    session.commit()
+                                    st.success(f"Added pattern '{new_pattern}' to ignore list")
+                                    st.rerun()  # Rerun to clear the form and refresh the list
+                        except Exception as e:
+                            st.error(f"Error adding certificate pattern: {str(e)}")
+                    else:
+                        st.error("Please enter a certificate pattern")
+            
+            # Show existing ignored certificates
+            st.divider()
+            try:
+                with Session(engine) as session:
+                    ignored_certs = session.query(IgnoredCertificate).order_by(IgnoredCertificate.created_at.desc()).all()
+                    if ignored_certs:
+                        for cert in ignored_certs:
+                            col1, col2 = st.columns([4, 1])
+                            with col1:
+                                st.markdown(f"**{cert.pattern}**")
+                                if cert.reason:
+                                    st.caption(f"Reason: {cert.reason}")
+                                st.caption(f"Added: {cert.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                            with col2:
+                                if st.button("Remove", key=f"remove_cert_{cert.id}"):
+                                    try:
+                                        session.delete(cert)
+                                        session.commit()
+                                        st.success(f"Removed pattern '{cert.pattern}' from ignore list")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error removing certificate pattern: {str(e)}")
+                    else:
+                        st.info("No ignored certificate patterns configured")
+            except Exception as e:
+                st.error(f"Error loading ignored certificates: {str(e)}")
 
     # Render backup and restore section
     render_backup_restore_section()

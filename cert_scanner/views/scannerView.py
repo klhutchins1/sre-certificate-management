@@ -86,10 +86,7 @@ def render_scan_interface(engine) -> None:
     if 'scanned_domains' not in st.session_state:
         st.session_state.scanned_domains = set()
     
-    # Reset scanned domains when starting a new scan
-    if st.button("Reset Scan History"):
-        st.session_state.scanned_domains = set()
-        st.success("Scan history has been reset")
+
     
     # Clear transitioning flag if set
     if st.session_state.get('transitioning', False):
@@ -147,10 +144,13 @@ internal.server.local:444"""
             check_whois = st.checkbox("Get WHOIS Info", value=True)
             check_subdomains = st.checkbox("Include Subdomains", value=True)
             check_related = st.checkbox("Find Related Domains", value=True)
+           
         
         # Scan initiation button below both columns
         scan_button_clicked = st.button("Start Scan", type="primary")
         
+
+            
         # Input format help section
         with st.expander("ℹ️ Input Format Help"):
             st.markdown("""

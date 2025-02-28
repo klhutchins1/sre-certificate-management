@@ -33,6 +33,33 @@ from ..db import SessionManager
 from .notifications import notifications, show_notifications, clear_notifications, initialize_notifications
 
 
+def handle_form_submission(engine, app_name, app_type, app_description, app_owner):
+    """Handle form submission and return success status."""
+    if not app_name:
+        notifications.add("Application Name is required", "error")
+        return False
+    
+    if len(app_name) > 255:
+        notifications.add("Application Name must be 255 characters or less", "error")
+        return False
+    
+    try:
+        with Session(engine) as session:
+            new_app = Application(
+                name=app_name,
+                app_type=app_type,
+                description=app_description,
+                owner=app_owner,
+                created_at=datetime.now()
+            )
+            session.add(new_app)
+            session.commit()
+            notifications.add("✅ Application added successfully!", "success")
+            return True
+    except Exception as e:
+        notifications.add(f"Error adding application: {str(e)}", "error")
+        return False
+
 def render_applications_view(engine) -> None:
     """
     Render the main applications management interface.
@@ -57,9 +84,15 @@ def render_applications_view(engine) -> None:
     load_warning_suppression()
     load_css()
     
-    # Initialize notifications and create container
+    # Initialize notifications at the very top
     initialize_notifications()
-    notifications._create_container()
+    
+    # Create a placeholder for notifications at the top
+    notification_placeholder = st.empty()
+    
+    # Initialize session state
+    if 'show_add_app_form' not in st.session_state:
+        st.session_state.show_add_app_form = False
     
     # Header section with title and add button
     st.markdown('<div class="title-row">', unsafe_allow_html=True)
@@ -67,21 +100,18 @@ def render_applications_view(engine) -> None:
     with col1:
         st.title("Applications")
     with col2:
-        if st.button("➕ Add Application" if not st.session_state.get('show_add_app_form', False) else "❌ Cancel", 
-                    type="primary" if not st.session_state.get('show_add_app_form', False) else "secondary",
-                    use_container_width=True):
-            st.session_state['show_add_app_form'] = not st.session_state.get('show_add_app_form', False)
-            st.rerun()
+        if st.button(
+            "➕ Add Application" if not st.session_state.show_add_app_form else "❌ Cancel",
+            type="primary" if not st.session_state.show_add_app_form else "secondary",
+            use_container_width=True,
+            key="toggle_form_button"
+        ):
+            st.session_state.show_add_app_form = not st.session_state.show_add_app_form
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # Display success messages if any
-    if 'success_message' in st.session_state:
-        notifications.add(st.session_state.success_message, "success")
-        del st.session_state.success_message
-    
     # Application creation form
-    if st.session_state.get('show_add_app_form', False):
-        with st.form("add_application_form"):
+    if st.session_state.show_add_app_form:
+        with st.form(key="add_application_form", clear_on_submit=True):
             st.subheader("Add New Application")
             st.markdown('<div class="form-content">', unsafe_allow_html=True)
             
@@ -101,36 +131,29 @@ def render_applications_view(engine) -> None:
                     help="Team or individual responsible for this application")
             
             st.markdown('</div>', unsafe_allow_html=True)
-            # Form submission handling
             submitted = st.form_submit_button("Add Application", type="primary")
             
             if submitted:
-                try:
-                    with Session(engine) as session:
-                        # Input validation
-                        if not app_name:
-                            notifications.add("Application Name is required", "error")
-                            return
-                        
-                        if len(app_name) > 255:
-                            notifications.add("Application Name must be 255 characters or less", "error")
-                            return
-                        
-                        # Create and save new application
-                        new_app = Application(
-                            name=app_name,
-                            app_type=app_type,
-                            description=app_description,
-                            owner=app_owner,
-                            created_at=datetime.now()
-                        )
-                        session.add(new_app)
-                        session.commit()
-                        st.session_state['success_message'] = "✅ Application added successfully!"
-                        st.session_state['show_add_app_form'] = False
-                        st.rerun()
-                except Exception as e:
-                    notifications.add(f"Error adding application: {str(e)}", "error")
+                if not app_name:
+                    st.error("Application Name is required")
+                elif len(app_name) > 255:
+                    st.error("Application Name must be 255 characters or less")
+                else:
+                    try:
+                        with Session(engine) as session:
+                            new_app = Application(
+                                name=app_name,
+                                app_type=app_type,
+                                description=app_description,
+                                owner=app_owner,
+                                created_at=datetime.now()
+                            )
+                            session.add(new_app)
+                            session.commit()
+                            st.success("✅ Application added successfully!")
+                            st.session_state.show_add_app_form = False
+                    except Exception as e:
+                        st.error(f"Error adding application: {str(e)}")
     
     st.divider()
     
@@ -175,7 +198,6 @@ def render_applications_view(engine) -> None:
         
         if not applications:
             notifications.add("No applications found. Use the 'Add Application' button above to create one.", "info")
-            show_notifications()
             return
 
         # View type selector
@@ -314,11 +336,11 @@ def render_applications_view(engine) -> None:
                     render_application_details(selected_app)
         else:
             notifications.add("No application data available", "warning")
-            show_notifications()
             return
 
-    # Show all notifications at the end of the view
-    show_notifications()
+    # Show notifications at the end using the placeholder
+    with notification_placeholder:
+        show_notifications()
 
 def render_application_details(application: Application) -> None:
     """
@@ -376,10 +398,9 @@ def render_application_details(application: Application) -> None:
                             application.description = new_description
                             application.owner = new_owner
                             session.commit()
-                            st.success("✅ Application updated successfully!")
-                            st.rerun()
+                            notifications.add("✅ Application updated successfully!", "success")
                         except Exception as e:
-                            st.error(f"Error updating application: {str(e)}")
+                            notifications.add(f"Error updating application: {str(e)}", "error")
             
             # Application deletion interface
             with st.expander("Delete Application", expanded=False):
@@ -389,10 +410,9 @@ def render_application_details(application: Application) -> None:
                         session = st.session_state.get('session')
                         session.delete(application)
                         session.commit()
-                        st.success("Application deleted successfully!")
-                        st.rerun()
+                        notifications.add("Application deleted successfully!", "success")
                     except Exception as e:
-                        st.error(f"Error deleting application: {str(e)}")
+                        notifications.add(f"Error deleting application: {str(e)}", "error")
         
         with col2:
             # Certificate metrics and visualization
@@ -449,9 +469,8 @@ def render_application_details(application: Application) -> None:
                             session = st.session_state.get('session')
                             binding.application_id = None
                             session.commit()
-                            st.success("Binding removed successfully!")
-                            st.rerun()
+                            notifications.add("Binding removed successfully!", "success")
                         except Exception as e:
-                            st.error(f"Error removing binding: {str(e)}")
+                            notifications.add(f"Error removing binding: {str(e)}", "error")
         else:
             notifications.add("No certificate bindings found for this application.", "info") 

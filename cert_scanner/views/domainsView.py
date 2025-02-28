@@ -15,7 +15,7 @@ from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 from collections import defaultdict
 
-from ..models import Domain, DomainDNSRecord, Certificate
+from ..models import Domain, DomainDNSRecord, Certificate, IgnoredDomain
 
 class VirtualDomain:
     """Represents a domain that exists as a parent but is not in our database."""
@@ -133,17 +133,47 @@ def render_domain_list(engine):
         # Get all domains
         domains = session.query(Domain).order_by(Domain.domain_name).all()
         
-        if not domains:
+        # Get ignored domains for filtering
+        ignored_domains = session.query(IgnoredDomain).all()
+        ignored_patterns = [d.pattern for d in ignored_domains]
+        
+        # Filter out ignored domains
+        visible_domains = []
+        for domain in domains:
+            # Check if domain matches any ignore patterns
+            should_show = True
+            for pattern in ignored_patterns:
+                if pattern.startswith('*') and pattern.endswith('*'):
+                    # Contains pattern (*test*)
+                    search_term = pattern.strip('*')
+                    if search_term.lower() in domain.domain_name.lower():
+                        should_show = False
+                        break
+                elif pattern.startswith('*.'):
+                    # Suffix wildcard (*.example.com)
+                    suffix = pattern[2:]
+                    if domain.domain_name.endswith(suffix):
+                        should_show = False
+                        break
+                elif pattern == domain.domain_name:
+                    # Exact match
+                    should_show = False
+                    break
+            
+            if should_show:
+                visible_domains.append(domain)
+        
+        if not visible_domains:
             st.info("No domains found in the database.")
             return
         
-        # Create domain overview metrics
-        total_domains = len(domains)
-        active_domains = sum(1 for d in domains if d.is_active)
-        expiring_soon = sum(1 for d in domains 
+        # Create domain overview metrics using visible domains
+        total_domains = len(visible_domains)
+        active_domains = sum(1 for d in visible_domains if d.is_active)
+        expiring_soon = sum(1 for d in visible_domains 
                           if d.expiration_date and d.expiration_date <= datetime.now() + timedelta(days=30)
                           and d.expiration_date > datetime.now())
-        expired = sum(1 for d in domains 
+        expired = sum(1 for d in visible_domains 
                      if d.expiration_date and d.expiration_date <= datetime.now())
         
         # Display metrics in columns
@@ -162,9 +192,9 @@ def render_domain_list(engine):
         
         # Filter and organize domains
         if search:
-            filtered_domains = [d for d in domains if search.lower() in d.domain_name.lower()]
+            filtered_domains = [d for d in visible_domains if search.lower() in d.domain_name.lower()]
         else:
-            filtered_domains = domains
+            filtered_domains = visible_domains
         
         # Organize domains into hierarchy
         root_domains, domain_hierarchy = get_domain_hierarchy(filtered_domains)
@@ -233,24 +263,64 @@ def render_domain_list(engine):
                     
                     # Domain Information
                     with st.expander("🌐 Domain Information", expanded=True):
-                        col1, col2 = st.columns(2)
-                        
-                        # Get registration info from root domain if this is a subdomain
-                        root_domain = get_root_domain_info(domain.domain_name, domains)
-                        display_domain = root_domain if root_domain else domain
-                        
-                        with col1:
-                            if root_domain:
-                                st.markdown("**Root Domain:** `{}`".format(root_domain.domain_name))
-                            st.markdown("**Registrar:** {}".format(display_domain.registrar or "N/A"))
-                            st.markdown("**Registration Date:** {}".format(
-                                display_domain.registration_date.strftime("%Y-%m-%d") if display_domain.registration_date else "N/A"
-                            ))
-                            st.markdown("**Owner:** {}".format(display_domain.owner or "N/A"))
-                        with col2:
-                            st.write("**Expiration Date:**", display_domain.expiration_date.strftime("%Y-%m-%d") if display_domain.expiration_date else "N/A")
-                            st.write("**Status:**", "Active" if domain.is_active else "Inactive")
-                            st.write("**Last Updated:**", domain.updated_at.strftime("%Y-%m-%d %H:%M"))
+                        # Add ignore button at the top
+                        if not isinstance(domain, VirtualDomain):
+                            col_info, col_actions = st.columns([3, 1])
+                            with col_actions:
+                                if st.button("🚫 Add to Ignore List"):
+                                    try:
+                                        # Check if already ignored
+                                        existing = session.query(IgnoredDomain).filter_by(pattern=domain.domain_name).first()
+                                        if existing:
+                                            st.error(f"Domain '{domain.domain_name}' is already in the ignore list")
+                                        else:
+                                            # Add to ignore list
+                                            ignored = IgnoredDomain(
+                                                pattern=domain.domain_name,
+                                                reason=f"Added from domain view",
+                                                created_at=datetime.now()
+                                            )
+                                            session.add(ignored)
+                                            session.commit()
+                                            st.success(f"Added '{domain.domain_name}' to ignore list")
+                                            # Rerun to refresh the view
+                                            st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error adding domain to ignore list: {str(e)}")
+                            
+                            with col_info:
+                                # Get registration info from root domain if this is a subdomain
+                                root_domain = get_root_domain_info(domain.domain_name, domains)
+                                display_domain = root_domain if root_domain else domain
+                                
+                                if root_domain:
+                                    st.markdown("**Root Domain:** `{}`".format(root_domain.domain_name))
+                                st.markdown("**Registrar:** {}".format(display_domain.registrar or "N/A"))
+                                st.markdown("**Registration Date:** {}".format(
+                                    display_domain.registration_date.strftime("%Y-%m-%d") if display_domain.registration_date else "N/A"
+                                ))
+                                st.markdown("**Owner:** {}".format(display_domain.owner or "N/A"))
+                                st.write("**Expiration Date:**", display_domain.expiration_date.strftime("%Y-%m-%d") if display_domain.expiration_date else "N/A")
+                                st.write("**Status:**", "Active" if domain.is_active else "Inactive")
+                                st.write("**Last Updated:**", domain.updated_at.strftime("%Y-%m-%d %H:%M"))
+                        else:
+                            # Display info for virtual domains as before
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                root_domain = get_root_domain_info(domain.domain_name, domains)
+                                display_domain = root_domain if root_domain else domain
+                                
+                                if root_domain:
+                                    st.markdown("**Root Domain:** `{}`".format(root_domain.domain_name))
+                                st.markdown("**Registrar:** {}".format(display_domain.registrar or "N/A"))
+                                st.markdown("**Registration Date:** {}".format(
+                                    display_domain.registration_date.strftime("%Y-%m-%d") if display_domain.registration_date else "N/A"
+                                ))
+                                st.markdown("**Owner:** {}".format(display_domain.owner or "N/A"))
+                            with col2:
+                                st.write("**Expiration Date:**", display_domain.expiration_date.strftime("%Y-%m-%d") if display_domain.expiration_date else "N/A")
+                                st.write("**Status:**", "Active" if domain.is_active else "Inactive")
+                                st.write("**Last Updated:**", domain.updated_at.strftime("%Y-%m-%d %H:%M"))
                     
                     # Show subdomains if this is a root domain
                     if domain.domain_name in domain_hierarchy:

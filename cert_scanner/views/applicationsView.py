@@ -30,65 +30,104 @@ from ..models import Application, CertificateBinding, Certificate
 from ..constants import APP_TYPES, app_types
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
-from .notifications import notifications, show_notifications, clear_notifications, initialize_notifications
+from cert_scanner.notifications import notifications, show_notifications, clear_notifications, initialize_notifications
 
 
-def handle_form_submission(engine, app_name, app_type, app_description, app_owner):
-    """Handle form submission and return success status."""
-    if not app_name:
-        notifications.add("Application Name is required", "error")
-        return False
+def handle_add_form():
+    """Handle the add application form submission."""
+    if not st.session_state.app_name:
+        st.error("Application Name is required")
+        return
     
-    if len(app_name) > 255:
-        notifications.add("Application Name must be 255 characters or less", "error")
-        return False
+    if len(st.session_state.app_name) > 255:
+        st.error("Application Name must be 255 characters or less")
+        return
     
     try:
-        with Session(engine) as session:
+        with Session(st.session_state.engine) as session:
+            # Check if application name already exists
+            existing_app = session.query(Application).filter(
+                Application.name == st.session_state.app_name
+            ).first()
+            
+            if existing_app:
+                st.error(f"An application with the name '{st.session_state.app_name}' already exists")
+                return
+            
+            # Create new application
             new_app = Application(
-                name=app_name,
-                app_type=app_type,
-                description=app_description,
-                owner=app_owner,
+                name=st.session_state.app_name,
+                app_type=st.session_state.app_type,
+                description=st.session_state.app_description,
+                owner=st.session_state.app_owner,
                 created_at=datetime.now()
             )
             session.add(new_app)
             session.commit()
-            notifications.add("✅ Application added successfully!", "success")
-            return True
+            st.session_state.show_add_app_form = False
+            st.success("✅ Application added successfully!")
     except Exception as e:
-        notifications.add(f"Error adding application: {str(e)}", "error")
+        if "UNIQUE constraint failed" in str(e):
+            st.error(f"An application with the name '{st.session_state.app_name}' already exists")
+        else:
+            st.error(f"Error adding application: {str(e)}")
+
+def toggle_add_form():
+    """Toggle the add application form visibility."""
+    st.session_state.show_add_app_form = not st.session_state.show_add_app_form
+
+def delete_application(application, session):
+    """Handle application deletion."""
+    try:
+        session.delete(application)
+        session.commit()
+        notifications.add("Application deleted successfully!", "success")
+        st.session_state.deleted_app_id = application.id
+        return True
+    except Exception as e:
+        notifications.add(f"Error deleting application: {str(e)}", "error")
         return False
 
+def handle_update_form():
+    """Handle the update application form submission."""
+    try:
+        session = st.session_state.get('session')
+        application = st.session_state.get('current_app')
+        if session and application:
+            application.name = st.session_state.new_name
+            application.app_type = st.session_state.new_type
+            application.description = st.session_state.new_description
+            application.owner = st.session_state.new_owner
+            session.commit()
+            st.success("✅ Application updated successfully!")
+    except Exception as e:
+        st.error(f"Error updating application: {str(e)}")
+
+def handle_delete_app():
+    """Handle application deletion."""
+    try:
+        session = st.session_state.get('session')
+        application = st.session_state.get('current_app')
+        if session and application:
+            session.delete(application)
+            session.commit()
+            st.success("Application deleted successfully!")
+            st.session_state.current_app = None
+    except Exception as e:
+        st.error(f"Error deleting application: {str(e)}")
+
 def render_applications_view(engine) -> None:
-    """
-    Render the main applications management interface.
-
-    This function creates a Streamlit interface that allows users to:
-    - View all applications in a sortable/filterable grid
-    - Add new applications
-    - View application details
-    - Edit application information
-    - Delete applications
-    - Monitor certificate status
-
-    Args:
-        engine: SQLAlchemy engine instance for database connections
-
-    Note:
-        The view maintains state using Streamlit's session state for form visibility
-        and success messages. The grid view can be toggled between 'Application Type'
-        and 'All Applications' modes.
-    """
+    """Render the main applications management interface."""
     # Initialize UI components and styles
     load_warning_suppression()
     load_css()
     
-    # Initialize notifications at the very top
+    # Initialize notifications
     initialize_notifications()
+    show_notifications()
     
-    # Create a placeholder for notifications at the top
-    notification_placeholder = st.empty()
+    # Store engine in session state
+    st.session_state.engine = engine
     
     # Initialize session state
     if 'show_add_app_form' not in st.session_state:
@@ -100,61 +139,51 @@ def render_applications_view(engine) -> None:
     with col1:
         st.title("Applications")
     with col2:
-        if st.button(
-            "➕ Add Application" if not st.session_state.show_add_app_form else "❌ Cancel",
-            type="primary" if not st.session_state.show_add_app_form else "secondary",
-            use_container_width=True,
-            key="toggle_form_button"
-        ):
-            st.session_state.show_add_app_form = not st.session_state.show_add_app_form
+        st.button(
+            "❌ Cancel" if st.session_state.show_add_app_form else "➕ Add Application",
+            type="secondary" if st.session_state.show_add_app_form else "primary",
+            on_click=toggle_add_form,
+            use_container_width=True
+        )
     st.markdown('</div>', unsafe_allow_html=True)
     
     # Application creation form
     if st.session_state.show_add_app_form:
-        with st.form(key="add_application_form", clear_on_submit=True):
+        with st.form("add_application_form"):
             st.subheader("Add New Application")
             st.markdown('<div class="form-content">', unsafe_allow_html=True)
             
             # Form input fields
             col1, col2 = st.columns(2)
             with col1:
-                app_name = st.text_input("Application Name",
-                    help="Name of the application or service (e.g., 'Payment Gateway', 'Customer Portal')")
-                app_type = st.selectbox("Application Type",
+                st.text_input(
+                    "Application Name",
+                    key="app_name",
+                    help="Name of the application or service (e.g., 'Payment Gateway', 'Customer Portal')"
+                )
+                st.selectbox(
+                    "Application Type",
                     options=APP_TYPES,
-                    help="The type of application or service")
+                    key="app_type",
+                    help="The type of application or service"
+                )
             
             with col2:
-                app_description = st.text_input("Description",
-                    help="Brief description of what this application does")
-                app_owner = st.text_input("Owner",
-                    help="Team or individual responsible for this application")
+                st.text_input(
+                    "Description",
+                    key="app_description",
+                    help="Brief description of what this application does"
+                )
+                st.text_input(
+                    "Owner",
+                    key="app_owner",
+                    help="Team or individual responsible for this application"
+                )
             
             st.markdown('</div>', unsafe_allow_html=True)
-            submitted = st.form_submit_button("Add Application", type="primary")
-            
-            if submitted:
-                if not app_name:
-                    st.error("Application Name is required")
-                elif len(app_name) > 255:
-                    st.error("Application Name must be 255 characters or less")
-                else:
-                    try:
-                        with Session(engine) as session:
-                            new_app = Application(
-                                name=app_name,
-                                app_type=app_type,
-                                description=app_description,
-                                owner=app_owner,
-                                created_at=datetime.now()
-                            )
-                            session.add(new_app)
-                            session.commit()
-                            st.success("✅ Application added successfully!")
-                            st.session_state.show_add_app_form = False
-                    except Exception as e:
-                        st.error(f"Error adding application: {str(e)}")
-    
+            if st.form_submit_button("Add Application", type="primary", on_click=handle_add_form):
+                pass  # The actual handling is done in the callback
+
     st.divider()
     
     # Create metrics columns with standardized styling
@@ -339,8 +368,7 @@ def render_applications_view(engine) -> None:
             return
 
     # Show notifications at the end using the placeholder
-    with notification_placeholder:
-        show_notifications()
+    show_notifications()
 
 def render_application_details(application: Application) -> None:
     """
@@ -362,6 +390,9 @@ def render_application_details(application: Application) -> None:
         - Interactive certificate binding management
         - Application editing and deletion capabilities
     """
+    # Store current application in session state
+    st.session_state.current_app = application
+    
     st.subheader(f"📱 {application.name}")
     
     # Create tabs for different sections
@@ -381,38 +412,26 @@ def render_application_details(application: Application) -> None:
             # Application editing interface
             with st.expander("Edit Application"):
                 with st.form("edit_application"):
-                    new_name = st.text_input("Name", value=application.name)
-                    new_type = st.selectbox("Type", 
+                    st.text_input("Name", value=application.name, key="new_name")
+                    st.selectbox("Type", 
                         options=APP_TYPES,
-                        index=APP_TYPES.index(application.app_type))
-                    new_description = st.text_input("Description", 
-                        value=application.description or '')
-                    new_owner = st.text_input("Owner",
-                        value=application.owner or '')
+                        index=APP_TYPES.index(application.app_type),
+                        key="new_type")
+                    st.text_input("Description", 
+                        value=application.description or '',
+                        key="new_description")
+                    st.text_input("Owner",
+                        value=application.owner or '',
+                        key="new_owner")
                     
-                    if st.form_submit_button("Update Application", type="primary"):
-                        try:
-                            session = st.session_state.get('session')
-                            application.name = new_name
-                            application.app_type = new_type
-                            application.description = new_description
-                            application.owner = new_owner
-                            session.commit()
-                            notifications.add("✅ Application updated successfully!", "success")
-                        except Exception as e:
-                            notifications.add(f"Error updating application: {str(e)}", "error")
+                    if st.form_submit_button("Update Application", type="primary", on_click=handle_update_form):
+                        pass  # Handling is done in the callback
             
             # Application deletion interface
             with st.expander("Delete Application", expanded=False):
                 st.warning("⚠️ This action cannot be undone!")
-                if st.button("Delete Application", type="secondary"):
-                    try:
-                        session = st.session_state.get('session')
-                        session.delete(application)
-                        session.commit()
-                        notifications.add("Application deleted successfully!", "success")
-                    except Exception as e:
-                        notifications.add(f"Error deleting application: {str(e)}", "error")
+                if st.button("Delete Application", key=f"delete_app_{application.id}", type="secondary", on_click=handle_delete_app):
+                    pass  # Handling is done in the callback
         
         with col2:
             # Certificate metrics and visualization

@@ -26,6 +26,7 @@ from ..models import (
 from ..static.styles import load_warning_suppression, load_css
 from ..domain_scanner import DomainScanner, DomainInfo
 from ..scanner import CertificateScanner, CertificateInfo, ScanResult
+from cert_scanner.notifications import notifications, initialize_notifications, show_notifications
 import json
 from typing import Tuple, Dict, List, Optional
 import pandas as pd
@@ -58,14 +59,14 @@ def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     try:
         port = int(port_str)
         if port < 0:
-            st.error(f"Invalid port number in {entry}: Port cannot be negative")
+            notifications.add(f"Invalid port number in {entry}: Port cannot be negative", "error")
             return False, 0
         if port > 65535:
-            st.error(f"Invalid port number in {entry}: Port must be between 1 and 65535")
+            notifications.add(f"Invalid port number in {entry}: Port must be between 1 and 65535", "error")
             return False, 0
         return True, port
     except ValueError as e:
-        st.error(f"Invalid port number in {entry}: '{port_str}' is not a valid number")
+        notifications.add(f"Invalid port number in {entry}: '{port_str}' is not a valid number", "error")
         return False, 0
 
 def render_scan_interface(engine) -> None:
@@ -73,6 +74,12 @@ def render_scan_interface(engine) -> None:
     # Initialize UI components and styles
     load_warning_suppression()
     load_css()
+    
+    # Initialize notifications at the very beginning
+    initialize_notifications()
+    
+    # Create a placeholder for notifications at the top
+    notification_placeholder = st.empty()
     
     # Initialize scanners
     if 'domain_scanner' not in st.session_state:
@@ -85,8 +92,6 @@ def render_scan_interface(engine) -> None:
     # Initialize session state for tracking scanned domains
     if 'scanned_domains' not in st.session_state:
         st.session_state.scanned_domains = set()
-    
-
     
     # Clear transitioning flag if set
     if st.session_state.get('transitioning', False):
@@ -144,13 +149,10 @@ internal.server.local:444"""
             check_whois = st.checkbox("Get WHOIS Info", value=True)
             check_subdomains = st.checkbox("Include Subdomains", value=True)
             check_related = st.checkbox("Find Related Domains", value=True)
-           
         
         # Scan initiation button below both columns
         scan_button_clicked = st.button("Start Scan", type="primary")
         
-
-            
         # Input format help section
         with st.expander("ℹ️ Input Format Help"):
             st.markdown("""
@@ -189,7 +191,8 @@ internal.server.local:444"""
             
             # Validate input
             if not scan_input.strip():
-                st.error("Please enter at least one domain to scan")
+                notifications.add("Please enter at least one domain to scan", "error")
+                show_notifications()
                 return
             
             # Parse and validate scan targets
@@ -232,7 +235,7 @@ internal.server.local:444"""
                     
                     hostname = hostname.strip('/')
                     if not hostname:
-                        st.error(f"Invalid entry: {entry} - Hostname cannot be empty")
+                        notifications.add(f"Invalid entry: {entry} - Hostname cannot be empty", "error")
                         validation_errors = True
                         continue
                     
@@ -242,16 +245,21 @@ internal.server.local:444"""
                         st.session_state.scanned_domains.add(hostname)
                     else:
                         logger.info(f"[SCAN] Skipping {hostname} - Already scanned in this session")
-                        st.session_state.scan_results["warning"].append(f"{hostname} - Skipped (already scanned in this session)")
+                        notifications.add(f"{hostname} - Skipped (already scanned in this session)", "warning")
                         continue
                 except Exception as e:
-                    st.error(f"Error parsing {entry}: Please check the format")
+                    notifications.add(f"Error parsing {entry}: Please check the format", "error")
                     validation_errors = True
                     continue
+                    
+            # Show notifications at the end using the placeholder
+            with notification_placeholder:
+                show_notifications()
             
             # Handle validation errors
             if validation_errors:
-                st.error("Please correct the errors above")
+                notifications.add("Please correct the errors above", "error")
+                show_notifications()
                 return
             
             # Execute scans
@@ -319,7 +327,8 @@ internal.server.local:444"""
                                     
                                 except Exception as e:
                                     logger.error(f"[SCAN] Error searching subdomains for {hostname}: {str(e)}")
-                                    st.warning(f"Error searching subdomains for {hostname}: {str(e)}")
+                                    notifications.add(f"Error searching subdomains for {hostname}: {str(e)}", "warning")
+                                    show_notifications()
                         
                         # Update scan targets with expanded list
                         scan_targets = expanded_targets
@@ -602,10 +611,10 @@ internal.server.local:444"""
                 
                 # Show success message and results
                 if st.session_state.scan_results["success"]:
-                    st.success(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.")
+                    notifications.add(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.", "success")
                 
                 if st.session_state.scan_results["error"]:
-                    st.error("Some scans failed:")
+                    notifications.add("Some scans failed:", "error")
                     for error in st.session_state.scan_results["error"]:
                         # Clean up error message for display
                         if isinstance(error, str):
@@ -614,7 +623,11 @@ internal.server.local:444"""
                             # Remove any raw error codes
                             if "[Errno" in error:
                                 error = error.split(" - ", 1)[0] + " - " + error.split("] ")[-1]
-                        st.write(f"- {error}")
+                        notifications.add(f"- {error}", "error")
+                
+                # Show notifications
+                with notification_placeholder:
+                    show_notifications()
                 
                 # Show results summary
                 st.divider()
@@ -699,8 +712,9 @@ internal.server.local:444"""
                 # Clear scan targets after successful scan
                 if 'scan_targets' in st.session_state:
                     del st.session_state.scan_targets
-            else:
-                st.error("Please enter at least one valid domain to scan")
+                else:
+                    notifications.add("Please enter at least one valid domain to scan", "error")
+                    show_notifications()
     
     # Recent scans sidebar
     with col2:
@@ -725,4 +739,5 @@ internal.server.local:444"""
                     )
                 st.markdown("</div>", unsafe_allow_html=True)
             else:
-                st.info("No recent scans")
+                notifications.add("No recent scans", "info")
+                show_notifications()

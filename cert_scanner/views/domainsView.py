@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from collections import defaultdict
 
 from ..models import Domain, DomainDNSRecord, Certificate, IgnoredDomain
+from ..components.deletion_dialog import render_danger_zone
 
 class VirtualDomain:
     """Represents a domain that exists as a parent but is not in our database."""
@@ -369,3 +370,30 @@ def render_domain_list(engine):
                                 )
                         else:
                             st.info("No DNS records found for this domain.")
+                        
+                        # Add Danger Zone for domain deletion
+                        with st.expander("⚠️ Danger Zone", expanded=False):
+                            # Gather dependencies
+                            dependencies = {
+                                "Certificates": [cert.common_name for cert in domain.certificates],
+                                "DNS Records": [f"{r.record_type} {r.name}" for r in domain.dns_records],
+                                "Subdomains": [d.domain_name for d in domain.subdomains]
+                            }
+                            
+                            def delete_domain(session):
+                                try:
+                                    session.delete(domain)
+                                    session.commit()
+                                    return True
+                                except Exception as e:
+                                    session.rollback()
+                                    return False
+                            
+                            render_danger_zone(
+                                title="Delete Domain",
+                                entity_name=domain.domain_name,
+                                entity_type="domain",
+                                dependencies=dependencies,
+                                on_delete=delete_domain,
+                                session=session
+                            )

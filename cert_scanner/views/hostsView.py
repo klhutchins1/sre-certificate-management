@@ -28,7 +28,7 @@ from ..models import Host, HostIP, CertificateBinding, Application, Certificate
 from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
-from ..components.deletion_dialog import render_deletion_dialog
+from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -692,28 +692,24 @@ def render_details(selected_host: Host, binding: CertificateBinding = None, sess
             ]
         }
         
-        def delete_host():
+        def delete_host(session):
             try:
                 # Delete the host and all related records
                 session.delete(selected_host)
                 session.commit()
-                st.success(f"Host {selected_host.name} deleted successfully")
                 # Clear the selection and rerun to refresh the view
                 if 'selected_host_id' in st.session_state:
                     del st.session_state.selected_host_id
-                st.rerun()
+                return True
             except Exception as e:
-                st.error(f"Error deleting host: {str(e)}")
                 session.rollback()
+                return False
         
-        # Create the full confirmation text
-        confirm_text = f"delete {selected_host.name}"
-        
-        # Render deletion dialog with explicit confirmation text
-        render_deletion_dialog(
+        render_danger_zone(
             title="Delete Host",
-            item_name=selected_host.name,
+            entity_name=selected_host.name,
+            entity_type="host",
             dependencies=dependencies,
-            on_confirm=delete_host,
-            danger_text=f"This action cannot be undone. All related data will be permanently deleted. Type exactly '{confirm_text}' to confirm deletion."
+            on_delete=delete_host,
+            session=session
         )

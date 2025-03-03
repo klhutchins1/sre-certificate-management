@@ -30,6 +30,7 @@ from ..models import Application, CertificateBinding, Certificate
 from ..constants import APP_TYPES, app_types
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
+from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 from cert_scanner.notifications import notifications, show_notifications, clear_notifications, initialize_notifications
 
 
@@ -429,9 +430,32 @@ def render_application_details(application: Application) -> None:
             
             # Application deletion interface
             with st.expander("Delete Application", expanded=False):
-                st.warning("⚠️ This action cannot be undone!")
-                if st.button("Delete Application", key=f"delete_app_{application.id}", type="secondary", on_click=handle_delete_app):
-                    pass  # Handling is done in the callback
+                # Gather dependencies
+                dependencies = {
+                    "Certificate Bindings": [
+                        f"{b.certificate.common_name} ({b.host.name})" 
+                        for b in application.certificate_bindings
+                    ]
+                }
+                
+                def delete_app(session):
+                    try:
+                        session.delete(application)
+                        session.commit()
+                        st.session_state.current_app = None
+                        return True
+                    except Exception as e:
+                        session.rollback()
+                        return False
+                
+                render_danger_zone(
+                    title="Delete Application",
+                    entity_name=application.name,
+                    entity_type="application",
+                    dependencies=dependencies,
+                    on_delete=delete_app,
+                    session=session
+                )
         
         with col2:
             # Certificate metrics and visualization

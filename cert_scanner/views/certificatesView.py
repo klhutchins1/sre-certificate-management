@@ -31,7 +31,7 @@ from ..models import Certificate, CertificateBinding, Host, HostIP, HOST_TYPE_VI
 from ..constants import platform_options
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
-from ..components.deletion_dialog import render_deletion_dialog
+from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 import json
 
 def render_certificate_list(engine):
@@ -298,34 +298,22 @@ def render_certificate_card(cert, session):
         
         # Gather dependencies
         dependencies = {
-            "Bindings": [f"{b.host.name}:{b.port}" if b.port else b.host.name 
-                        for b in cert.certificate_bindings],
-            "Change Records": [f"Change {t.change_number}" for t in cert.tracking_entries],
-            "Scan History": [f"Scan on {s.scan_date.strftime('%Y-%m-%d %H:%M')}"
-                           for s in cert.scans]
+            "Bindings": [f"{b.host.name}:{b.port}" for b in cert.certificate_bindings],
+            "Scan Records": [f"Scan on {s.scan_date.strftime('%Y-%m-%d %H:%M')}" for s in cert.scans]
         }
         
-        def delete_certificate():
-            try:
-                # Delete the certificate and all related records
-                session.delete(cert)
-                session.commit()
-                st.success(f"Certificate {cert.common_name} deleted successfully")
-                # Clear the selection and rerun to refresh the view
-                if 'selected_cert_id' in st.session_state:
-                    del st.session_state.selected_cert_id
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error deleting certificate: {str(e)}")
-                session.rollback()
+        def delete_certificate(session):
+            session.delete(cert)
+            session.commit()
+            return True
         
-        # Render deletion dialog
-        render_deletion_dialog(
+        render_danger_zone(
             title="Delete Certificate",
-            item_name=cert.common_name,
+            entity_name=cert.common_name,
+            entity_type="certificate",
             dependencies=dependencies,
-            on_confirm=delete_certificate,
-            danger_text="This action cannot be undone. All related data will be permanently deleted."
+            on_delete=delete_certificate,
+            session=session
         )
 
 def render_certificate_overview(cert: Certificate, session) -> None:

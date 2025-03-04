@@ -21,7 +21,7 @@ and provide clear, meaningful values for the UI and database operations.
 # Maps internal platform identifiers to their user-friendly display names with icons
 # Used in UI dropdowns and display components
 platform_options = {
-    'F5': "🔄 F5 Load Balancer",
+    'F5': "⚖️ F5 Load Balancer",
     'Akamai': "🌐 Akamai CDN",
     'Cloudflare': "☁️ Cloudflare",
     'IIS': "🪟 Windows Server (IIS)",

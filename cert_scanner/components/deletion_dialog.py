@@ -12,6 +12,7 @@ Provides two main interfaces:
 import streamlit as st
 from typing import Dict, List, Callable, Optional, Any
 from sqlalchemy.orm import Session
+from ..notifications import notify
 
 def render_deletion_dialog(
     title: str,
@@ -62,7 +63,8 @@ def render_danger_zone(
     dependencies: Dict[str, List[str]],
     on_delete: Callable[[Session], bool],
     session: Session,
-    custom_warning: Optional[str] = None
+    custom_warning: Optional[str] = None,
+    additional_actions: Optional[List[Dict[str, Any]]] = None
 ) -> None:
     """
     Renders a standardized danger zone section for entity deletion.
@@ -75,39 +77,98 @@ def render_danger_zone(
         on_delete: Callback function that handles the actual deletion
         session: SQLAlchemy session
         custom_warning: Optional custom warning message
+        additional_actions: Optional list of additional danger zone actions
+            Each action should be a dict with:
+            - title: str - Button text
+            - callback: Callable - Function to call when button is clicked
+            - warning: Optional[str] - Warning message to show
+            - confirmation_required: bool - Whether to require confirmation
+            - confirmation_text: Optional[str] - Text to type for confirmation
     """
     with st.expander("⚠️ Danger Zone", expanded=False):
         st.markdown(f"### {title}")
         
-        # Show dependencies if any exist
-        has_dependencies = any(deps for deps in dependencies.values())
-        if has_dependencies:
-            st.warning("The following items will also be deleted:")
-            for dep_type, dep_items in dependencies.items():
-                if dep_items:
-                    st.markdown(f"**{dep_type}:**")
-                    for item in dep_items:
-                        st.markdown(f"- {item}")
+        # Show additional actions first if any
+        if additional_actions:
+            for i, action in enumerate(additional_actions):
+                if i > 0:
+                    st.markdown("---")
+                
+                # Create columns for better layout
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.markdown(f"#### {action['title']}")
+                    if action.get("warning"):
+                        st.markdown(f"_{action['warning']}_")
+                    
+                    # Handle confirmation if required
+                    confirmed = True
+                    if action.get("confirmation_required"):
+                        confirm_text = action.get("confirmation_text", f"confirm {action['title'].lower()}")
+                        confirmation = st.text_input(
+                            f"Type '{confirm_text}' to confirm",
+                            key=f"confirm_{action['title'].lower()}_{entity_name}"
+                        )
+                        confirmed = confirmation == confirm_text
+                
+                with col2:
+                    # Use the action's title for the button
+                    if st.button(
+                        action["title"],
+                        type="secondary",
+                        key=f"{action['title'].lower()}_{entity_name}",
+                        disabled=action.get("confirmation_required") and not confirmed
+                    ):
+                        if not confirmed and action.get("confirmation_required"):
+                            notify("Please type the confirmation text exactly as shown.", "warning")
+                        else:
+                            action["callback"](session)
         
-        # Warning message
-        warning_text = custom_warning or f"This action cannot be undone. This will permanently delete the {entity_type} '{entity_name}' and all related data."
-        st.warning(warning_text)
+        # Add separator before deletion section
+        st.markdown("---")
         
-        # Confirmation input
-        confirm_text = f"delete {entity_name}"
-        confirmation = st.text_input(
-            f"Please type '{confirm_text}' to confirm deletion",
-            key=f"confirm_delete_{entity_type}_{entity_name}"
-        )
+        # Deletion section
+        col1, col2 = st.columns([2, 1])
         
-        # Delete button
-        if st.button("Delete", type="secondary", key=f"delete_{entity_type}_{entity_name}"):
-            if confirmation == confirm_text:
-                try:
-                    if on_delete(session):
-                        st.success(f"{entity_type.title()} deleted successfully!")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Error deleting {entity_type}: {str(e)}")
-            else:
-                st.error("Confirmation text doesn't match. Please try again.") 
+        with col1:
+            st.markdown("### Permanent Deletion")
+            
+            # Show dependencies if any exist
+            has_dependencies = any(deps for deps in dependencies.values())
+            if has_dependencies:
+                st.markdown("**The following items will also be deleted:**")
+                for dep_type, dep_items in dependencies.items():
+                    if dep_items:
+                        st.markdown(f"**{dep_type}:**")
+                        for item in dep_items:
+                            st.markdown(f"- {item}")
+            
+            # Warning message as markdown
+            warning_text = custom_warning or f"_This action cannot be undone. This will permanently delete the {entity_type} '{entity_name}' and all related data._"
+            st.markdown(warning_text)
+            
+            # Confirmation input
+            confirm_text = f"delete {entity_name}"
+            confirmation = st.text_input(
+                f"Type '{confirm_text}' to confirm deletion",
+                key=f"confirm_delete_{entity_type}_{entity_name}"
+            )
+        
+        with col2:
+            # Delete button
+            if st.button(
+                "🗑️ Delete Permanently",
+                type="secondary",
+                key=f"delete_{entity_type}_{entity_name}",
+                disabled=confirmation != confirm_text
+            ):
+                if confirmation == confirm_text:
+                    try:
+                        if on_delete(session):
+                            notify(f"{entity_type.title()} deleted successfully!", "success")
+                            st.rerun()
+                    except Exception as e:
+                        notify(f"Error deleting {entity_type}: {str(e)}", "error")
+                else:
+                    notify("Please type the confirmation text exactly as shown.", "warning") 

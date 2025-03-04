@@ -26,7 +26,7 @@ from ..models import (
 from ..static.styles import load_warning_suppression, load_css
 from ..domain_scanner import DomainScanner, DomainInfo
 from ..scanner import CertificateScanner, CertificateInfo, ScanResult
-from cert_scanner.notifications import notifications, initialize_notifications, show_notifications
+from cert_scanner.notifications import initialize_notifications, show_notifications, notify
 import json
 from typing import Tuple, Dict, List, Optional
 import pandas as pd
@@ -59,14 +59,14 @@ def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     try:
         port = int(port_str)
         if port < 0:
-            notifications.add(f"Invalid port number in {entry}: Port cannot be negative", "error")
+            notify("Invalid port number in {}: Port cannot be negative", "error", entry)
             return False, 0
         if port > 65535:
-            notifications.add(f"Invalid port number in {entry}: Port must be between 1 and 65535", "error")
+            notify("Invalid port number in {}: Port must be between 1 and 65535", "error", entry)
             return False, 0
         return True, port
     except ValueError as e:
-        notifications.add(f"Invalid port number in {entry}: '{port_str}' is not a valid number", "error")
+        notify("Invalid port number in {}: '{}' is not a valid number", "error", entry, port_str)
         return False, 0
 
 def render_scan_interface(engine) -> None:
@@ -191,7 +191,7 @@ internal.server.local:444"""
             
             # Validate input
             if not scan_input.strip():
-                notifications.add("Please enter at least one domain to scan", "error")
+                notify("Please enter at least one domain to scan", "error")
                 show_notifications()
                 return
             
@@ -235,7 +235,7 @@ internal.server.local:444"""
                     
                     hostname = hostname.strip('/')
                     if not hostname:
-                        notifications.add(f"Invalid entry: {entry} - Hostname cannot be empty", "error")
+                        notify("Invalid entry: {} - Hostname cannot be empty", "error", entry)
                         validation_errors = True
                         continue
                     
@@ -245,10 +245,10 @@ internal.server.local:444"""
                         st.session_state.scanned_domains.add(hostname)
                     else:
                         logger.info(f"[SCAN] Skipping {hostname} - Already scanned in this session")
-                        notifications.add(f"{hostname} - Skipped (already scanned in this session)", "warning")
+                        notify("{hostname} - Skipped (already scanned in this session)", "warning")
                         continue
                 except Exception as e:
-                    notifications.add(f"Error parsing {entry}: Please check the format", "error")
+                    notify("Error parsing {}: Please check the format", "error", entry)
                     validation_errors = True
                     continue
                     
@@ -258,7 +258,7 @@ internal.server.local:444"""
             
             # Handle validation errors
             if validation_errors:
-                notifications.add("Please correct the errors above", "error")
+                notify("Please correct the errors above", "error")
                 show_notifications()
                 return
             
@@ -327,7 +327,7 @@ internal.server.local:444"""
                                     
                                 except Exception as e:
                                     logger.error(f"[SCAN] Error searching subdomains for {hostname}: {str(e)}")
-                                    notifications.add(f"Error searching subdomains for {hostname}: {str(e)}", "warning")
+                                    notify("Error searching subdomains for {}: {}", "warning", hostname, str(e))
                                     show_notifications()
                         
                         # Update scan targets with expanded list
@@ -611,10 +611,10 @@ internal.server.local:444"""
                 
                 # Show success message and results
                 if st.session_state.scan_results["success"]:
-                    notifications.add(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.", "success")
+                    notify("Scan completed! Found {} certificates.", "success", len(st.session_state.scan_results['success']))
                 
                 if st.session_state.scan_results["error"]:
-                    notifications.add("Some scans failed:", "error")
+                    notify("Some scans failed:")
                     for error in st.session_state.scan_results["error"]:
                         # Clean up error message for display
                         if isinstance(error, str):
@@ -623,7 +623,7 @@ internal.server.local:444"""
                             # Remove any raw error codes
                             if "[Errno" in error:
                                 error = error.split(" - ", 1)[0] + " - " + error.split("] ")[-1]
-                        notifications.add(f"- {error}", "error")
+                        notify("- {}")
                 
                 # Show notifications
                 with notification_placeholder:
@@ -713,7 +713,7 @@ internal.server.local:444"""
                 if 'scan_targets' in st.session_state:
                     del st.session_state.scan_targets
                 else:
-                    notifications.add("Please enter at least one valid domain to scan", "error")
+                    notify("Please enter at least one valid domain to scan", "error")
                     show_notifications()
     
     # Recent scans sidebar
@@ -739,5 +739,5 @@ internal.server.local:444"""
                     )
                 st.markdown("</div>", unsafe_allow_html=True)
             else:
-                notifications.add("No recent scans", "info")
+                notify("No recent scans", "info")
                 show_notifications()

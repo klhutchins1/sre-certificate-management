@@ -55,7 +55,7 @@ from ..backup import create_backup
 from ..models import IgnoredDomain, IgnoredCertificate
 from sqlalchemy.orm import Session
 import re
-from cert_scanner.notifications import notifications, initialize_notifications, show_notifications
+from cert_scanner.notifications import initialize_notifications, show_notifications, notify
 
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,7 @@ def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[b
     
     if not db_path:
         message = "Database path not configured"
-        notifications.add(message, "error")
+        notify(message, "error")
         return False, message
     
     try:
@@ -164,7 +164,7 @@ def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[b
                     manifest = json.load(f)
             except Exception as e:
                 message = f"Failed to read manifest file: {str(e)}"
-                notifications.add(message, "error")
+                notify(message, "error")
                 return False, message
         
         # Verify backup files exist
@@ -173,12 +173,12 @@ def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[b
         
         if not config_backup.is_file():
             message = "Config backup file not found"
-            notifications.add(message, "error")
+            notify(message, "error")
             return False, message
             
         if not db_backup.is_file():
             message = "Database backup file not found"
-            notifications.add(message, "error")
+            notify(message, "error")
             return False, message
         
         # Restore database
@@ -191,12 +191,12 @@ def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[b
             settings.save()
         
         message = "Backup restored successfully"
-        notifications.add(message, "success")
+        notify(message, "success")
         return True, message
         
     except Exception as e:
         message = f"Failed to restore backup: {str(e)}"
-        notifications.add(message, "error")
+        notify(message, "error")
         return False, message
 
 def render_settings_view(engine) -> None:
@@ -293,9 +293,9 @@ def render_settings_view(engine) -> None:
             settings.update("paths.backups", backup_path)
             
             if settings.save():
-                notifications.add("Path settings updated successfully!", "success")
+                notify("Path settings updated successfully!", "success")
             else:
-                notifications.add("Failed to save path settings", "error")
+                notify("Failed to save path settings", "error")
     
     # Scanning Settings Tab
     with tabs[1]:
@@ -322,7 +322,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             default_rate_limit = 60
-            notifications.add("Invalid default rate limit value, using default: 60", "warning")
+            notify("Invalid default rate limit value, using default: 60", "warning")
         
         st.divider()
         
@@ -343,7 +343,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             internal_rate_limit = 60
-            notifications.add("Invalid internal rate limit value, using default: 60", "warning")
+            notify("Invalid internal rate limit value, using default: 60", "warning")
         
         # Internal domain patterns
         internal_domains = st.text_area(
@@ -369,7 +369,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             external_rate_limit = 30
-            notifications.add("Invalid external rate limit value, using default: 30", "warning")
+            notify("Invalid external rate limit value, using default: 30", "warning")
         
         # External domain patterns
         external_domains = st.text_area(
@@ -401,7 +401,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             whois_rate_limit = 10
-            notifications.add("Invalid WHOIS rate limit value, using default: 10", "warning")
+            notify("Invalid WHOIS rate limit value, using default: 10", "warning")
         
         # DNS rate limit
         try:
@@ -414,7 +414,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             dns_rate_limit = 30
-            notifications.add("Invalid DNS rate limit value, using default: 30", "warning")
+            notify("Invalid DNS rate limit value, using default: 30", "warning")
         
         # CT logs rate limit
         try:
@@ -427,7 +427,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             ct_rate_limit = 10
-            notifications.add("Invalid CT rate limit value, using default: 10", "warning")
+            notify("Invalid CT rate limit value, using default: 10", "warning")
         
         # Timeout Settings
         st.divider()
@@ -453,7 +453,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             socket_timeout = 5
-            notifications.add("Invalid socket timeout value, using default: 5", "warning")
+            notify("Invalid socket timeout value, using default: 5", "warning")
         
         # Request timeout
         try:
@@ -467,7 +467,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             request_timeout = 10
-            notifications.add("Invalid request timeout value, using default: 10", "warning")
+            notify("Invalid request timeout value, using default: 10", "warning")
         
         # DNS timeout
         try:
@@ -483,7 +483,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             dns_timeout = 3.0
-            notifications.add("Invalid DNS timeout value, using default: 3.0", "warning")
+            notify("Invalid DNS timeout value, using default: 3.0", "warning")
         
         # Save scanning settings
         if st.button("Save Scanning Settings"):
@@ -509,9 +509,9 @@ def render_settings_view(engine) -> None:
             settings.update("scanning.timeouts.dns", dns_timeout)
             
             if settings.save():
-                notifications.add("Scanning settings updated successfully!", "success")
+                notify("Scanning settings updated successfully!", "success")
             else:
-                notifications.add("Failed to save scanning settings", "error")
+                notify("Failed to save scanning settings", "error")
     
     # Alert Settings Tab
     with tabs[2]:
@@ -568,7 +568,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             consecutive_failures = 3
-            notifications.add("Invalid consecutive failures value, using default: 3", "warning")
+            notify("Invalid consecutive failures value, using default: 3", "warning")
         
         # Save alert settings
         if st.button("Save Alert Settings"):
@@ -578,9 +578,9 @@ def render_settings_view(engine) -> None:
             settings.update("alerts.expiry_warnings", updated_warnings)
             settings.update("alerts.failed_scans.consecutive_failures", consecutive_failures)
             if settings.save():
-                notifications.add("Alert settings updated successfully!", "success")
+                notify("Alert settings updated successfully!", "success")
             else:
-                notifications.add("Failed to save alert settings", "error")
+                notify("Failed to save alert settings", "error")
     
     # Export Settings Tab
     with tabs[3]:
@@ -605,9 +605,9 @@ def render_settings_view(engine) -> None:
             settings.update("exports.csv.encoding", csv_encoding)
             
             if settings.save():
-                notifications.add("Export settings updated successfully!", "success")
+                notify("Export settings updated successfully!", "success")
             else:
-                notifications.add("Failed to save export settings", "error")
+                notify("Failed to save export settings", "error")
         
         # Export functionality section
         st.divider()
@@ -623,17 +623,17 @@ def render_settings_view(engine) -> None:
                 try:
                     with SessionManager(engine) as session:
                         output_path = export_certificates_to_csv(session)
-                        notifications.add(f"Certificates exported to CSV: {output_path}", "success")
+                        notify(f"Certificates exported to CSV: {output_path}", "success")
                 except Exception as e:
-                    notifications.add(f"Failed to export certificates to CSV: {str(e)}", "error")
+                    notify(f"Failed to export certificates to CSV: {str(e)}", "error")
             
             if st.button("Export Certificates to PDF"):
                 try:
                     with SessionManager(engine) as session:
                         output_path = export_certificates_to_pdf(session)
-                        notifications.add(f"Certificates exported to PDF: {output_path}", "success")
+                        notify(f"Certificates exported to PDF: {output_path}", "success")
                 except Exception as e:
-                    notifications.add(f"Failed to export certificates to PDF: {str(e)}", "error")
+                    notify(f"Failed to export certificates to PDF: {str(e)}", "error")
         
         # Host export buttons
         with col2:
@@ -642,17 +642,17 @@ def render_settings_view(engine) -> None:
                 try:
                     with SessionManager(engine) as session:
                         output_path = export_hosts_to_csv(session)
-                        notifications.add(f"Hosts exported to CSV: {output_path}", "success")
+                        notify(f"Hosts exported to CSV: {output_path}", "success")
                 except Exception as e:
-                    notifications.add(f"Failed to export hosts to CSV: {str(e)}", "error")
+                    notify(f"Failed to export hosts to CSV: {str(e)}", "error")
             
             if st.button("Export Hosts to PDF"):
                 try:
                     with SessionManager(engine) as session:
                         output_path = export_hosts_to_pdf(session)
-                        notifications.add(f"Hosts exported to PDF: {output_path}", "success")
+                        notify(f"Hosts exported to PDF: {output_path}", "success")
                 except Exception as e:
-                    notifications.add(f"Failed to export hosts to PDF: {str(e)}", "error")
+                    notify(f"Failed to export hosts to PDF: {str(e)}", "error")
 
     # Ignore Lists Tab
     with tabs[4]:
@@ -696,37 +696,37 @@ def render_settings_view(engine) -> None:
                                 # Check if pattern already exists
                                 existing = session.query(IgnoredDomain).filter_by(pattern=new_domain_pattern).first()
                                 if existing:
-                                    notifications.add(f"Pattern '{new_domain_pattern}' is already in the ignore list", "error")
+                                    notify(f"Pattern '{new_domain_pattern}' is already in the ignore list", "error")
                                 else:
                                     # Validate pattern format
                                     if new_domain_pattern.startswith('*') and new_domain_pattern.endswith('*'):
                                         # Contains pattern (*test*)
                                         search_term = new_domain_pattern.strip('*')
                                         if not re.match(r'^[a-zA-Z0-9-]+$', search_term):
-                                            notifications.add("Invalid contains pattern: Can only contain letters, numbers, and hyphens", "error")
+                                            notify("Invalid contains pattern: Can only contain letters, numbers, and hyphens", "error")
                                             return
                                     elif new_domain_pattern.startswith("*."):
                                         # Prefix wildcard (*.example.com)
                                         base_domain = new_domain_pattern[2:]
                                         if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$', base_domain):
-                                            notifications.add("Invalid wildcard domain pattern", "error")
+                                            notify("Invalid wildcard domain pattern", "error")
                                             return
                                     elif new_domain_pattern.startswith('*'):
                                         # Suffix match (*test.com)
                                         suffix = new_domain_pattern[1:]
                                         if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$', suffix):
-                                            notifications.add("Invalid suffix pattern", "error")
+                                            notify("Invalid suffix pattern", "error")
                                             return
                                     elif new_domain_pattern.endswith('*'):
                                         # Prefix match (test*)
                                         prefix = new_domain_pattern[:-1]
                                         if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$', prefix):
-                                            notifications.add("Invalid prefix pattern", "error")
+                                            notify("Invalid prefix pattern", "error")
                                             return
                                     else:
                                         # Exact domain match
                                         if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$', new_domain_pattern):
-                                            notifications.add("Invalid domain format", "error")
+                                            notify("Invalid domain format", "error")
                                             return
                                     
                                     # Add new ignored domain
@@ -737,12 +737,12 @@ def render_settings_view(engine) -> None:
                                     )
                                     session.add(ignored)
                                     session.commit()
-                                    notifications.add(f"Added '{new_domain_pattern}' to ignore list", "success")
+                                    notify(f"Added '{new_domain_pattern}' to ignore list", "success")
                                     st.rerun()  # Rerun to clear the form and refresh the list
                         except Exception as e:
-                            notifications.add(f"Error adding domain pattern: {str(e)}", "error")
+                            notify(f"Error adding domain pattern: {str(e)}", "error")
                     else:
-                        notifications.add("Please enter a domain pattern", "error")
+                        notify("Please enter a domain pattern", "error")
             
             # Show existing ignored domains
             st.divider()
@@ -762,14 +762,14 @@ def render_settings_view(engine) -> None:
                                     try:
                                         session.delete(domain)
                                         session.commit()
-                                        notifications.add(f"Removed '{domain.pattern}' from ignore list", "success")
+                                        notify(f"Removed '{domain.pattern}' from ignore list", "success")
                                         st.rerun()
                                     except Exception as e:
-                                        notifications.add(f"Error removing domain: {str(e)}", "error")
+                                        notify(f"Error removing domain: {str(e)}", "error")
                     else:
-                        notifications.add("No ignored domains configured", "info")
+                        notify("No ignored domains configured", "info")
             except Exception as e:
-                notifications.add(f"Error loading ignored domains: {str(e)}", "error")
+                notify(f"Error loading ignored domains: {str(e)}", "error")
         
         # Ignored Certificates tab
         with ignore_tabs[1]:
@@ -812,11 +812,11 @@ def render_settings_view(engine) -> None:
                                 # Check if pattern already exists
                                 existing = session.query(IgnoredCertificate).filter_by(pattern=new_pattern).first()
                                 if existing:
-                                    notifications.add(f"Pattern '{new_pattern}' is already in the ignore list", "error")
+                                    notify(f"Pattern '{new_pattern}' is already in the ignore list", "error")
                                 else:
                                     # Basic pattern validation
                                     if new_pattern.count('*') > 2:
-                                        notifications.add("Invalid pattern: Maximum of two wildcards allowed", "error")
+                                        notify("Invalid pattern: Maximum of two wildcards allowed", "error")
                                         return
                                     
                                     # Add new ignored certificate pattern
@@ -827,12 +827,12 @@ def render_settings_view(engine) -> None:
                                     )
                                     session.add(ignored)
                                     session.commit()
-                                    notifications.add(f"Added pattern '{new_pattern}' to ignore list", "success")
+                                    notify(f"Added pattern '{new_pattern}' to ignore list", "success")
                                     st.rerun()  # Rerun to clear the form and refresh the list
                         except Exception as e:
-                            notifications.add(f"Error adding certificate pattern: {str(e)}", "error")
+                            notify(f"Error adding certificate pattern: {str(e)}", "error")
                     else:
-                        notifications.add("Please enter a certificate pattern", "error")
+                        notify("Please enter a certificate pattern", "error")
             
             # Show existing ignored certificates
             st.divider()
@@ -852,14 +852,14 @@ def render_settings_view(engine) -> None:
                                     try:
                                         session.delete(cert)
                                         session.commit()
-                                        notifications.add(f"Removed pattern '{cert.pattern}' from ignore list", "success")
+                                        notify(f"Removed pattern '{cert.pattern}' from ignore list", "success")
                                         st.rerun()
                                     except Exception as e:
-                                        notifications.add(f"Error removing certificate pattern: {str(e)}", "error")
+                                        notify(f"Error removing certificate pattern: {str(e)}", "error")
                     else:
-                        notifications.add("No ignored certificate patterns configured", "info")
+                        notify("No ignored certificate patterns configured", "info")
             except Exception as e:
-                notifications.add(f"Error loading ignored certificates: {str(e)}", "error")
+                notify(f"Error loading ignored certificates: {str(e)}", "error")
 
     # Render backup and restore section
     render_backup_restore_section()
@@ -879,9 +879,9 @@ def render_backup_restore_section():
             # Create backup
             success, message = create_backup()
             if success:
-                notifications.add(message, "success")
+                notify(message, "success")
             else:
-                notifications.add(message, "error")
+                notify(message, "error")
     
     with col2:
         st.write("Available Backups")
@@ -889,7 +889,7 @@ def render_backup_restore_section():
             backups = list_backups()
             
             if not backups:
-                notifications.add("No backups available", "info")
+                notify("No backups available", "info")
             else:
                 # Create a list of backup options
                 backup_options = []
@@ -911,8 +911,8 @@ def render_backup_restore_section():
                     # Restore backup
                     success, message = restore_backup(manifest_file)
                     if success:
-                        notifications.add(message, "success")
+                        notify(message, "success")
                     else:
-                        notifications.add(message, "error")
+                        notify(message, "error")
         except Exception as e:
-            notifications.add(f"Error loading backups: {str(e)}", "error") 
+            notify(f"Error loading backups: {str(e)}", "error") 

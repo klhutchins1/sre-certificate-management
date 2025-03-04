@@ -31,7 +31,7 @@ from ..constants import APP_TYPES, app_types
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
-from cert_scanner.notifications import notifications, show_notifications, clear_notifications, initialize_notifications
+from cert_scanner.notifications import initialize_notifications, show_notifications, notify, clear_notifications
 
 
 def handle_add_form():
@@ -82,11 +82,11 @@ def delete_application(application, session):
     try:
         session.delete(application)
         session.commit()
-        notifications.add("Application deleted successfully!", "success")
+        notify("Application deleted successfully!", "success")
         st.session_state.deleted_app_id = application.id
         return True
     except Exception as e:
-        notifications.add(f"Error deleting application: {str(e)}", "error")
+        notify(f"Error deleting application: {str(e)}", "error")
         return False
 
 def handle_update_form():
@@ -193,7 +193,7 @@ def render_applications_view(engine) -> None:
     
     with SessionManager(engine) as session:
         if not session:
-            notifications.add("Database connection failed", "error")
+            notify("Database connection failed", "error")
             show_notifications()
             return
         
@@ -227,7 +227,7 @@ def render_applications_view(engine) -> None:
         )
         
         if not applications:
-            notifications.add("No applications found. Use the 'Add Application' button above to create one.", "info")
+            notify("No applications found. Use the 'Add Application' button above to create one.", "info")
             return
 
         # View type selector
@@ -365,7 +365,7 @@ def render_applications_view(engine) -> None:
                 if selected_app:
                     render_application_details(selected_app)
         else:
-            notifications.add("No application data available", "warning")
+            notify("No application data available", "warning")
             return
 
     # Show notifications at the end using the placeholder
@@ -512,8 +512,8 @@ def render_application_details(application: Application) -> None:
                             session = st.session_state.get('session')
                             binding.application_id = None
                             session.commit()
-                            notifications.add("Binding removed successfully!", "success")
+                            notify("Binding removed successfully!", "success")
                         except Exception as e:
-                            notifications.add(f"Error removing binding: {str(e)}", "error")
+                            notify(f"Error removing binding: {str(e)}", "error")
         else:
-            notifications.add("No certificate bindings found for this application.", "info") 
+            notify("No certificate bindings found for this application.", "info") 

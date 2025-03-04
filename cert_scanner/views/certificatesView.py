@@ -27,7 +27,7 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
-from ..models import Certificate, CertificateBinding, Host, HostIP, HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking
+from ..models import Certificate, CertificateBinding, Host, HostIP, HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking, Application
 from ..constants import platform_options
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
@@ -112,17 +112,18 @@ def render_certificate_list(engine):
         certificates_dict = {}  # Store certificates for quick lookup
         
         # Query all certificates without joins first
-        certificates = session.query(Certificate).all()
-        
+        certificates = session.query(Certificate).options(
+            joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.application),
+            joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host),
+            joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host_ip)
+        ).all()
         
         if not certificates:
             st.warning("No certificates found in database")
             return
         
         for cert in certificates:
-            # Load relationships separately to avoid any potential join issues
-            session.refresh(cert)
-            
+            # Remove the refresh as we've already eager loaded the relationships
             certs_data.append({
                 "Common Name": str(cert.common_name),
                 "Serial Number": str(cert.serial_number),
@@ -262,17 +263,19 @@ def render_certificate_list(engine):
 def render_certificate_card(cert, session):
     """
     Render a detailed certificate information card.
-    
-    Args:
-        cert (Certificate): The certificate object to display
-        session (Session): Database session for related queries
-        
-    The card displays certificate information in tabs:
-    - Overview: Basic certificate information
-    - Bindings: Certificate deployment information
-    - Details: Technical certificate details
-    - Change Tracking: Certificate lifecycle events
     """
+    # Ensure relationships are loaded
+    if not session.is_active:
+        session.begin()
+    
+    # Refresh the certificate with all necessary relationships
+    session.refresh(cert, ['certificate_bindings'])
+    cert = session.query(Certificate).options(
+        joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.application),
+        joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host),
+        joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host_ip)
+    ).get(cert.id)
+    
     # Create header with title and delete button
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -296,10 +299,15 @@ def render_certificate_card(cert, session):
     with tab5:
         st.markdown("### ⚠️ Danger Zone")
         
-        # Gather dependencies
         dependencies = {
-            "Bindings": [f"{b.host.name}:{b.port}" for b in cert.certificate_bindings],
-            "Scan Records": [f"Scan on {s.scan_date.strftime('%Y-%m-%d %H:%M')}" for s in cert.scans]
+            "Bindings": [
+                f"{b.host.name if b.host else 'Unknown Host'}:{b.port if b.port else 'N/A'}" 
+                for b in cert.certificate_bindings
+            ],
+            "Scan Records": [
+                f"Scan on {s.scan_date.strftime('%Y-%m-%d %H:%M')}" 
+                for s in cert.scans
+            ]
         }
         
         def delete_certificate(session):
@@ -400,163 +408,100 @@ def render_certificate_overview(cert: Certificate, session) -> None:
             st.info("No Subject Alternative Names found")
 
 def render_certificate_bindings(cert, session):
-    """
-    Render the certificate bindings management tab.
-    
-    Args:
-        cert (Certificate): The certificate object to display
-        session (Session): Database session for related queries
+    """Render the certificate bindings section."""
+    st.markdown("### Certificate Usage Tracking")
+
+    # Add New Usage Record
+    with st.expander("➕ Add New Usage Record"):
+        st.markdown("""
+        **Available Binding Types:**
+        - **IP-Based Usage**: For certificates installed on web servers or load balancers, requiring hostname/IP and port
+        - **Application Usage**: For certificates used by applications for JWT (JSON Web Token) signing
+        - **Client Certificate Usage**: For certificates used for client authentication
+        """)
         
-    Features:
-    - Add new bindings with host, IP, and platform information
-    - Display existing bindings with detailed information
-    - Interactive platform selection for each binding
-    - Real-time binding updates
-    """
-    # Add new binding section at the top with expander
-    with st.expander("➕ Add New Binding", expanded=False):
-        with st.form(key=f"binding_form_{cert.id}", clear_on_submit=True):
-            # First row - all inputs in one line
-            col1, col2, col3, col4, col5 = st.columns([0.2, 0.2, 0.2, 0.2, 0.2])
+        cols = st.columns([2, 3])
+        with cols[0]:
+            platform = st.selectbox(
+                "Platform",
+                options=["IIS", "F5", "Akamai", "Cloudflare", "Connection"],
+                help="Select the platform where this certificate is used"
+            )
+            binding_type = st.selectbox(
+                "Usage Type",
+                ["IP-Based Usage", "Application Usage", "Client Certificate Usage"],
+                help="Select how this certificate is being used"
+            )
+        
+        # Fields based on binding type
+        if binding_type == "IP-Based Usage":
+            with cols[1]:
+                hostname = st.text_input("Hostname", help="Name of the server where this certificate is installed")
+                ip = st.text_input("IP Address", help="IP address where this certificate is installed")
+                port = st.number_input("Port", min_value=1, max_value=65535, value=443)
+        else:
+            with cols[1]:
+                hostname = st.text_input("Service/Application Name", help="Name of the service or application using this certificate")
+                ip = ""
+                port = None
             
-            with col1:
-                new_hostname = st.text_input(
-                    "Hostname",
-                    key=f"hostname_{cert.id}",
-                    placeholder="Enter hostname"
-                )
-            
-            with col2:
-                new_ip = st.text_input(
-                    "IP Address",
-                    key=f"ip_{cert.id}",
-                    placeholder="Optional"
-                )
-            
-            with col3:
-                new_port = st.number_input(
-                    "Port",
-                    min_value=1,
-                    max_value=65535,
-                    value=443,
-                    key=f"port_{cert.id}"
-                )
-            
-            with col4:
-                binding_type = st.selectbox(
-                    "Binding Type",
-                    [BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT],
-                    help="Type of certificate binding",
-                    key=f"binding_type_{cert.id}"
-                )
-            
-            with col5:
-                new_platform = st.selectbox(
-                    "Platform",
-                    options=[''] + list(platform_options.keys()),
-                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                    key=f"new_platform_{cert.id}"
-                )
-            
-            # Second row - button centered
-            _, col_btn, _ = st.columns([0.4, 0.2, 0.4])
-            with col_btn:
-                submitted = st.form_submit_button("Add Binding", type="primary", use_container_width=True)
-            
-            if submitted:
-                add_host_to_certificate(cert, new_hostname, new_ip, new_port, new_platform, binding_type, session)
+        if st.button("Save Usage Record"):
+            binding_type_map = {
+                "IP-Based Usage": "IP",
+                "Application Usage": "JWT",
+                "Client Certificate Usage": "CLIENT"
+            }
+            try:
+                add_host_to_certificate(cert, hostname, ip, port, platform, binding_type_map[binding_type], session)
+                st.success(f"Usage record added successfully")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to add usage record: {str(e)}")
     
-    st.divider()  # Add a visual separator
+    # Current Usage Records
+    if not cert.certificate_bindings:
+        st.info("No usage records found for this certificate")
+        return
+        
+    # Load all applications once for efficiency
+    applications = {app.id: app.name for app in session.query(Application).all()}
     
-    # Show current bindings
-    if cert.certificate_bindings:
-        st.markdown("### Current Bindings")
-        for binding in cert.certificate_bindings:
-            # Safely get binding information
-            host_name = binding.host.name if binding.host else "Unknown Host"
-            host_ip = getattr(binding, 'host_ip', None)
-            ip_address = host_ip.ip_address if host_ip else "No IP"
-            port = binding.port if binding.port else "N/A"
+    # Create a clean table-like display for bindings
+    for binding in cert.certificate_bindings:
+        with st.container():
+            cols = st.columns([4, 2, 1])
             
-            # Create a container for each binding
-            binding_container = st.container()
-            with binding_container:
-                st.markdown(
-                    f"""
-                    <div class="binding-container">
-                        <div class="binding-title">🔗 {host_name}</div>
-                        <div class="binding-info">
-                            <div class="binding-info-item">
-                                <span class="binding-info-label">IP:</span>
-                                <span class="binding-info-value">{ip_address if binding.binding_type == BINDING_TYPE_IP else 'N/A'}</span>
-                            </div>
-                            <div class="binding-info-item">
-                                <span class="binding-info-label">Port:</span>
-                                <span class="binding-info-value">{port if binding.binding_type == BINDING_TYPE_IP else 'N/A'}</span>
-                            </div>
-                            <div class="binding-info-item">
-                                <span class="binding-info-label">Site:</span>
-                                <span class="binding-info-value">{binding.site_name or 'Default'}</span>
-                            </div>
-                            <div class="binding-info-item">
-                                <span class="binding-info-label">App:</span>
-                                <span class="binding-info-value">{binding.application.name if binding.application else 'N/A'}</span>
-                            </div>
-                            <div class="binding-info-item">
-                                <span class="binding-info-label">Type:</span>
-                                <span class="binding-info-value">{binding.binding_type}</span>
-                            </div>
-                            <div class="binding-info-item">
-                                <span class="binding-info-label">Seen:</span>
-                                <span class="binding-info-value">{binding.last_seen.strftime('%Y-%m-%d %H:%M')}</span>
-                            </div>
-                            <div class="platform-section">
-                                <span class="binding-info-label">Platform:</span>
-                                <div class="inline-block">
-                    """, 
-                    unsafe_allow_html=True
-                )
-                
-                # Platform selection
-                current_platform = binding.platform
-                new_platform = st.selectbox(
+            # Column 1: Main Info (Hostname/IP/Port or Application) with binding type
+            with cols[0]:
+                if binding.binding_type == "IP":
+                    # For IP bindings, show hostname if available, otherwise IP
+                    display_name = binding.host.name if binding.host and binding.host.name else binding.host_ip.ip_address if binding.host_ip else ""
+                    port_text = f":{binding.port}" if binding.port else ""
+                    st.write(f"**Hostname/IP:** {display_name}{port_text} (IP-Based)")
+                else:
+                    # For JWT and Client Certificate bindings, show app name
+                    app_name = applications.get(binding.application_id, "Unknown Application")
+                    binding_type = "(JWT-Based)" if binding.binding_type == "JWT" else "(Client Certificate)"
+                    st.write(f"**Application:** {app_name} {binding_type}")
+            
+            # Column 2: Platform dropdown
+            with cols[1]:
+                platform = st.selectbox(
                     "Platform",
-                    options=[''] + list(platform_options.keys()),
-                    format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
-                    key=f"platform_select_{cert.id}_{binding.id}",
-                    index=list(platform_options.keys()).index(current_platform) + 1 if current_platform else 0,
-                    label_visibility="collapsed"
+                    ["F5", "IIS", "Akamai", "Cloudflare", "Connection"],
+                    key=f"platform_{binding.id}",
+                    index=["F5", "IIS", "Akamai", "Cloudflare", "Connection"].index(binding.platform) if binding.platform in ["F5", "IIS", "Akamai", "Cloudflare", "Connection"] else 0
                 )
-                
-                # Handle platform change and notification
-                notification_key = f"platform_update_{cert.id}_{binding.id}"
-                
-                if new_platform != current_platform:
-                    binding.platform = new_platform
+                if platform != binding.platform:
+                    binding.platform = platform
                     session.commit()
-                    st.session_state[notification_key] = {
-                        'timestamp': datetime.now(),
-                        'platform': new_platform,
-                        'host': host_name
-                    }
-                
-                # Show notification if active
-                if notification_key in st.session_state:
-                    notification = st.session_state[notification_key]
-                    if (datetime.now() - notification['timestamp']).total_seconds() < 5:
-                        st.success("Platform saved", icon="✅")
-                    else:
-                        del st.session_state[notification_key]
-                
-                st.markdown("""
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="binding-separator"></div>
-                    """, 
-                    unsafe_allow_html=True
-                )
+            
+            # Column 3: Delete button
+            with cols[2]:
+                if st.button("🗑️", key=f"delete_{binding.id}", help="Remove this usage record"):
+                    session.delete(binding)
+                    session.commit()
+            st.divider()  # Add visual separation between bindings
 
 def render_certificate_details(cert):
     """

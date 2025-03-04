@@ -59,14 +59,14 @@ def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     try:
         port = int(port_str)
         if port < 0:
-            notify("Invalid port number in {}: Port cannot be negative", "error", entry)
+            notify(f"Invalid port number in {entry}: Port cannot be negative", "error")
             return False, 0
         if port > 65535:
-            notify("Invalid port number in {}: Port must be between 1 and 65535", "error", entry)
+            notify(f"Invalid port number in {entry}: Port must be between 1 and 65535", "error")
             return False, 0
         return True, port
     except ValueError as e:
-        notify("Invalid port number in {}: '{}' is not a valid number", "error", entry, port_str)
+        notify(f"Invalid port number in {entry}: '{port_str}' is not a valid number", "error")
         return False, 0
 
 def render_scan_interface(engine) -> None:
@@ -245,10 +245,10 @@ internal.server.local:444"""
                         st.session_state.scanned_domains.add(hostname)
                     else:
                         logger.info(f"[SCAN] Skipping {hostname} - Already scanned in this session")
-                        notify("{hostname} - Skipped (already scanned in this session)", "warning")
+                        notify(f"{hostname} - Skipped (already scanned in this session)", "warning")
                         continue
                 except Exception as e:
-                    notify("Error parsing {}: Please check the format", "error", entry)
+                    notify(f"Error parsing {entry}: Please check the format", "error")
                     validation_errors = True
                     continue
                     
@@ -327,7 +327,7 @@ internal.server.local:444"""
                                     
                                 except Exception as e:
                                     logger.error(f"[SCAN] Error searching subdomains for {hostname}: {str(e)}")
-                                    notify("Error searching subdomains for {}: {}", "warning", hostname, str(e))
+                                    notify(f"Error searching subdomains for {hostname}: {str(e)}", "warning")
                                     show_notifications()
                         
                         # Update scan targets with expanded list
@@ -611,10 +611,10 @@ internal.server.local:444"""
                 
                 # Show success message and results
                 if st.session_state.scan_results["success"]:
-                    notify("Scan completed! Found {} certificates.", "success", len(st.session_state.scan_results['success']))
+                    notify(f"Scan completed! Found {len(st.session_state.scan_results['success'])} certificates.", "success")
                 
                 if st.session_state.scan_results["error"]:
-                    notify("Some scans failed:")
+                    notify("Some scans failed:", "error")
                     for error in st.session_state.scan_results["error"]:
                         # Clean up error message for display
                         if isinstance(error, str):
@@ -623,7 +623,7 @@ internal.server.local:444"""
                             # Remove any raw error codes
                             if "[Errno" in error:
                                 error = error.split(" - ", 1)[0] + " - " + error.split("] ")[-1]
-                        notify("- {}")
+                        notify(f"- {error}", "error")
                 
                 # Show notifications
                 with notification_placeholder:
@@ -712,9 +712,6 @@ internal.server.local:444"""
                 # Clear scan targets after successful scan
                 if 'scan_targets' in st.session_state:
                     del st.session_state.scan_targets
-                else:
-                    notify("Please enter at least one valid domain to scan", "error")
-                    show_notifications()
     
     # Recent scans sidebar
     with col2:

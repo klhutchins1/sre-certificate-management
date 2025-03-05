@@ -767,7 +767,7 @@ def render_settings_view(engine) -> None:
                                     except Exception as e:
                                         notify(f"Error removing domain: {str(e)}", "error")
                     else:
-                        notify("No ignored domains configured", "info")
+                        notify("No ignored domains configured. \n", "info")
             except Exception as e:
                 notify(f"Error loading ignored domains: {str(e)}", "error")
         
@@ -857,7 +857,7 @@ def render_settings_view(engine) -> None:
                                     except Exception as e:
                                         notify(f"Error removing certificate pattern: {str(e)}", "error")
                     else:
-                        notify("No ignored certificate patterns configured", "info")
+                        notify("No ignored certificate patterns configured.\n", "info")
             except Exception as e:
                 notify(f"Error loading ignored certificates: {str(e)}", "error")
 
@@ -889,7 +889,7 @@ def render_backup_restore_section():
             backups = list_backups()
             
             if not backups:
-                notify("No backups available", "info")
+                notify("No backups available.\n", "info")
             else:
                 # Create a list of backup options
                 backup_options = []

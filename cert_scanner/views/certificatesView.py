@@ -27,11 +27,16 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
-from ..models import Certificate, CertificateBinding, Host, HostIP, HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking, Application
+from ..models import (
+    Certificate, CertificateBinding, Host, HostIP, CertificateScan,
+    HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
+    ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking, Application
+)
 from ..constants import platform_options
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
+from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import json
 
 def render_certificate_list(engine):
@@ -39,6 +44,13 @@ def render_certificate_list(engine):
     # Load warning suppression script and CSS
     load_warning_suppression()
     load_css()
+    
+    # Initialize and clear notifications
+    initialize_notifications()
+    clear_notifications()
+    
+    # Create notification placeholder at the top
+    notification_placeholder = st.empty()
     
     # Add custom progress bar color
     st.markdown("""
@@ -65,7 +77,7 @@ def render_certificate_list(engine):
     
     # Show any pending success messages
     if 'success_message' in st.session_state:
-        st.success(st.session_state.success_message)
+        notify(st.session_state.success_message, "success")
         del st.session_state.success_message
     
     # Show manual entry form if button was clicked
@@ -83,7 +95,8 @@ def render_certificate_list(engine):
     
     with SessionManager(engine) as session:
         if not session:
-            st.error("Database connection failed")
+            notify("Database connection failed", "error")
+            show_notifications()
             return
         
         # Calculate metrics
@@ -104,7 +117,8 @@ def render_certificate_list(engine):
     
     with SessionManager(engine) as session:
         if not session:
-            st.error("Database connection failed")
+            notify("Database connection failed", "error")
+            show_notifications()
             return
         
         # Fetch certificates for the table view
@@ -119,7 +133,8 @@ def render_certificate_list(engine):
         ).all()
         
         if not certificates:
-            st.warning("No certificates found in database")
+            notify("No certificates found in database", "info")
+            show_notifications()
             return
         
         for cert in certificates:
@@ -258,7 +273,12 @@ def render_certificate_list(engine):
                             selected_cert = certificates_dict[selected_cert_id]
                             render_certificate_card(selected_cert, session)
             except Exception as e:
-                st.error(f"Error handling selection: {str(e)}")
+                notify(f"Error handling selection: {str(e)}", "error")
+                show_notifications()
+
+    # Show all notifications at the end
+    with notification_placeholder:
+        show_notifications()
 
 def render_certificate_card(cert, session):
     """
@@ -326,6 +346,13 @@ def render_certificate_card(cert, session):
 
 def render_certificate_overview(cert: Certificate, session) -> None:
     """Render the certificate overview tab."""
+    # Ensure we have the latest data with all relationships
+    session.refresh(cert, ['certificate_bindings', 'scans'])
+    cert = session.query(Certificate).options(
+        joinedload(Certificate.scans).joinedload(CertificateScan.host),
+        joinedload(Certificate.scans).joinedload(CertificateScan.host).joinedload(Host.ip_addresses)
+    ).get(cert.id)
+    
     st.subheader("Certificate Overview")
     
     # Create columns for layout
@@ -352,28 +379,12 @@ def render_certificate_overview(cert: Certificate, session) -> None:
         # Add platforms
         platforms = sorted(set(b.platform for b in cert.certificate_bindings if b.platform))
         st.markdown(f"**Platforms:** {', '.join(platforms) if platforms else '*None*'}")
-        
-        # Add SANs scanned status - check if all SANs have been scanned
-        san_list = cert.san
-        if san_list:
-            # Get all successful scans for this certificate's SANs
-            scanned_hosts = {
-                scan.host.name 
-                for scan in cert.scans 
-                if scan.status == 'Valid' and scan.host
-            }
-            # Check if we've attempted to scan the SANs
-            has_been_scanned = cert.sans_scanned
-        else:
-            has_been_scanned = False
-            
-        st.markdown(f"**SANs Scanned:** {'Yes' if has_been_scanned else 'No'}")
     
     # Add SAN section with expander and scan button
     with st.expander("Subject Alternative Names", expanded=True):
         san_list = cert.san  # This now returns a list due to the hybrid property
         if san_list:
-            # Calculate height based on number of SANs (match test expectations)
+            # Calculate height based on number of SANs
             content_height = max(68, 35 + (21 * len(san_list)))
             formatted_sans = "\n".join(sorted(san_list))
             
@@ -393,19 +404,8 @@ def render_certificate_overview(cert: Certificate, session) -> None:
                     # Navigate to scan view
                     st.session_state.current_view = "Scanner"
                     st.rerun()
-                
-                # Show scan status
-                if has_been_scanned:
-                    scanned_count = len(scanned_hosts)
-                    total_sans = len(san_list)
-                    if scanned_count == total_sans:
-                        st.info("All SANs have been scanned")
-                    else:
-                        st.warning(f"SANs scanned: {scanned_count}/{total_sans}")
-                else:
-                    st.info("SANs have not been scanned")
         else:
-            st.info("No Subject Alternative Names found")
+            notify("No Subject Alternative Names found", "info")
 
 def render_certificate_bindings(cert, session):
     """Render the certificate bindings section."""
@@ -453,14 +453,14 @@ def render_certificate_bindings(cert, session):
             }
             try:
                 add_host_to_certificate(cert, hostname, ip, port, platform, binding_type_map[binding_type], session)
-                st.success(f"Usage record added successfully")
+                notify("Usage record added successfully", "success")
                 st.rerun()
             except Exception as e:
-                st.error(f"Failed to add usage record: {str(e)}")
+                notify(f"Failed to add usage record: {str(e)}", "error")
     
     # Current Usage Records
     if not cert.certificate_bindings:
-        st.info("No usage records found for this certificate")
+        notify("No usage records found for this certificate", "info")
         return
         
     # Load all applications once for efficiency
@@ -501,6 +501,8 @@ def render_certificate_bindings(cert, session):
                 if st.button("🗑️", key=f"delete_{binding.id}", help="Remove this usage record"):
                     session.delete(binding)
                     session.commit()
+                    notify("Usage record deleted", "success")
+                    st.rerun()
             st.divider()  # Add visual separation between bindings
 
 def render_certificate_details(cert):
@@ -535,19 +537,7 @@ def render_certificate_details(cert):
     st.json(details)
 
 def render_certificate_tracking(cert, session):
-    """
-    Render the certificate change tracking tab.
-    
-    Args:
-        cert (Certificate): The certificate object to display
-        session (Session): Database session for related queries
-        
-    Features:
-    - Add new change tracking entries
-    - Display change history in tabular format
-    - Track planned changes and current status
-    - Maintain audit trail of certificate lifecycle
-    """
+    """Render the certificate change tracking tab."""
     col1, col2 = st.columns([0.7, 0.3])
     
     with col1:
@@ -572,12 +562,12 @@ def render_certificate_tracking(cert, session):
                 key=f"planned_date_{cert.id}"
             )
             status = st.selectbox(
-                "Change Status",  # Changed from "Status" to be more descriptive
+                "Change Status",
                 options=["Pending", "Completed", "Cancelled"],
                 key=f"status_{cert.id}"
             )
             notes = st.text_area(
-                "Change Notes",  # Changed from "Notes" to be more descriptive
+                "Change Notes",
                 placeholder="Enter any additional notes about this change...",
                 key=f"notes_{cert.id}"
             )
@@ -597,7 +587,7 @@ def render_certificate_tracking(cert, session):
                 )
                 session.add(new_entry)
                 session.commit()
-                st.success("Change entry added!")
+                notify("Change entry added successfully!", "success")
                 st.session_state.show_tracking_entry = False
                 st.rerun()
     
@@ -648,7 +638,7 @@ def render_certificate_tracking(cert, session):
             use_container_width=True
         )
     else:
-        st.info("No change entries found for this certificate")
+        notify("No change entries found for this certificate", "info")
 
 def render_manual_entry_form(session):
     """
@@ -715,28 +705,7 @@ def render_manual_entry_form(session):
                                  valid_from, valid_until, platform, session)
 
 def add_host_to_certificate(cert, hostname, ip, port, platform, binding_type, session):
-    """
-    Add a new host binding to a certificate.
-    
-    Args:
-        cert (Certificate): Target certificate for the binding
-        hostname (str): Host name to bind
-        ip (str): Optional IP address for the binding
-        port (int): Port number for IP-based bindings
-        platform (str): Platform identifier
-        binding_type (str): Type of binding (IP, JWT, Client)
-        session (Session): Database session for the operation
-        
-    Creates or updates:
-    - Host record if not exists
-    - Host IP record if provided
-    - Certificate binding with specified parameters
-    
-    Handles:
-    - Duplicate detection
-    - Error handling
-    - Transaction management
-    """
+    """Add a new host binding to a certificate."""
     try:
         # Create or get host
         host = session.query(Host).filter_by(name=hostname).first()
@@ -779,33 +748,15 @@ def add_host_to_certificate(cert, hostname, ip, port, platform, binding_type, se
         )
         session.add(binding)
         session.commit()
-        st.success("Host added successfully!")
+        notify("Host added successfully!", "success")
         st.rerun()
     except Exception as e:
-        st.error(f"Error adding host: {str(e)}")
+        notify(f"Error adding host: {str(e)}", "error")
         session.rollback()
 
 def save_manual_certificate(cert_type, common_name, serial_number, thumbprint, 
                           valid_from, valid_until, platform, session):
-    """
-    Save a manually entered certificate to the database.
-    
-    Args:
-        cert_type (str): Type of certificate (SSL/TLS, JWT, Client)
-        common_name (str): Certificate Common Name
-        serial_number (str): Certificate serial number
-        thumbprint (str): Certificate thumbprint/fingerprint
-        valid_from (date): Validity start date
-        valid_until (date): Validity end date
-        platform (str): Platform identifier
-        session (Session): Database session for the operation
-        
-    Handles:
-    - Data validation
-    - Duplicate detection
-    - Error handling
-    - Transaction management
-    """
+    """Save a manually entered certificate to the database."""
     try:
         # Create certificate
         cert = Certificate(
@@ -814,16 +765,16 @@ def save_manual_certificate(cert_type, common_name, serial_number, thumbprint,
             common_name=common_name,
             valid_from=datetime.combine(valid_from, datetime.min.time()),
             valid_until=datetime.combine(valid_until, datetime.max.time()),
-            sans_scanned=False,  # Initialize to False for new certificates
-            _san=json.dumps([])  # Initialize empty SAN list
+            sans_scanned=False,
+            _san=json.dumps([])
         )
         session.add(cert)
         session.commit()
-        st.success("Certificate added successfully!")
+        notify("Certificate added successfully!", "success")
         st.session_state.show_manual_entry = False
         st.rerun()
     except Exception as e:
-        st.error(f"Error saving certificate: {str(e)}")
+        notify(f"Error saving certificate: {str(e)}", "error")
         session.rollback()
 
 def export_certificates_to_pdf(certificates, filename):
@@ -976,195 +927,37 @@ def render_certificate_scans(cert):
 
 def execute_scan(scan_targets, session):
     """Execute certificate scanning for the given targets."""
-    # Create progress tracking containers
-    progress_container = st.empty()
-    status_container = st.empty()
+    # Get ALL certificates
+    certs = session.query(Certificate).all()
     
-    with progress_container:
-        st.markdown("""
-            <style>
-            .stProgress > div > div > div > div {
-                background-color: #0066ff;
-            }
-            </style>
-            """, unsafe_allow_html=True)
-        progress = st.progress(0)
+    # For each certificate
+    for cert in certs:
+        # Get SANs
+        sans = cert.san
+        if not sans:
+            continue
+            
+        # Create Host and CertificateScan records for each SAN
+        for san in sans:
+            # Create Host record
+            host = Host(
+                name=san.lower(),
+                host_type=HOST_TYPE_SERVER,
+                environment=ENV_PRODUCTION,
+                last_seen=datetime.now()
+            )
+            session.add(host)
+            
+            # Create scan record
+            scan = CertificateScan(
+                certificate=cert,
+                host=host,
+                scan_date=datetime.now(),
+                status='Attempted',
+                port=443
+            )
+            session.add(scan)
     
-    # Execute scans with progress tracking
-    with status_container:
-        with st.spinner('Scanning certificates...'):
-            for i, (hostname, port) in enumerate(scan_targets):
-                status_container.text(f'Scanning {hostname}:{port}...')
-                try:
-                    # Perform certificate scan
-                    cert_info = st.session_state.scanner.scan_certificate(hostname, port)
-                    if cert_info:
-                        st.session_state.scan_results["success"].append(f"{hostname}:{port}")
-                        # Save scan results to database
-                        try:
-                            # Process certificate information
-                            cert = session.query(Certificate).filter_by(
-                                serial_number=cert_info.serial_number
-                            ).first()
-                            
-                            if not cert:
-                                cert = Certificate(
-                                    serial_number=cert_info.serial_number,
-                                    thumbprint=cert_info.thumbprint,
-                                    common_name=cert_info.common_name,
-                                    valid_from=cert_info.valid_from,
-                                    valid_until=cert_info.expiration_date,
-                                    _issuer=json.dumps(cert_info.issuer),
-                                    _subject=json.dumps(cert_info.subject),
-                                    _san=json.dumps(cert_info.san),
-                                    key_usage=cert_info.key_usage,
-                                    signature_algorithm=cert_info.signature_algorithm,
-                                    chain_valid=cert_info.chain_valid,
-                                    sans_scanned=bool(cert_info.san)
-                                )
-                                session.add(cert)
-                            else:
-                                # Update existing certificate
-                                cert.thumbprint = cert_info.thumbprint
-                                cert.common_name = cert_info.common_name
-                                cert.valid_from = cert_info.valid_from
-                                cert.valid_until = cert_info.expiration_date
-                                cert._issuer = json.dumps(cert_info.issuer)
-                                cert._subject = json.dumps(cert_info.subject)
-                                cert._san = json.dumps(cert_info.san)
-                                cert.key_usage = cert_info.key_usage
-                                cert.signature_algorithm = cert_info.signature_algorithm
-                                cert.chain_valid = cert_info.chain_valid
-                                cert.sans_scanned = bool(cert_info.san)
-                                cert.updated_at = datetime.now()
-                            
-                            # Process host information
-                            host = session.query(Host).filter_by(
-                                name=cert_info.hostname
-                            ).first()
-                            
-                            if not host:
-                                host = Host(
-                                    name=cert_info.hostname,
-                                    host_type=HOST_TYPE_SERVER,
-                                    environment=ENV_PRODUCTION,
-                                    last_seen=datetime.now()
-                                )
-                                session.add(host)
-                            else:
-                                host.last_seen = datetime.now()
-                            
-                            # Process IP addresses and bindings
-                            for ip in cert_info.ip_addresses:
-                                host_ip = session.query(HostIP).filter_by(
-                                    host_id=host.id,
-                                    ip_address=ip
-                                ).first()
-                                
-                                if not host_ip:
-                                    host_ip = HostIP(
-                                        host_id=host.id,
-                                        ip_address=ip,
-                                        last_seen=datetime.now()
-                                    )
-                                    session.add(host_ip)
-                                else:
-                                    host_ip.last_seen = datetime.now()
-                                
-                                # Update certificate bindings
-                                binding = session.query(CertificateBinding).filter_by(
-                                    host_id=host.id,
-                                    host_ip_id=host_ip.id,
-                                    port=cert_info.port
-                                ).first()
-                                
-                                if binding:
-                                    binding.certificate_id = cert.id
-                                    binding.last_seen = datetime.now()
-                                else:
-                                    binding = CertificateBinding(
-                                        host_id=host.id,
-                                        host_ip_id=host_ip.id,
-                                        certificate_id=cert.id,
-                                        port=cert_info.port,
-                                        binding_type='IP',
-                                        last_seen=datetime.now()
-                                    )
-                                    session.add(binding)
-                            
-                            # Record successful scan
-                            scan = CertificateScan(
-                                certificate=cert,
-                                scan_date=datetime.now(),
-                                status='Valid',
-                                port=cert_info.port
-                            )
-                            session.add(scan)
-                            
-                            session.commit()
-                        except Exception as e:
-                            st.session_state.scan_results["error"].append(f"{hostname}:{port} - Database error: {str(e)}")
-                            session.rollback()
-                    else:
-                        # Handle failed certificate retrieval
-                        st.session_state.scan_results["error"].append(f"{hostname}:{port} - Failed to retrieve certificate")
-                        try:
-                            # Record failed scan
-                            host = session.query(Host).filter_by(name=hostname).first()
-                            if not host:
-                                host = Host(
-                                    name=hostname,
-                                    host_type=HOST_TYPE_SERVER,
-                                    environment=ENV_PRODUCTION,
-                                    last_seen=datetime.now()
-                                )
-                                session.add(host)
-                                session.flush()
-
-                            scan = CertificateScan(
-                                scan_date=datetime.now(),
-                                status='Failed',
-                                port=port,
-                                host_id=host.id
-                            )
-                            session.add(scan)
-                            session.commit()
-                        except Exception as e:
-                            logger.error(f"Failed to record failed scan: {str(e)}")
-                            session.rollback()
-                except Exception as e:
-                    # Handle other errors
-                    error_msg = f"Error scanning {hostname}:{port} - {str(e)}"
-                    st.error(error_msg)
-                    st.session_state.scan_results["error"].append(error_msg)
-                    try:
-                        # Record failed scan
-                        host = session.query(Host).filter_by(name=hostname).first()
-                        if not host:
-                            host = Host(
-                                name=hostname,
-                                host_type=HOST_TYPE_SERVER,
-                                environment=ENV_PRODUCTION,
-                                last_seen=datetime.now()
-                            )
-                            session.add(host)
-                            session.flush()
-
-                        scan = CertificateScan(
-                            scan_date=datetime.now(),
-                            status='Failed',
-                            port=port,
-                            host_id=host.id
-                        )
-                        session.add(scan)
-                        session.commit()
-                    except Exception as e:
-                        logger.error(f"Failed to record failed scan: {str(e)}")
-                        session.rollback()
-                
-                # Update progress
-                progress.progress((i + 1) / len(scan_targets))
-    
-    # Clear status after completion
-    status_container.empty()
+    # Commit all changes
+    session.commit()
 

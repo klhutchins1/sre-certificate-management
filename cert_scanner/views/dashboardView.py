@@ -27,6 +27,7 @@ import plotly.express as px
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from collections import defaultdict
+from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 
 def get_root_domain(domain_name):
     """
@@ -200,13 +201,21 @@ def render_dashboard(engine) -> None:
     load_warning_suppression()
     load_css()
     
+    # Initialize and clear notifications
+    initialize_notifications()
+    clear_notifications()
+    
+    # Create notification placeholder at the top
+    notification_placeholder = st.empty()
+    
     st.title("Dashboard")
     st.divider()
     
     try:
         with SessionManager(engine) as session:
             if not session:
-                st.error("Database connection failed")
+                notify("Database connection failed. \n", "error")
+                show_notifications()
                 return
             
             try:
@@ -223,24 +232,6 @@ def render_dashboard(engine) -> None:
                 session.commit()
                 
                 total_root_domains = len(root_domains)
-                
-                # Debug output
-                # with st.expander("Debug Information"):
-                #     st.write("Domain Tree:")
-                #     st.json(st.session_state.debug_domain_tree)
-                #     st.write("Root Domains:")
-                #     st.json(st.session_state.debug_root_domains)
-                #     st.write("Root Domains with Registration Info:")
-                #     root_domains_info = []
-                #     for domain in root_domains:
-                #         root_domains_info.append({
-                #             'name': domain.domain_name,
-                #             'has_registration_date': domain.registration_date is not None,
-                #             'has_expiration_date': domain.expiration_date is not None,
-                #             'registration_date': str(domain.registration_date) if domain.registration_date else None,
-                #             'expiration_date': str(domain.expiration_date) if domain.expiration_date else None
-                #         })
-                #     st.json(root_domains_info)
                 
                 expiring_domains = sum(
                     1 for d in root_domains
@@ -293,7 +284,7 @@ def render_dashboard(engine) -> None:
                     )
                     st.plotly_chart(fig_certs, use_container_width=True)
                 else:
-                    st.info("No certificates found in database.")
+                    notify("No certificates found in database. \n", "info")
                 
                 # Create root domain timeline using only the identified root domains
                 root_domain_data = []
@@ -318,12 +309,17 @@ def render_dashboard(engine) -> None:
                     )
                     st.plotly_chart(fig_domains, use_container_width=True)
                 else:
-                    st.info("No root domain registration information found in database.")
+                    notify("No root domain registration information found in database. \n", "info")
                     
             except Exception as e:
-                st.error(f"Error querying database: {str(e)}")
-                return
+                notify(f"Error querying database: {str(e)} \n", "error")
+                
+            # Show all notifications at the end
+            with notification_placeholder:
+                show_notifications()
+                
     except Exception as e:
-        st.error(f"Error connecting to database: {str(e)}")
-        return
+        notify(f"Error connecting to database: {str(e)} \n", "error")
+        with notification_placeholder:
+            show_notifications()
 

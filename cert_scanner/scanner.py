@@ -401,6 +401,7 @@ class CertificateScanner:
                 cert_info = self._process_certificate(cert_binary, address, port)
                 if cert_info:
                     result.certificate_info = cert_info
+                    result.error = None  # Explicitly set error to None for successful scan
                 else:
                     result.error = "Failed to process certificate data"
             else:
@@ -458,17 +459,38 @@ class CertificateScanner:
             # Get timeout from settings
             socket_timeout = settings.get('scanning.timeouts.socket', 5)
             
-            # Create SSL context without validation
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
+            # Create SSL context with chain validation
+            context = ssl.create_default_context()
+            context.check_hostname = False  # We'll validate hostname separately
+            context.verify_mode = ssl.CERT_OPTIONAL  # Try to validate chain but don't require it
             context.set_ciphers('ALL')
+            
+            # Debug log the CA paths being used
+            self.logger.debug(f"Default verify paths: {ssl.get_default_verify_paths()}")
             
             try:
                 # Create socket with timeout
                 sock = socket.create_connection((address, port), timeout=socket_timeout)
                 try:
                     ssock = context.wrap_socket(sock, server_hostname=address)
+                    
+                    # Get the certificate chain
+                    cert_chain = ssock.get_peer_cert_chain() if hasattr(ssock, 'get_peer_cert_chain') else None
+                    if cert_chain:
+                        self.logger.debug(f"Certificate chain length: {len(cert_chain)}")
+                        for i, cert in enumerate(cert_chain):
+                            self.logger.debug(f"Chain cert {i}: Subject: {cert.get_subject()}, Issuer: {cert.get_issuer()}")
+                    
+                    # Verify the certificate chain
+                    try:
+                        context.verify_mode = ssl.CERT_REQUIRED
+                        ssock.do_handshake()  # Force a new handshake with stricter verification
+                        self._last_cert_chain = True
+                        self.logger.info(f"Certificate chain validation successful for {address}:{port}")
+                    except ssl.SSLError as chain_error:
+                        self._last_cert_chain = False
+                        self.logger.warning(f"Certificate chain validation failed for {address}:{port}: {str(chain_error)}")
+                    
                     # Get certificate in binary form
                     cert_binary = ssock.getpeercert(binary_form=True)
                     if cert_binary:
@@ -480,6 +502,7 @@ class CertificateScanner:
                     return None
                     
                 except ssl.SSLError as e:
+                    self._last_cert_chain = False  # Chain validation failed
                     if "alert internal error" in str(e):
                         msg = f"The server at {address}:{port} actively rejected the SSL/TLS connection."
                     else:

@@ -240,7 +240,7 @@ def render_applications_view(engine) -> None:
             )
             
             if not applications:
-                notify("No applications found. Use the 'Add Application' button above to create one.", "info")
+                notify("No applications found. Use the 'Add Application' button above to create one. \n", "info")
                 return
 
             # View type selector

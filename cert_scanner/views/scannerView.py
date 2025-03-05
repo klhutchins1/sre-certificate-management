@@ -26,7 +26,7 @@ from ..models import (
 from ..static.styles import load_warning_suppression, load_css
 from ..domain_scanner import DomainScanner, DomainInfo
 from ..scanner import CertificateScanner, CertificateInfo, ScanResult
-from cert_scanner.notifications import initialize_notifications, show_notifications, notify
+from cert_scanner.notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import json
 from typing import Tuple, Dict, List, Optional
 import pandas as pd
@@ -77,6 +77,7 @@ def render_scan_interface(engine) -> None:
     
     # Initialize notifications at the very beginning
     initialize_notifications()
+    clear_notifications()  # Clear any existing notifications
     
     # Create a placeholder for notifications at the top
     notification_placeholder = st.empty()

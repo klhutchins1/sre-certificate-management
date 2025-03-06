@@ -122,7 +122,7 @@ def get_root_domains_count(session):
     """Count the number of root domains."""
     return len(get_root_domains(session))
 
-def create_timeline(df, title, height=500):
+def create_timeline(df, title, height=500, color='rgb(31, 119, 180)', title_size=24):
     """Create a standardized timeline visualization."""
     fig = px.timeline(
         df,
@@ -136,7 +136,8 @@ def create_timeline(df, title, height=500):
     fig.update_traces(
         marker_line_color='rgb(0, 0, 0)',
         marker_line_width=2,
-        opacity=0.8
+        opacity=0.8,
+        marker_color=color
     )
     
     # Configure timeline layout
@@ -146,7 +147,12 @@ def create_timeline(df, title, height=500):
             automargin=True,
             tickmode='linear'  # Ensure all items are labeled
         ),
-        margin=dict(l=10, r=10, t=30, b=10)  # Adjust margins
+        margin=dict(l=10, r=10, t=30, b=10),  # Adjust margins
+        title=dict(
+            font=dict(size=title_size),
+            x=0.5,  # Center the title
+            y=0.95  # Position slightly below the top
+        )
     )
     
     # Add today's date marker
@@ -280,11 +286,15 @@ def render_dashboard(engine) -> None:
                     fig_certs = create_timeline(
                         df_certs,
                         'Certificate Validity Periods',
-                        cert_chart_height
+                        cert_chart_height,
+                        title_size=28
                     )
                     st.plotly_chart(fig_certs, use_container_width=True)
                 else:
                     notify("No certificates found in database. \n", "info")
+                
+                # Add separator between graphs
+                st.divider()
                 
                 # Create root domain timeline using only the identified root domains
                 root_domain_data = []
@@ -304,8 +314,10 @@ def render_dashboard(engine) -> None:
                     
                     fig_domains = create_timeline(
                         df_domains,
-                        'Root Domain Registration Periods',
-                        domain_chart_height
+                        'Domain Registration Periods',
+                        domain_chart_height,
+                        color='rgb(255, 127, 14)',  # Orange color for domain timeline
+                        title_size=28
                     )
                     st.plotly_chart(fig_domains, use_container_width=True)
                 else:

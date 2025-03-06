@@ -31,6 +31,7 @@ import json
 # Third-party imports
 import streamlit as st
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
 
 # Local application imports
@@ -116,8 +117,12 @@ def update_database_schema(engine):
     """
     try:
         logger.info("Checking for missing tables and columns...")
-        inspector = inspect(engine)
-        existing_tables = inspector.get_table_names()
+        try:
+            inspector = inspect(engine)
+            existing_tables = inspector.get_table_names()
+        except Exception as e:
+            logger.error(f"Failed to inspect database: {str(e)}")
+            return False
         
         # Get all table names from our models
         model_tables = set(Base.metadata.tables.keys())
@@ -134,44 +139,52 @@ def update_database_schema(engine):
         for table_name in existing_tables:
             if table_name in Base.metadata.tables:
                 model_columns = {c.name: c for c in Base.metadata.tables[table_name].columns}
-                existing_columns = {c['name']: c for c in inspector.get_columns(table_name)}
+                try:
+                    existing_columns = {c['name']: c for c in inspector.get_columns(table_name)}
+                    # Validate table structure
+                    for col_name, col_info in existing_columns.items():
+                        if col_name not in model_columns:
+                            logger.error(f"Invalid column {col_name} in table {table_name}")
+                            return False
+                except Exception as e:
+                    logger.error(f"Failed to get columns for table {table_name}: {str(e)}")
+                    return False
                 
                 # Add missing columns
                 missing_columns = set(model_columns.keys()) - set(existing_columns.keys())
                 if missing_columns:
                     logger.info(f"Adding missing columns to {table_name}: {missing_columns}")
-                    with engine.begin() as connection:
-                        for column_name in missing_columns:
-                            column = model_columns[column_name]
-                            nullable = 'NOT NULL' if not column.nullable else ''
-                            
-                            # Handle default values
-                            default = ''
-                            if column.server_default is not None:
-                                # For server_default, use the SQL text directly
-                                default = f"DEFAULT {column.server_default.arg}"
-                            elif column.default is not None:
-                                if isinstance(column.default.arg, str):
-                                    default = f"DEFAULT '{column.default.arg}'"
+                    try:
+                        with engine.begin() as connection:
+                            for column_name in missing_columns:
+                                column = model_columns[column_name]
+                                nullable = 'NOT NULL' if not column.nullable else ''
+                                
+                                # Handle default values
+                                default = ''
+                                if column.server_default is not None:
+                                    default = f"DEFAULT {column.server_default.arg}"
+                                elif column.default is not None:
+                                    if isinstance(column.default.arg, str):
+                                        default = f"DEFAULT '{column.default.arg}'"
+                                    else:
+                                        default = f"DEFAULT {column.default.arg}"
+                                
+                                # For SQLite, we need to handle NOT NULL with DEFAULT in a specific way
+                                if not column.nullable and default:
+                                    # First add the column without NOT NULL
+                                    sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {default}"
+                                    connection.execute(text(sql.strip()))
+                                    
+                                    # Then update any NULL values with the default
+                                    sql = f"UPDATE {table_name} SET {column_name} = {column.server_default.arg} WHERE {column_name} IS NULL"
+                                    connection.execute(text(sql.strip()))
                                 else:
-                                    default = f"DEFAULT {column.default.arg}"
-                            
-                            # For SQLite, we need to handle NOT NULL with DEFAULT in a specific way
-                            if not column.nullable and default:
-                                # First add the column without NOT NULL
-                                sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {default}"
-                                connection.execute(text(sql.strip()))
-                                
-                                # Then update any NULL values with the default
-                                sql = f"UPDATE {table_name} SET {column_name} = {column.server_default.arg} WHERE {column_name} IS NULL"
-                                connection.execute(text(sql.strip()))
-                                
-                                # Finally add the NOT NULL constraint
-                                # Note: SQLite doesn't support adding NOT NULL constraint after column creation
-                                # We'll need to handle this through application logic
-                            else:
-                                sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {nullable} {default}"
-                                connection.execute(text(sql.strip()))
+                                    sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {nullable} {default}"
+                                    connection.execute(text(sql.strip()))
+                    except Exception as e:
+                        logger.error(f"Failed to add columns to table {table_name}: {str(e)}")
+                        return False
         
         logger.info("Database schema updated successfully")
         return True
@@ -311,6 +324,7 @@ def migrate_database(engine):
                                 issuer_dict = eval(issuer)
                                 issuer = json.dumps(issuer_dict)
                             except:
+                                logger.warning(f"Invalid issuer data for certificate {row.id}: {issuer}")
                                 issuer = json.dumps({})
                         
                         # Convert subject
@@ -319,6 +333,7 @@ def migrate_database(engine):
                                 subject_dict = eval(subject)
                                 subject = json.dumps(subject_dict)
                             except:
+                                logger.warning(f"Invalid subject data for certificate {row.id}: {subject}")
                                 subject = json.dumps({})
                         
                         # Convert SAN
@@ -327,6 +342,7 @@ def migrate_database(engine):
                                 san_list = eval(san)
                                 san = json.dumps(san_list if isinstance(san_list, list) else [])
                             except:
+                                logger.warning(f"Invalid SAN data for certificate {row.id}: {san}")
                                 san = json.dumps([])
                         
                         # Update the record
@@ -336,7 +352,7 @@ def migrate_database(engine):
                         )
                     except Exception as e:
                         logger.error(f"Error migrating certificate {row.id}: {str(e)}")
-                        continue
+                        raise
                 
                 conn.commit()
         
@@ -449,14 +465,30 @@ settings = Settings()
 db_path = settings.get("paths.database", "data/certificates.db")
 engine = create_engine(f"sqlite:///{db_path}")
 
-def get_session() -> Session:
-    """Get a new database session using the global engine."""
-    return sessionmaker(
-        bind=engine,
-        expire_on_commit=False,  # Prevent stale data issues
-        autoflush=True,  # Enable automatic flushing
-        autocommit=False  # Keep transactions explicit
-    )()
+def get_session(engine=None) -> Session:
+    """Get a database session.
+    
+    Args:
+        engine: Optional SQLAlchemy engine. If None, returns None.
+        
+    Returns:
+        Session: A new database session if engine is valid, None otherwise.
+    """
+    if engine is None:
+        return None
+        
+    try:
+        # Try to create a connection to verify engine is valid
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return sessionmaker(
+            bind=engine,
+            expire_on_commit=False,  # Prevent stale data issues
+            autoflush=True,  # Enable automatic flushing
+            autocommit=False  # Keep transactions explicit
+        )()
+    except Exception:
+        return None
 
 class SessionManager:
     """
@@ -604,9 +636,11 @@ def backup_database(engine, backup_dir):
         
         # Verify we can write to the backup file location
         try:
-            with open(str(backup_file), 'w') as f:
-                pass
-            backup_file.unlink()
+            # Create a test file to verify write permissions
+            test_file = backup_file.with_suffix('.test')
+            with open(str(test_file), 'w') as f:
+                f.write('test')
+            test_file.unlink()
         except PermissionError:
             raise Exception(f"No write permission for backup file: {backup_file}")
         except Exception as e:
@@ -639,40 +673,43 @@ def backup_database(engine, backup_dir):
     except Exception as e:
         raise Exception(f"Failed to create database backup: {str(e)}")
 
-def restore_database(backup_path, engine):
-    """
-    Restore database from a backup file.
-    
-    WARNING: This operation will overwrite the current database.
+def restore_database(backup_path: str, engine: Engine) -> bool:
+    """Restore database from backup file.
     
     Args:
-        backup_path (str): Path to the backup file
-        engine: SQLAlchemy engine instance
+        backup_path: Path to backup file
+        engine: SQLAlchemy engine for target database
         
     Returns:
-        bool: True if restore successful
+        bool: True if restore was successful
         
     Raises:
-        Exception: If restore operation fails
-        sqlite3.DatabaseError: If backup file is not a valid database
+        sqlite3.DatabaseError: If backup file is invalid or database is locked
     """
+    if not os.path.exists(backup_path):
+        raise sqlite3.DatabaseError("unable to open database file")
+        
+    # Check if database is locked by attempting to acquire a write lock
     try:
-        db_path = engine.url.database
+        with sqlite3.connect(engine.url.database, timeout=0.1) as conn:
+            # Try to acquire a write lock
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+    except sqlite3.OperationalError as e:
+        if "database is locked" in str(e).lower():
+            raise sqlite3.OperationalError("Database is locked")
+        raise
         
-        # Validate backup file
-        try:
-            with sqlite3.connect(backup_path) as conn:
-                conn.execute("SELECT 1")
-        except sqlite3.DatabaseError as e:
-            raise sqlite3.DatabaseError(f"Invalid backup file: {str(e)}")
+    # Validate backup file
+    try:
+        with sqlite3.connect(backup_path) as conn:
+            # Try to read some basic information to validate the backup
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA page_count")
+            cursor.execute("PRAGMA page_size")
+    except sqlite3.DatabaseError:
+        raise sqlite3.DatabaseError("file is not a database")
         
-        engine.dispose()
-        
-        with db_lock:
-            shutil.copy2(backup_path, db_path)
-        
-        logger.info(f"Database restored from backup: {backup_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to restore database from backup: {str(e)}")
-        raise 
+    # Copy backup file to database
+    shutil.copy2(backup_path, engine.url.database)
+    return True 

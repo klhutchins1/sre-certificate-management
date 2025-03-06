@@ -4,7 +4,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from cert_scanner.db import (
     init_database, get_session, backup_database, restore_database, 
-    update_database_schema, reset_database, check_database, SessionManager, _is_network_path, _normalize_path
+    update_database_schema, reset_database, check_database, SessionManager, _is_network_path, _normalize_path,
+    migrate_database
 )
 from cert_scanner.models import Base, Certificate, Host, HostIP
 from datetime import datetime
@@ -987,18 +988,9 @@ def test_get_session_error_handling():
     # Test with None engine
     assert get_session(None) is None
     
-    # Test with disposed engine
-    engine = create_engine('sqlite:///:memory:')
-    engine.dispose()
-    session = get_session(engine)
-    with pytest.raises(Exception):
-        session.query(Host).all()
-    
-    # Test with invalid URL
+    # Test with invalid engine
     invalid_engine = create_engine('sqlite:///nonexistent/path/db.sqlite')
-    session = get_session(invalid_engine)
-    with pytest.raises(Exception):
-        session.query(Host).all()
+    assert get_session(invalid_engine) is None
 
 def test_cleanup_temp_dir_error_handling():
     """Test cleanup_temp_dir error handling"""
@@ -1113,3 +1105,444 @@ def test_database_network_path():
             pytest.skip("Network share not available")
         else:
             raise
+
+def test_get_session_with_engine():
+    """Test getting a session with a specific engine"""
+    engine = create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    
+    session = get_session(engine)
+    assert session is not None
+    assert isinstance(session, Session)
+    
+    engine.dispose()
+
+def test_get_session_with_disposed_engine():
+    """Test getting a session with a disposed engine"""
+    # Create a mock engine that simulates a disposed state
+    mock_engine = MagicMock()
+    mock_engine.connect.side_effect = Exception("Engine is disposed")
+    
+    # Try to get a session with the disposed engine
+    session = get_session(mock_engine)
+    assert session is None
+
+def test_get_session_with_invalid_engine():
+    """Test getting a session with an invalid engine"""
+    invalid_engine = create_engine('sqlite:///nonexistent/path/db.sqlite')
+    session = get_session(invalid_engine)
+    assert session is None
+
+def test_database_migration_edge_cases():
+    """Test database migration with edge cases"""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "migration_test.db")
+    
+    try:
+        engine = init_database(db_path)
+        
+        # Test migration with invalid JSON data
+        with engine.connect() as conn:
+            conn.execute(text("""
+                INSERT INTO certificates (
+                    serial_number, 
+                    thumbprint,
+                    issuer, 
+                    subject, 
+                    san,
+                    valid_from,
+                    valid_until,
+                    common_name
+                )
+                VALUES (
+                    'test123',
+                    'test_thumbprint',
+                    'invalid json',
+                    'invalid json',
+                    'invalid json',
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP,
+                    'test.com'
+                )
+            """))
+            conn.commit()
+        
+        # Attempt migration
+        migrate_database(engine)
+        
+        # Verify data was handled gracefully
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT issuer, subject, san FROM certificates")).fetchone()
+            assert result is not None
+            assert isinstance(result.issuer, str)
+            assert isinstance(result.subject, str)
+            assert isinstance(result.san, str)
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_database_backup_with_large_data():
+    """Test database backup with large amounts of data"""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "large_data.db")
+    backup_dir = os.path.join(temp_dir, "backups")
+    os.makedirs(backup_dir)
+    
+    try:
+        engine = init_database(db_path)
+        
+        # Add large amount of test data
+        with SessionManager(engine) as session:
+            for i in range(1000):
+                host = Host(
+                    name=f"host-{i}",
+                    host_type=HOST_TYPE_SERVER,
+                    environment=ENV_PRODUCTION,
+                    last_seen=datetime.now()
+                )
+                session.add(host)
+            session.commit()
+        
+        # Create backup
+        backup_path = backup_database(engine, backup_dir)
+        assert os.path.exists(backup_path)
+        
+        # Verify backup integrity
+        backup_engine = create_engine(f"sqlite:///{backup_path}")
+        with SessionManager(backup_engine) as session:
+            count = session.query(Host).count()
+            assert count == 1000
+        
+        backup_engine.dispose()
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_update_database_schema_error_handling():
+    """Test error handling in update_database_schema"""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "schema_error.db")
+    engine = None
+
+    try:
+        # Create a mock engine that raises an exception on inspect
+        mock_engine = MagicMock()
+        mock_inspect = MagicMock()
+        mock_inspect.get_table_names.side_effect = Exception("Connection error")
+        with patch('cert_scanner.db.inspect', return_value=mock_inspect):
+            # Test with invalid engine
+            assert update_database_schema(mock_engine) is False
+
+        # Create a real engine but with invalid table structure
+        engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(engine)
+
+        # Test with invalid table structure
+        with engine.connect() as conn:
+            # Create a table with a valid structure but invalid data type
+            conn.execute(text("""
+                CREATE TABLE test_table (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    value BLOB
+                )
+            """))
+            conn.commit()
+
+            # Insert some data with invalid type
+            conn.execute(text("""
+                INSERT INTO test_table (id, name, value)
+                VALUES (1, 'test', 'invalid blob data')
+            """))
+            conn.commit()
+
+        # Test with invalid table structure
+        assert update_database_schema(engine) is True  # Should succeed as the structure is valid
+
+    finally:
+        # Cleanup
+        if engine:
+            engine.dispose()
+        Session.close_all()
+        time.sleep(0.1)  # Allow time for file handles to be released
+        if os.path.exists(db_path):
+            try:
+                os.remove(db_path)
+            except PermissionError:
+                time.sleep(0.5)  # Wait a bit longer if needed
+                try:
+                    os.remove(db_path)
+                except PermissionError:
+                    print(f"Warning: Could not delete database file: {db_path}")
+        cleanup_temp_dir(temp_dir)
+
+def test_migrate_database_error_handling():
+    """Test error handling in migrate_database"""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "migration_error.db")
+    engine = None
+
+    try:
+        # Create a mock engine that raises an exception
+        mock_engine = MagicMock()
+        mock_engine.connect.side_effect = Exception("Connection error")
+
+        # Test with invalid engine
+        with pytest.raises(Exception):
+            migrate_database(mock_engine)
+
+        # Create a real engine but with invalid data
+        engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(engine)
+
+        # Test with invalid JSON data in certificates table
+        with engine.connect() as conn:
+            # Drop existing certificates table if it exists
+            conn.execute(text("DROP TABLE IF EXISTS certificates"))
+            conn.commit()
+
+            # Create a new certificates table with invalid structure
+            conn.execute(text("""
+                CREATE TABLE certificates (
+                    id INTEGER PRIMARY KEY,
+                    issuer TEXT,
+                    subject TEXT,
+                    san TEXT
+                )
+            """))
+            conn.commit()
+
+            # Insert invalid JSON data
+            conn.execute(text("""
+                INSERT INTO certificates (issuer, subject, san)
+                VALUES ('invalid json', 'invalid json', 'invalid json')
+            """))
+            conn.commit()
+
+        # Test migration with invalid data
+        migrate_database(engine)
+
+        # Verify that invalid data was handled gracefully
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT issuer, subject, san FROM certificates")).fetchone()
+            assert result is not None
+            assert result.issuer == '{}'  # Default empty JSON object
+            assert result.subject == '{}'  # Default empty JSON object
+            assert result.san == '[]'  # Default empty JSON array
+
+    finally:
+        # Cleanup
+        if engine:
+            engine.dispose()
+        Session.close_all()
+        time.sleep(0.1)  # Allow time for file handles to be released
+        if os.path.exists(db_path):
+            try:
+                os.remove(db_path)
+            except PermissionError:
+                time.sleep(0.5)  # Wait a bit longer if needed
+                try:
+                    os.remove(db_path)
+                except PermissionError:
+                    print(f"Warning: Could not delete database file: {db_path}")
+        cleanup_temp_dir(temp_dir)
+
+def test_init_database_error_handling():
+    """Test error handling in init_database"""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "init_error.db")
+    
+    try:
+        # Test with invalid path
+        invalid_path = "\\\\?\\invalid*path:with|invalid<chars>.db"
+        with pytest.raises(Exception) as exc_info:
+            init_database(invalid_path)
+        assert "Invalid database path" in str(exc_info.value)
+        
+        # Test with parent directory that exists but is not a directory
+        parent_path = os.path.join(temp_dir, "not_a_dir")
+        with open(parent_path, 'w') as f:
+            f.write("dummy data")
+        db_path = os.path.join(parent_path, "test.db")
+        with pytest.raises(Exception) as exc_info:
+            init_database(db_path)
+        assert "Path exists but is not a directory" in str(exc_info.value)
+        
+        # Test with parent's parent that doesn't exist
+        nonexistent_path = os.path.join(temp_dir, "nonexistent")
+        db_path = os.path.join(nonexistent_path, "subdir", "test.db")
+        with pytest.raises(Exception) as exc_info:
+            init_database(db_path)
+        assert "Parent directory's parent does not exist" in str(exc_info.value)
+        
+        # Test with no write permission
+        db_path = os.path.join(temp_dir, "readonly.db")
+        with open(db_path, 'w') as f:
+            f.write("dummy data")
+        current_mode = os.stat(db_path).st_mode
+        os.chmod(db_path, current_mode & ~stat.S_IWRITE)
+        with pytest.raises(Exception) as exc_info:
+            init_database(db_path)
+        assert "No write permission for database file" in str(exc_info.value)
+        
+        # Test with corrupted database
+        os.chmod(db_path, current_mode | stat.S_IWRITE)
+        with open(db_path, 'w') as f:
+            f.write("corrupted data")
+        with pytest.raises(Exception) as exc_info:
+            init_database(db_path)
+        assert "file is not a database" in str(exc_info.value)
+        
+        # Test with settings error
+        with patch('cert_scanner.db.Settings') as mock_settings:
+            mock_settings.return_value.get.side_effect = Exception("Settings error")
+            with pytest.raises(Exception):
+                init_database()
+        
+    finally:
+        # Restore permissions for cleanup
+        if os.path.exists(db_path):
+            os.chmod(db_path, current_mode | stat.S_IWRITE)
+        cleanup_temp_dir(temp_dir)
+
+def test_backup_restore_database_error_handling():
+    """Test error handling in backup_database and restore_database"""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "backup_error.db")
+    backup_dir = os.path.join(temp_dir, "backups")
+    os.makedirs(backup_dir)
+    engine = None
+
+    try:
+        # Create source database
+        engine = init_database(db_path)
+
+        # Test backup with invalid engine
+        mock_engine = MagicMock()
+        mock_engine.url.database = "nonexistent.db"
+        with pytest.raises(Exception) as exc_info:
+            backup_database(mock_engine, backup_dir)
+        assert "Source database does not exist" in str(exc_info.value)
+
+        # Test backup with invalid backup directory
+        invalid_backup_dir = os.path.join(temp_dir, "invalid_backup")
+        with open(invalid_backup_dir, 'w') as f:
+            f.write("dummy data")
+        with pytest.raises(Exception) as exc_info:
+            backup_database(engine, invalid_backup_dir)
+        assert "Backup path exists but is not a directory" in str(exc_info.value)
+
+        # Test backup with no write permission
+        def mock_access(path, mode):
+            if str(path) == str(backup_dir) and mode == os.W_OK:
+                return False
+            return True
+
+        with patch('os.access', side_effect=mock_access), \
+             patch('cert_scanner.db.os.access', side_effect=mock_access):
+            with pytest.raises(Exception) as exc_info:
+                backup_database(engine, backup_dir)
+            assert "No write permission for backup directory" in str(exc_info.value)
+
+        # Test restore with invalid backup file
+        # Create a file that looks like a SQLite database but has an invalid text encoding
+        invalid_backup = os.path.join(backup_dir, "invalid_backup.db")
+        with open(invalid_backup, 'wb') as f:
+            # Write SQLite header magic number
+            f.write(b'SQLite format 3\x00')
+            # Write page size (4096 bytes)
+            f.write(b'\x10\x10')
+            # Write file format write version (2)
+            f.write(b'\x02')
+            # Write file format read version (2)
+            f.write(b'\x02')
+            # Write reserved bytes at end of page (0)
+            f.write(b'\x00')
+            # Write maximum embedded payload fraction (64)
+            f.write(b'\x40')
+            # Write minimum embedded payload fraction (32)
+            f.write(b'\x20')
+            # Write leaf payload fraction (32)
+            f.write(b'\x20')
+            # Write file change counter (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write size of database in pages (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write first freelist trunk page (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write total number of freelist pages (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write schema cookie (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write schema format number (4)
+            f.write(b'\x00\x00\x00\x04')
+            # Write default page cache size (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write largest root btree page (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write invalid text encoding (0x00)
+            f.write(b'\x00\x00\x00\x00')
+            # Write user version (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write incremental vacuum mode (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write application ID (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write reserved for expansion (0)
+            f.write(b'\x00' * 20)
+            # Write version-valid-for number (0)
+            f.write(b'\x00\x00\x00\x00')
+            # Write SQLite version number (0)
+            f.write(b'\x00\x00\x00\x00')
+
+        assert os.path.exists(invalid_backup), "Failed to create invalid backup file"
+
+        with pytest.raises(sqlite3.DatabaseError) as exc_info:
+            restore_database(invalid_backup, engine)
+        assert "file is not a database" in str(exc_info.value)
+
+        # Test restore with nonexistent backup file
+        nonexistent_backup = os.path.join(backup_dir, "nonexistent.db")
+        with pytest.raises(Exception) as exc_info:
+            restore_database(nonexistent_backup, engine)
+        assert "unable to open database file" in str(exc_info.value)
+
+        # Create a valid backup file for the locked database test
+        valid_backup = backup_database(engine, backup_dir)
+        assert os.path.exists(valid_backup), "Failed to create valid backup file"
+
+        # Test restore with locked database
+        # First add some data to ensure we have something to lock
+        with get_session(engine) as session:
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS test_table (
+                    id INTEGER PRIMARY KEY,
+                    value TEXT
+                )
+            """))
+            session.execute(text("INSERT INTO test_table (id, value) VALUES (1, 'test')"))
+            session.commit()
+
+        # Now start a transaction that will lock the database
+        with get_session(engine) as session:
+            session.execute(text("BEGIN TRANSACTION"))
+            session.execute(text("UPDATE test_table SET value = 'locked' WHERE id = 1"))
+            # Don't commit the transaction to keep the lock
+
+            # Try to restore while database is locked
+            with pytest.raises(sqlite3.OperationalError) as exc_info:
+                restore_database(valid_backup, engine)
+            assert "Database is locked" in str(exc_info.value)
+
+    finally:
+        # Cleanup
+        if engine:
+            engine.dispose()
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            print(f"Error cleaning up test directory: {e}")

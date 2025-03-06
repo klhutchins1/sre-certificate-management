@@ -460,4 +460,134 @@ def test_main_error_handling(mock_sidebar, mock_init_db):
         main()
         
         # Verify the dashboard render was attempted
-        mock_dashboard.assert_called_once_with(engine) 
+        mock_dashboard.assert_called_once_with(engine)
+
+@patch('cert_scanner.app.render_domain_list')
+def test_domains_view_rendering(mock_domain_list, mock_render_functions, mock_db_engine):
+    """Test that the Domains view is properly rendered"""
+    # Clear session state first
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Initialize session state with the mock engine
+    st.session_state.current_view = "Domains"
+    st.session_state.engine = mock_db_engine
+    st.session_state.initialized = True
+    
+    with patch('streamlit.radio', return_value="🌐 Domains"), \
+         patch('streamlit.sidebar') as mock_sidebar, \
+         patch('cert_scanner.app.init_database', return_value=mock_db_engine):
+        # Mock the sidebar context manager
+        mock_sidebar.__enter__ = MagicMock(return_value=mock_sidebar)
+        mock_sidebar.__exit__ = MagicMock(return_value=None)
+        
+        main()
+        mock_domain_list.assert_called_once_with(mock_db_engine)
+
+@patch('cert_scanner.static.styles.load_css')
+def test_css_loading_failure(mock_load_css):
+    """Test that application continues to function even if CSS loading fails"""
+    mock_load_css.side_effect = Exception("CSS loading failed")
+    
+    with patch('streamlit.radio', return_value="📊 Dashboard"), \
+         patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+        main()
+        mock_dashboard.assert_called_once()
+
+@patch('cert_scanner.app.render_dashboard')
+def test_view_rendering_failure(mock_dashboard):
+    """Test that application handles view rendering failures gracefully"""
+    mock_dashboard.side_effect = Exception("View rendering failed")
+    
+    with patch('streamlit.radio', return_value="📊 Dashboard"), \
+         patch('streamlit.sidebar') as mock_sidebar, \
+         patch('streamlit.title'), \
+         patch('streamlit.markdown'), \
+         patch('streamlit.caption'):
+        # Mock the sidebar context manager
+        mock_sidebar.__enter__ = MagicMock(return_value=mock_sidebar)
+        mock_sidebar.__exit__ = MagicMock(return_value=None)
+        
+        mock_sidebar.return_value = "Dashboard"
+        # The test should expect the exception to be raised
+        with pytest.raises(Exception) as exc_info:
+            main()
+        assert str(exc_info.value) == "View rendering failed"
+
+def test_concurrent_view_changes():
+    """Test handling of rapid view changes"""
+    # Create in-memory database and initialize schema
+    engine = create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    
+    with patch('cert_scanner.app.render_sidebar') as mock_sidebar, \
+         patch('streamlit.radio', return_value="📊 Dashboard"), \
+         patch('streamlit.columns') as mock_columns, \
+         patch('streamlit.sidebar') as mock_st_sidebar, \
+         patch('streamlit.title'), \
+         patch('streamlit.markdown'), \
+         patch('streamlit.caption'), \
+         patch('streamlit.button', return_value=False), \
+         patch('streamlit.empty'), \
+         patch('streamlit.divider'), \
+         patch('cert_scanner.app.init_database', return_value=engine), \
+         patch('cert_scanner.views.certificatesView.SessionManager') as mock_session_manager:
+        
+        # Mock the sidebar context manager
+        mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)
+        mock_st_sidebar.__exit__ = MagicMock(return_value=None)
+        
+        # Mock the session manager context
+        mock_session = MagicMock()
+        mock_session_manager.return_value.__enter__.return_value = mock_session
+        mock_session_manager.return_value.__exit__.return_value = None
+        
+        # Mock the database queries
+        mock_session.query.return_value.count.return_value = 0
+        mock_session.query.return_value.filter.return_value.count.return_value = 0
+        
+        # Create a mock column object that supports context manager and has metric method
+        class MockColumn:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+            def metric(self, label, value):
+                pass  # Just pass through, we don't need to verify the metric values
+        
+        # Make columns return a list of mock column objects based on the input
+        def mock_columns_side_effect(*args, **kwargs):
+            if isinstance(args[0], list):
+                # Handle column widths
+                return [MockColumn() for _ in range(len(args[0]))]
+            else:
+                # Handle number of columns
+                return [MockColumn() for _ in range(args[0])]
+        
+        mock_columns.side_effect = mock_columns_side_effect
+        
+        # Simulate rapid view changes
+        mock_sidebar.side_effect = ["Dashboard", "Certificates", "Dashboard"]
+        
+        # Initialize session state
+        st.session_state.initialized = True
+        st.session_state.engine = engine
+        st.session_state.show_manual_entry = False
+        
+        for _ in range(3):
+            main()
+            assert st.session_state.current_view in ["Dashboard", "Certificates"]
+
+def test_session_state_cleanup():
+    """Test that session state is properly cleaned up"""
+    # Initialize session state with test data
+    st.session_state.test_data = "test"
+    st.session_state.initialized = True
+    
+    # Clear session state
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Verify cleanup
+    assert 'test_data' not in st.session_state
+    assert 'initialized' not in st.session_state 

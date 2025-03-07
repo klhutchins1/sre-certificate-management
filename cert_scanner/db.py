@@ -231,43 +231,51 @@ def migrate_database(engine):
                     )
                 """))
                 conn.commit()
-        else:
-            # Check if we need to migrate from serial_number to pattern
-            columns = [col['name'] for col in inspector.get_columns('ignored_certificates')]
-            if 'serial_number' in columns and 'pattern' not in columns:
-                logger.info("Migrating ignored_certificates table from serial_number to pattern")
+        
+        # Check if domain_dns_records table needs updating
+        if 'domain_dns_records' in inspector.get_table_names():
+            # Check if we need to update the unique constraint
+            constraints = inspector.get_unique_constraints('domain_dns_records')
+            needs_update = True
+            for constraint in constraints:
+                if 'value' in constraint['column_names']:
+                    needs_update = False
+                    break
+            
+            if needs_update:
+                logger.info("Updating domain_dns_records table with new unique constraint")
                 with engine.connect() as conn:
-                    # Create new pattern column
-                    conn.execute(text("ALTER TABLE ignored_certificates ADD COLUMN pattern TEXT"))
-                    
-                    # Copy data from serial_number to pattern (if needed)
-                    conn.execute(text("UPDATE ignored_certificates SET pattern = serial_number WHERE pattern IS NULL"))
-                    
-                    # Create temporary table with new schema
+                    # Create new table with updated constraint
                     conn.execute(text("""
-                        CREATE TABLE ignored_certificates_new (
+                        CREATE TABLE domain_dns_records_new (
                             id INTEGER PRIMARY KEY,
-                            pattern TEXT NOT NULL UNIQUE,
-                            reason TEXT,
+                            domain_id INTEGER REFERENCES domains(id),
+                            record_type VARCHAR NOT NULL,
+                            name VARCHAR NOT NULL,
+                            value VARCHAR NOT NULL,
+                            ttl INTEGER DEFAULT 3600,
+                            priority INTEGER,
                             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                            created_by TEXT
+                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE (domain_id, record_type, name, value)
                         )
                     """))
                     
-                    # Copy data to new table
+                    # Copy existing data
                     conn.execute(text("""
-                        INSERT INTO ignored_certificates_new (pattern, reason, created_at, created_by)
-                        SELECT pattern, reason, created_at, created_by FROM ignored_certificates
+                        INSERT INTO domain_dns_records_new
+                        SELECT DISTINCT id, domain_id, record_type, name, value, ttl, priority, created_at, updated_at
+                        FROM domain_dns_records
                     """))
                     
                     # Drop old table
-                    conn.execute(text("DROP TABLE ignored_certificates"))
+                    conn.execute(text("DROP TABLE domain_dns_records"))
                     
-                    # Rename new table to original name
-                    conn.execute(text("ALTER TABLE ignored_certificates_new RENAME TO ignored_certificates"))
+                    # Rename new table
+                    conn.execute(text("ALTER TABLE domain_dns_records_new RENAME TO domain_dns_records"))
                     
                     conn.commit()
-                    logger.info("Successfully migrated ignored_certificates table")
+                    logger.info("Successfully updated domain_dns_records table")
         
         # Check if certificates table exists and perform existing migrations
         if 'certificates' in inspector.get_table_names():

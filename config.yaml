@@ -16,11 +16,48 @@ exports:
   pdf:
     logo: reports/logo.png
     template: reports/template.html
+ignore_lists:
+  certificates:
+    default_patterns:
+    - '*test*'
+    - '*dev*'
+    - '*stage*'
+    - '*qa*'
+    - '*sandbox*'
+    enabled: true
+    hide_from_results: true
+    match_by: common_name
+    skip_scanning: true
+  domains:
+    default_patterns:
+    - '*.local'
+    - '*.test'
+    - '*.example'
+    - '*.invalid'
+    - '*.localhost'
+    - '*test*'
+    - '*dev*'
+    - '*stage*'
+    - '*qa*'
+    - '*sandbox*'
+    enabled: true
+    hide_from_results: true
+    pattern_types:
+      contains: '*test*'
+      exact: example.com
+      prefix: '*.example.com'
+      suffix: '*.test.com'
+    skip_scanning: true
 paths:
   backups: data/backups
   database: data/certificates.db
 scanning:
-  default_rate_limit: 60
+  ct:
+    rate_limit: 60
+  default_rate_limit: 120
+  dns:
+    rate_limit: 60
+    timeout: 5
   external:
     delay: 0
     domains: []
@@ -29,3 +66,10 @@ scanning:
     delay: 0
     domains: []
     rate_limit: 60
+  timeouts:
+    dns: 5.0
+    request: 15
+    socket: 10
+  whois:
+    rate_limit: 60
+    timeout: 10

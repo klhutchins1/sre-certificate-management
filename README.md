@@ -497,3 +497,4 @@ These planned features will enhance the system's capabilities in:
 - Scan result persistence
 - Domain lifecycle management
 - Data integrity and resilience
+- create CSR

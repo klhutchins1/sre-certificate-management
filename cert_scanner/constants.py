@@ -122,4 +122,33 @@ PLATFORMS = [
     PLATFORM_CLOUDFLARE,
     PLATFORM_IIS,
     PLATFORM_CONNECTION
-] 
+]
+
+# Common internal TLDs and subdomains
+# Used for automatic domain classification when not explicitly configured
+INTERNAL_TLDS = {
+    '.local', '.lan', '.internal', '.intranet', '.corp', '.private',
+    '.test', '.example', '.invalid', '.localhost'
+}
+
+# Common external TLDs
+# Used for automatic domain classification when not explicitly configured
+EXTERNAL_TLDS = {
+    '.com', '.org', '.net', '.edu', '.gov', '.mil', '.int',
+    '.info', '.biz', '.name', '.pro', '.museum', '.coop', '.aero',
+    '.asia', '.cat', '.jobs', '.mobi', '.tel', '.travel', '.xxx'
+}
+
+# Default rate limits (requests per minute)
+DEFAULT_RATE_LIMIT = 30  # Default 30 requests/minute (1/2sec)
+INTERNAL_RATE_LIMIT = 60  # Default 60 requests/minute (1/sec)
+EXTERNAL_RATE_LIMIT = 20  # Default 20 requests/minute (1/3sec)
+
+# Default timeouts (seconds)
+DNS_TIMEOUT = 5.0
+SOCKET_TIMEOUT = 10.0
+REQUEST_TIMEOUT = 10.0
+
+# Certificate chain validation settings
+CHAIN_VALIDATION_TIMEOUT = 5.0
+MAX_CHAIN_LENGTH = 10 

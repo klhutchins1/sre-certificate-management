@@ -11,11 +11,14 @@ import requests
 import logging
 import socket
 import time
-from typing import Set, List, Optional
+from typing import Set, List, Optional, Dict
 from .domain_scanner import DomainScanner
 from .scanner import CertificateScanner
-from .models import IgnoredDomain
+from .models import IgnoredDomain, Domain
 from .db import get_session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from datetime import datetime
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -35,18 +38,33 @@ class SubdomainScanner:
     Passive subdomain discovery using certificate data and public sources.
     """
     
-    def __init__(self):
+    def __init__(self, methods=None):
         """Initialize the subdomain scanner."""
         self.domain_scanner = DomainScanner()
         self.cert_scanner = CertificateScanner()
         self.last_ct_query_time = 0
+        self.tracker = None  # Will be set by scanner view
+        self.status_container = None  # Will be set by scanner view
+        
+        # Set default methods if none provided
+        self.methods = methods or ['cert', 'ct']
         
         # Load rate limits from settings
         from .settings import settings
         self.ct_rate_limit = settings.get('scanning.ct.rate_limit', 10)  # Default 10/min
         
-        logger.info(f"Initialized SubdomainScanner with CT rate limit: {self.ct_rate_limit}/min")
+        logger.info(f"Initialized SubdomainScanner with methods: {self.methods}, CT rate limit: {self.ct_rate_limit}/min")
     
+    def set_status_container(self, container):
+        """Set the status container for UI updates."""
+        self.status_container = container
+    
+    def update_status(self, message: str):
+        """Update the UI status if container is available."""
+        if self.status_container:
+            self.status_container.text(message)
+        logger.info(message)
+
     def _get_certificate_sans(self, domain: str, port: int = 443) -> Set[str]:
         """
         Get subdomains from SSL certificate's Subject Alternative Names.
@@ -60,24 +78,29 @@ class SubdomainScanner:
         """
         subdomains = set()
         try:
-            logger.info(f"[CERT] Checking SSL certificate for {domain}:{port}")
+            self.update_status(f'Checking SSL certificate for {domain}:{port} for subdomains...')
             
             # Remove any leading wildcards for matching
             base_domain = domain.lstrip('*.')
             
             # Use CertificateScanner to get certificate
             scan_result = self.cert_scanner.scan_certificate(domain, port)
-            if scan_result and scan_result.certificate_info:
-                cert_info = scan_result.certificate_info
-                # Process SANs from certificate info
-                for san in cert_info.san:
-                    # Clean up the SAN
-                    san = san.strip('*. ')
-                    # Only add if it's a subdomain of our target domain
-                    if san and (san == base_domain or san.endswith('.' + base_domain)):
-                        if san != base_domain:  # Don't add the base domain itself
-                            subdomains.add(san)
-                            logger.info(f"[CERT] Found subdomain: {san}")
+            if scan_result:
+                if scan_result.error:
+                    logger.warning(f"[CERT] Error scanning certificate for {domain}: {scan_result.error}")
+                    return subdomains
+                
+                if scan_result.certificate_info:
+                    cert_info = scan_result.certificate_info
+                    # Process SANs from certificate info
+                    for san in cert_info.san:
+                        # Clean up the SAN
+                        san = san.strip('*. ')
+                        # Only add if it's a subdomain of our target domain
+                        if san and (san == base_domain or san.endswith('.' + base_domain)):
+                            if san != base_domain:  # Don't add the base domain itself
+                                subdomains.add(san)
+                                self.update_status(f'Found subdomain in certificate: {san}')
             
         except Exception as e:
             logger.warning(f"[CERT] Error getting certificate SANs for {domain}: {str(e)}")
@@ -96,8 +119,7 @@ class SubdomainScanner:
         """
         subdomains = set()
         try:
-            # Use crt.sh for CT log search
-            logger.info(f"[CT] Searching Certificate Transparency logs for {domain}")
+            self.update_status(f'Searching Certificate Transparency logs for {domain} subdomains...')
             
             # Remove any leading wildcards for the search
             search_domain = domain.lstrip('*.')
@@ -143,7 +165,7 @@ class SubdomainScanner:
                                         # Validate the subdomain format
                                         if self._validate_domain_format(name):
                                             subdomains.add(name)
-                                            logger.info(f"[CT] Found subdomain: {name}")
+                                            self.update_status(f'Found subdomain in CT logs: {name}')
                                         else:
                                             logger.debug(f"[CT] Skipping invalid subdomain format: {name}")
                     
@@ -216,16 +238,23 @@ class SubdomainScanner:
         Args:
             domain: Domain to scan
             methods: List of methods to use (cert, ct)
-                    If None, all methods will be used
+                    If None, uses instance default methods
         
         Returns:
             Set[str]: Set of all discovered subdomains
         """
-        if not methods:
-            methods = ['cert', 'ct']
+        # Use provided methods or instance defaults
+        methods = methods or self.methods
         
         # Check if domain is in ignore list
-        session = get_session()
+        from sqlalchemy import create_engine
+        from .settings import settings
+        
+        # Get database path from settings
+        db_path = settings.get("paths.database", "data/certificates.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        session = Session(engine)
+        
         try:
             # First check exact matches
             ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
@@ -246,22 +275,181 @@ class SubdomainScanner:
                                   (f" ({pattern.reason})" if pattern.reason else ""))
                         return set()
         finally:
-            session.close()
+            if session:
+                session.close()
+            if engine:
+                engine.dispose()
         
         all_subdomains = set()
         logger.info(f"[SCAN] Starting passive subdomain discovery for {domain} using methods: {methods}")
         
         # Certificate-based discovery
         if 'cert' in methods:
-            cert_subdomains = self._get_certificate_sans(domain)
-            all_subdomains.update(cert_subdomains)
-            logger.info(f"[SCAN] Found {len(cert_subdomains)} subdomains via certificates")
+            try:
+                cert_subdomains = self._get_certificate_sans(domain)
+                all_subdomains.update(cert_subdomains)
+                logger.info(f"[SCAN] Found {len(cert_subdomains)} subdomains via certificates")
+            except Exception as e:
+                logger.error(f"[SCAN] Error scanning certificates for {domain}: {str(e)}")
         
         # Certificate Transparency logs
         if 'ct' in methods:
-            ct_subdomains = self._get_ct_logs_subdomains(domain)
-            all_subdomains.update(ct_subdomains)
-            logger.info(f"[SCAN] Found {len(ct_subdomains)} subdomains via CT logs")
+            try:
+                ct_subdomains = self._get_ct_logs_subdomains(domain)
+                all_subdomains.update(ct_subdomains)
+                logger.info(f"[SCAN] Found {len(ct_subdomains)} subdomains via CT logs")
+            except Exception as e:
+                logger.error(f"[SCAN] Error scanning CT logs for {domain}: {str(e)}")
         
         logger.info(f"[SCAN] Total unique subdomains found for {domain}: {len(all_subdomains)}")
-        return all_subdomains 
+        return all_subdomains
+
+    def _save_subdomain_to_db(self, session: Session, parent_domain: str, subdomain: str) -> Optional[Domain]:
+        """
+        Save a discovered subdomain to the database.
+        
+        Args:
+            session: Database session
+            parent_domain: Parent domain name
+            subdomain: Subdomain name to save
+            
+        Returns:
+            Optional[Domain]: Created or updated domain object
+        """
+        try:
+            # Get or create parent domain
+            parent = session.query(Domain).filter_by(domain_name=parent_domain).first()
+            if not parent:
+                parent = Domain(
+                    domain_name=parent_domain,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now()
+                )
+                session.add(parent)
+                session.flush()  # Get parent ID
+            
+            # Get or create subdomain
+            sub = session.query(Domain).filter_by(domain_name=subdomain).first()
+            if not sub:
+                sub = Domain(
+                    domain_name=subdomain,
+                    parent_domain_id=parent.id,  # Set parent relationship
+                    created_at=datetime.now(),
+                    updated_at=datetime.now()
+                )
+                session.add(sub)
+            else:
+                sub.parent_domain_id = parent.id  # Update parent relationship
+                sub.updated_at = datetime.now()
+            
+            session.commit()
+            logger.info(f"[DB] Saved subdomain relationship: {subdomain} -> {parent_domain}")
+            return sub
+            
+        except Exception as e:
+            logger.error(f"[DB] Error saving subdomain {subdomain}: {str(e)}")
+            session.rollback()
+            return None
+
+    def scan_and_process_subdomains(self, domain: str, port: int = 443, check_whois: bool = True, check_dns: bool = True, scanned_domains: Set[str] = None) -> List[Dict]:
+        """
+        Discover and process subdomains for a given domain.
+        
+        Args:
+            domain: The domain to scan subdomains for
+            port: Port to use for scanning (default: 443)
+            check_whois: Whether to check WHOIS for discovered subdomains
+            check_dns: Whether to check DNS for discovered subdomains
+            scanned_domains: Set of already scanned domains to avoid duplicates
+            
+        Returns:
+            List[Dict]: List of processed subdomain results
+        """
+        results = []
+        
+        # Start passive subdomain discovery
+        self.update_status(f'Starting subdomain discovery for {domain}...')
+        
+        # Get subdomains using all configured methods
+        discovered_subdomains = set()
+        
+        # Check certificate for subdomains
+        if 'cert' in self.methods:
+            cert_subdomains = self._get_certificate_sans(domain, port)
+            discovered_subdomains.update(cert_subdomains)
+            if cert_subdomains:
+                self.update_status(f'Found {len(cert_subdomains)} subdomains via certificates for {domain}')
+        
+        # Check Certificate Transparency logs
+        if 'ct' in self.methods:
+            ct_subdomains = self._get_ct_logs_subdomains(domain)
+            discovered_subdomains.update(ct_subdomains)
+            if ct_subdomains:
+                self.update_status(f'Found {len(ct_subdomains)} subdomains via CT logs for {domain}')
+        
+        # Log total unique subdomains found
+        if discovered_subdomains:
+            self.update_status(f'Processing {len(discovered_subdomains)} discovered subdomains for {domain}...')
+            
+            # Create database session
+            from .db import get_session
+            from sqlalchemy import create_engine
+            from .settings import settings
+            
+            # Get database path from settings
+            db_path = settings.get("paths.database", "data/certificates.db")
+            engine = create_engine(f"sqlite:///{db_path}")
+            session = Session(engine)
+            
+            try:
+                # Process each subdomain
+                for subdomain in discovered_subdomains:
+                    # Skip if already in master list
+                    if self.tracker and self.tracker.is_domain_known(subdomain):
+                        self.update_status(f'Skipping {subdomain} - Already processed')
+                        continue
+                    
+                    try:
+                        self.update_status(f'Processing subdomain: {subdomain}...')
+                        
+                        # Get domain information
+                        domain_info = None
+                        if check_whois or check_dns:
+                            if check_whois:
+                                self.update_status(f'Getting WHOIS information for {subdomain}...')
+                            if check_dns:
+                                self.update_status(f'Getting DNS records for {subdomain}...')
+                            domain_info = self.domain_scanner.scan_domain(
+                                subdomain,
+                                get_whois=check_whois,
+                                get_dns=check_dns
+                            )
+                        
+                        # Save subdomain to database
+                        self.update_status(f'Saving subdomain relationship: {subdomain} -> {domain}')
+                        subdomain_obj = self._save_subdomain_to_db(session, domain, subdomain)
+                        
+                        # Add to results
+                        result = {
+                            'domain': subdomain,
+                            'info': domain_info.to_dict() if domain_info else None
+                        }
+                        results.append(result)
+                        
+                        # Add to tracker's master list
+                        if self.tracker:
+                            self.tracker.add_to_master_list(subdomain)
+                        
+                        self.update_status(f'Successfully processed subdomain: {subdomain}')
+                        
+                    except Exception as e:
+                        logger.error(f"[SCAN] Error processing subdomain {subdomain}: {str(e)}")
+                        continue
+                    
+            finally:
+                session.close()
+                engine.dispose()
+        else:
+            self.update_status(f'No subdomains found for {domain}')
+        
+        return results 

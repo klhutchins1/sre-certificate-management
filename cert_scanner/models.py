@@ -593,7 +593,7 @@ class DomainDNSRecord(Base):
     """
     __tablename__ = 'domain_dns_records'
     __table_args__ = (
-        UniqueConstraint('domain_id', 'record_type', 'name', name='unique_domain_record'),
+        UniqueConstraint('domain_id', 'record_type', 'name', 'value', name='unique_domain_record'),
     )
     
     id = Column(Integer, primary_key=True)

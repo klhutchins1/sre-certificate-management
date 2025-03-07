@@ -68,9 +68,9 @@ DEFAULT_CONFIG = {
             "rate_limit": 10
         },
         "timeouts": {
-            "socket": 5,
-            "request": 10,
-            "dns": 3.0
+            "socket": 10,                     # Increased from 5 to 10 seconds
+            "request": 15,                    # Increased from 10 to 15 seconds
+            "dns": 5.0                        # Increased from 3.0 to 5.0 seconds
         }
     },
     "alerts": {

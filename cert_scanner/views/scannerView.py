@@ -12,26 +12,13 @@ including:
 import streamlit as st
 from datetime import datetime
 from sqlalchemy.orm import Session
-from urllib.parse import urlparse
-import socket
 import logging
-from ..models import (
-    Certificate, Host, HostIP, CertificateScan, CertificateBinding,
-    Domain, DomainDNSRecord,
-    HOST_TYPE_SERVER, ENV_PRODUCTION
-)
+from typing import Tuple
+from ..models import Domain, Certificate, DomainDNSRecord
 from ..static.styles import load_warning_suppression, load_css
-from ..domain_scanner import DomainScanner, DomainInfo
 from ..scanner import ScanManager
-from ..certificate_scanner import CertificateScanner
-from ..subdomain_scanner import SubdomainScanner
-import json
-from typing import Tuple, Dict, List, Optional
 import pandas as pd
-from ..settings import settings
-from ..models import IgnoredDomain
-from ..db import get_session
-from cert_scanner.notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import time
 
 # Configure logging
@@ -46,6 +33,21 @@ if not logger.handlers:
     # Set UTF-8 encoding for the handler
     console_handler.stream.reconfigure(encoding='utf-8')
     logger.addHandler(console_handler)
+
+class StreamlitProgressContainer:
+    """Wrapper for Streamlit progress functionality."""
+    
+    def __init__(self, progress_bar, status_text):
+        self.progress_bar = progress_bar
+        self.status_text = status_text
+    
+    def progress(self, value: float):
+        """Update progress bar."""
+        self.progress_bar.progress(value)
+    
+    def text(self, message: str):
+        """Update status text."""
+        self.status_text.text(message)
 
 def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     """
@@ -475,6 +477,14 @@ def render_scan_interface(engine) -> None:
         st.session_state.scan_in_progress = False
     if 'current_operation' not in st.session_state:
         st.session_state.current_operation = None
+    if 'scan_results' not in st.session_state:
+        st.session_state.scan_results = {
+            "success": [],
+            "error": [],
+            "warning": []
+        }
+    if 'scan_input' not in st.session_state:
+        st.session_state.scan_input = ""
     
     # Initialize scan manager if not exists
     if 'scan_manager' not in st.session_state:
@@ -502,15 +512,25 @@ def render_scan_interface(engine) -> None:
         input_col, options_col = st.columns([3, 2])
         
         with input_col:
+            # Check if we have scan targets from certificate view
+            if 'scan_targets' in st.session_state:
+                st.session_state.scan_input = "\n".join(st.session_state.scan_targets)
+                # Clear the scan targets to avoid reusing them
+                del st.session_state.scan_targets
+            
             # Scan input interface
             scan_input = st.text_area(
                 "Enter domains to scan (one per line)",
+                value=st.session_state.scan_input,
                 height=150,
                 placeholder="""example.com
 example.com:8443
 https://example.com
 internal.server.local:444"""
             )
+            
+            # Update session state with current input
+            st.session_state.scan_input = scan_input
         
         with options_col:
             st.markdown("### Scan Options")
@@ -543,7 +563,7 @@ internal.server.local:444"""
             st.session_state.scan_manager.reset_scan_state()
             
             # Validate input
-            if not scan_input.strip():
+            if not st.session_state.scan_input.strip():
                 notify("Please enter at least one domain to scan", "error")
                 show_notifications()
                 st.session_state.scan_in_progress = False
@@ -576,11 +596,11 @@ internal.server.local:444"""
             
             # Execute scans if we have targets
             if st.session_state.scan_manager.has_pending_targets():
-                progress_container = st.empty()
+                progress_bar = st.empty()
                 status_container = st.empty()
-                queue_status_container = st.empty()
+                queue_status = st.empty()
                 
-                with progress_container:
+                with progress_bar:
                     st.markdown("""
                         <style>
                         .stProgress > div > div > div > div {
@@ -589,6 +609,9 @@ internal.server.local:444"""
                         </style>
                         """, unsafe_allow_html=True)
                     progress = st.progress(0)
+                
+                # Create progress container
+                progress_container = StreamlitProgressContainer(progress, queue_status)
                 
                 # Process targets in a single session
                 with Session(engine) as session:
@@ -604,9 +627,6 @@ internal.server.local:444"""
                         hostname, port = target
                         target_key = f"{hostname}:{port}"
                         
-                        # Update queue status
-                        queue_status_container.text(f"Remaining targets in queue: {st.session_state.scan_manager.cert_scanner.get_queue_size()}")
-                        
                         try:
                             # Skip if this operation is already in progress
                             if st.session_state.current_operation == target_key:
@@ -615,25 +635,19 @@ internal.server.local:444"""
                             
                             # Update progress
                             current_step += 1
-                            progress.progress(min(current_step / total_steps, 1.0))
-                            status_container.text(f'Scanning {hostname}:{port}...')
                             
                             # Process the scan target
-                            process_scan_target(
+                            st.session_state.scan_manager.scan_target(
                                 session=session,
                                 domain=hostname,
                                 port=port,
                                 check_whois=check_whois,
                                 check_dns=check_dns,
                                 check_subdomains=check_subdomains,
-                                progress_container=progress_container,
                                 status_container=status_container,
+                                progress_container=progress_container,
                                 current_step=current_step,
-                                total_steps=total_steps,
-                                cert_scanner=st.session_state.scan_manager.cert_scanner,
-                                domain_scanner=st.session_state.scan_manager.domain_scanner,
-                                subdomain_scanner=st.session_state.scan_manager.subdomain_scanner,
-                                scan_queue=st.session_state.scan_manager.cert_scanner.tracker.scan_queue
+                                total_steps=total_steps
                             )
                             
                             # Update total steps based on queue size
@@ -652,7 +666,7 @@ internal.server.local:444"""
                 
                 # Clear status after completion
                 status_container.empty()
-                queue_status_container.empty()
+                queue_status.empty()
                 st.session_state.scan_in_progress = False
                 
                 # Get final scan stats

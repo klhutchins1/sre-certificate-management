@@ -315,104 +315,156 @@ class CertificateScanner:
         sock = None
         ssock = None
         cert_binary = None
+        max_retries = 3
+        retry_delay = 1  # seconds
+        last_error = None
         
-        try:
-            # Log the attempt
-            self.logger.info(f"Attempting to retrieve certificate from {address}:{port}")
-            
-            # Create SSL context - Accept all certificates initially
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE  # Accept all certs initially
-            context.set_ciphers('ALL')
-            
-            self.logger.debug(f"Created SSL context for {address}:{port}")
-            
-            # Try to resolve the hostname first
-            self.logger.debug(f"Resolving hostname {address}")
-            addrinfo = socket.getaddrinfo(address, port, proto=socket.IPPROTO_TCP)
-            if not addrinfo:
-                raise Exception(f"Could not resolve hostname '{address}'")
-            self.logger.debug(f"Successfully resolved {address} to {addrinfo[0][4]}")
-            
-            # Get the first address info entry
-            family, socktype, proto, canonname, sockaddr = addrinfo[0]
-            
-            # Create socket
-            self.logger.debug(f"Creating socket for {address}:{port}")
-            sock = socket.socket(family, socktype, proto)
-            if not sock:
-                raise Exception(f"Failed to create socket for {address}:{port}")
-            
-            # Set timeout and connect
-            sock.settimeout(self.socket_timeout)
-            self.logger.debug(f"Attempting connection to {sockaddr}")
-            sock.connect(sockaddr)
-            self.logger.debug(f"Successfully connected to {address}:{port}")
-            
-            # Wrap the socket with SSL
-            self.logger.debug(f"Wrapping socket with SSL for {address}:{port}")
-            ssock = context.wrap_socket(sock, server_hostname=address)
-            if not ssock:
-                raise Exception(f"Failed to wrap socket with SSL for {address}:{port}")
-            
-            ssock.settimeout(self.socket_timeout)
-            self.logger.debug(f"Successfully established SSL connection to {address}:{port}")
+        for attempt in range(max_retries):
+            try:
+                # Log the attempt
+                if attempt > 0:
+                    self.logger.info(f"Retry attempt {attempt + 1} for {address}:{port}")
+                else:
+                    self.logger.info(f"Attempting to retrieve certificate from {address}:{port}")
+                
+                # Create SSL context with TLS support
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE  # Accept all certs initially
+                
+                # Enable all available protocols
+                context.options &= ~ssl.OP_NO_TLSv1
+                context.options &= ~ssl.OP_NO_TLSv1_1
+                context.options &= ~ssl.OP_NO_TLSv1_2
+                context.options &= ~ssl.OP_NO_TLSv1_3
+                
+                # Set cipher list to support various configurations
+                context.set_ciphers('DEFAULT:@SECLEVEL=1')  # Allow older ciphers
+                
+                self.logger.debug(f"Created SSL context for {address}:{port}")
+                
+                # Try to resolve the hostname first
+                self.logger.debug(f"Resolving hostname {address}")
+                addrinfo = socket.getaddrinfo(address, port, proto=socket.IPPROTO_TCP)
+                if not addrinfo:
+                    raise Exception(f"Could not resolve hostname '{address}'")
+                self.logger.debug(f"Successfully resolved {address} to {addrinfo[0][4]}")
+                
+                # Get the first address info entry
+                family, socktype, proto, canonname, sockaddr = addrinfo[0]
+                
+                # Create socket
+                self.logger.debug(f"Creating socket for {address}:{port}")
+                sock = socket.socket(family, socktype, proto)
+                if not sock:
+                    raise Exception(f"Failed to create socket for {address}:{port}")
+                
+                # Set timeout and connect
+                sock.settimeout(self.socket_timeout)
+                self.logger.debug(f"Attempting connection to {sockaddr}")
+                sock.connect(sockaddr)
+                self.logger.debug(f"Successfully connected to {address}:{port}")
+                
+                # Wrap the socket with SSL
+                self.logger.debug(f"Wrapping socket with SSL for {address}:{port}")
+                ssock = context.wrap_socket(sock, server_hostname=address)
+                if not ssock:
+                    raise Exception(f"Failed to wrap socket with SSL for {address}:{port}")
+                
+                ssock.settimeout(self.socket_timeout)
+                self.logger.debug(f"Successfully established SSL connection to {address}:{port}")
+                        
+                # Get certificate in binary form
+                self.logger.debug(f"Retrieving certificate from {address}:{port}")
+                cert_binary = ssock.getpeercert(binary_form=True)
+                if cert_binary:
+                    self.logger.info(f"Certificate retrieved from {address}:{port}")
+                
+                    # Validate certificate chain
+                    self._validate_cert_chain(address, port, self.socket_timeout)
+                    return cert_binary
+                else:
+                    msg = f"The server at {address}:{port} accepted the connection but did not present a certificate"
+                    self.logger.warning(msg)
+                    return None
                     
-            # Get certificate in binary form
-            self.logger.debug(f"Retrieving certificate from {address}:{port}")
-            cert_binary = ssock.getpeercert(binary_form=True)
-            if cert_binary:
-                self.logger.info(f"Certificate retrieved from {address}:{port}")
-            
-                # Validate certificate chain
-                self._validate_cert_chain(address, port, self.socket_timeout)
-                return cert_binary
-            else:
-                msg = f"The server at {address}:{port} accepted the connection but did not present a certificate"
-                self.logger.warning(msg)
-                return None
+            except ssl.SSLError as e:
+                self._last_cert_chain = False
+                error_msg = ""
+                if "alert internal error" in str(e):
+                    error_msg = f"The server at {address}:{port} actively rejected the SSL/TLS connection"
+                elif "handshake failure" in str(e):
+                    error_msg = f"SSL/TLS handshake failed - The server might not support the offered protocol versions or cipher suites"
+                elif "unknown protocol" in str(e):
+                    error_msg = f"SSL/TLS protocol error - The server might be using an unsupported protocol version"
+                elif "certificate verify failed" in str(e):
+                    error_msg = f"Certificate verification failed - The server's certificate chain could not be validated"
+                else:
+                    error_msg = f"SSL/TLS connection failed: {str(e)}"
+                
+                last_error = error_msg
+                self.logger.warning(f"SSL error for {address}:{port} (attempt {attempt + 1}/{max_retries}): {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    self.logger.error(f"SSL error for {address}:{port}: {error_msg}")
+                    raise Exception(error_msg)
                     
-        except ssl.SSLError as e:
-            self._last_cert_chain = False
-            if "alert internal error" in str(e):
-                msg = f"The server at {address}:{port} actively rejected the SSL/TLS connection"
-            else:
-                msg = f"SSL/TLS connection failed: {str(e)}"
-                self.logger.error(f"SSL error for {address}:{port}: {msg}")
-                raise Exception(msg)
-                    
-        except socket.timeout:
-            msg = f"The server at {address}:{port} did not respond within {self.socket_timeout} seconds"
-            self.logger.error(msg)
-            raise Exception(msg)
+            except socket.timeout:
+                msg = f"The server at {address}:{port} did not respond within {self.socket_timeout} seconds"
+                last_error = msg
+                self.logger.warning(f"{msg} (attempt {attempt + 1}/{max_retries})")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                else:
+                    self.logger.error(msg)
+                    raise Exception(msg)
             
-        except ConnectionRefusedError:
+            except ConnectionRefusedError:
                 msg = f"Nothing is listening for HTTPS connections at {address}:{port}"
                 self.logger.warning(f"{address}:{port} is not reachable")
                 self.logger.error(msg)
                 raise Exception(msg)
                 
-        except Exception as e:
-            self.logger.error(f"Error during certificate retrieval for {address}:{port}: {str(e)}")
-            raise
+            except Exception as e:
+                error_msg = f"Error during certificate retrieval for {address}:{port}: {str(e)}"
+                last_error = error_msg
+                self.logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                
+                if "getaddrinfo failed" in str(e):
+                    error_msg = f"Could not resolve hostname '{address}'"
+                    raise Exception(error_msg)
+                
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                else:
+                    self.logger.error(error_msg)
+                    raise Exception(error_msg)
             
-        finally:
-            # Clean up sockets in reverse order of creation
-            if ssock:
-                try:
-                    ssock.close()
-                except Exception as e:
-                    self.logger.debug(f"Error closing SSL socket for {address}:{port}: {str(e)}")
-                ssock = None
-            if sock:
-                try:
-                    sock.close()
-                except Exception as e:
-                    self.logger.debug(f"Error closing socket for {address}:{port}: {str(e)}")
-                sock = None
+            finally:
+                # Clean up sockets in reverse order of creation
+                if ssock:
+                    try:
+                        ssock.close()
+                    except Exception as e:
+                        self.logger.debug(f"Error closing SSL socket for {address}:{port}: {str(e)}")
+                    ssock = None
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception as e:
+                        self.logger.debug(f"Error closing socket for {address}:{port}: {str(e)}")
+                    sock = None
         
-        return cert_binary
+        # If we get here, all retries failed
+        if last_error:
+            raise Exception(f"Failed to retrieve certificate after {max_retries} attempts: {last_error}")
+        return None
         
     def _validate_cert_chain(self, address: str, port: int, timeout: float) -> None:
         """Validate certificate chain separately."""

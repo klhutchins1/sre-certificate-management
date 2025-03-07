@@ -11,7 +11,7 @@ This module provides functionality for scanning and analyzing domain information
 import whois
 import dns.resolver
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import logging
 import re
 import socket
@@ -105,6 +105,8 @@ class DomainScanner:
         # Load domain classification settings
         self.internal_domains = set(settings.get('scanning.internal.domains', []))
         self.external_domains = set(settings.get('scanning.external.domains', []))
+        
+        self.logger = logging.getLogger(__name__)
         
         logger.info(f"Initialized DomainScanner with WHOIS rate limit: {self.whois_rate_limit}/min, "
                    f"DNS rate limit: {self.dns_rate_limit}/min, DNS timeout: {self.dns_timeout}s")
@@ -436,6 +438,54 @@ class DomainScanner:
                 expanded.add(domain)
         return list(expanded)
     
+    def _is_domain_ignored(self, domain: str) -> Tuple[bool, Optional[str]]:
+        """
+        Check if a domain is in the ignore list.
+        
+        Args:
+            domain: Domain to check
+            
+        Returns:
+            Tuple[bool, Optional[str]]: (is_ignored, reason)
+        """
+        try:
+            # Create database session
+            from sqlalchemy import create_engine
+            from .settings import settings
+            from sqlalchemy.orm import Session
+            
+            # Get database path from settings
+            db_path = settings.get("paths.database", "data/certificates.db")
+            engine = create_engine(f"sqlite:///{db_path}")
+            session = Session(engine)
+            
+            try:
+                # First check exact matches
+                ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
+                if ignored:
+                    return True, ignored.reason
+                
+                # Then check wildcard patterns
+                wildcard_patterns = session.query(IgnoredDomain).filter(
+                    IgnoredDomain.pattern.like('*.*')
+                ).all()
+                
+                for pattern in wildcard_patterns:
+                    if pattern.pattern.startswith('*.'):
+                        suffix = pattern.pattern[2:]  # Remove *. from pattern
+                        if domain.endswith(suffix):
+                            return True, pattern.reason
+                
+                return False, None
+                
+            finally:
+                session.close()
+                engine.dispose()
+                
+        except Exception as e:
+            self.logger.error(f"Error checking ignore list for {domain}: {str(e)}")
+            return False, None
+
     def scan_domain(self, domain: str, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
         """
         Scan a domain for all available information.
@@ -457,6 +507,17 @@ class DomainScanner:
             )
         
         try:
+            # Check if domain is in ignore list
+            is_ignored, reason = self._is_domain_ignored(domain)
+            if is_ignored:
+                self.logger.info(f"[SCAN] Skipping {domain} - Domain is in ignore list" + 
+                               (f" ({reason})" if reason else ""))
+                return DomainInfo(
+                    domain_name=domain,
+                    is_valid=True,
+                    error=f"Domain is in ignore list" + (f" ({reason})" if reason else "")
+                )
+
             whois_info = {}
             dns_records = []
             

@@ -405,7 +405,7 @@ def render_domain_list(engine):
                                 on_delete=delete_domain,
                                 session=session,
                                 additional_actions=[{
-                                    "title": "🚫 Hide Domain",
+                                    "title": "🚫 Ignore Domain",
                                     "callback": add_to_ignore_list,
                                     "warning": f"This will hide '{domain.domain_name}' from the domain list. You can restore it later from the settings page.",
                                     "confirmation_required": True,

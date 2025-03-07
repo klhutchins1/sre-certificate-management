@@ -1,15 +1,12 @@
 """
-Domain and Certificate Scanner View Module
+Scanner view module for the Certificate Management System.
 
-This module provides a comprehensive interface for scanning and discovering:
-- SSL/TLS certificates
-- Domain information and registration details
-- DNS records
-- Host relationships
-- Certificate-domain associations
-
-The scanner automatically creates and updates domain records while scanning
-certificates, providing a complete view of the domain's security infrastructure.
+This module provides the UI components and view logic for the scanner interface,
+including:
+- Scan target input and validation
+- Progress tracking and display
+- Result visualization
+- Error handling and user feedback
 """
 
 import streamlit as st
@@ -25,12 +22,16 @@ from ..models import (
 )
 from ..static.styles import load_warning_suppression, load_css
 from ..domain_scanner import DomainScanner, DomainInfo
-from ..scanner import CertificateScanner, CertificateInfo, ScanResult
-from cert_scanner.notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from ..scanner import ScanManager
+from ..certificate_scanner import CertificateScanner
+from ..subdomain_scanner import SubdomainScanner
 import json
 from typing import Tuple, Dict, List, Optional
 import pandas as pd
-from ..subdomain_scanner import SubdomainScanner
+from ..settings import settings
+from ..models import IgnoredDomain
+from ..db import get_session
+from cert_scanner.notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import time
 
 # Configure logging
@@ -474,36 +475,15 @@ def render_scan_interface(engine) -> None:
         st.session_state.scan_in_progress = False
     if 'current_operation' not in st.session_state:
         st.session_state.current_operation = None
-    if 'scan_results' not in st.session_state:
-        st.session_state.scan_results = {
-            "success": [],
-            "error": [],
-            "warning": []
-        }
     
-    # Initialize scanners
-    if 'cert_scanner' not in st.session_state:
-        st.session_state.cert_scanner = CertificateScanner()
+    # Initialize scan manager if not exists
+    if 'scan_manager' not in st.session_state:
+        st.session_state.scan_manager = ScanManager()
     
-    if 'domain_scanner' not in st.session_state:
-        st.session_state.domain_scanner = DomainScanner()
-    
-    if 'subdomain_scanner' not in st.session_state:
-        st.session_state.subdomain_scanner = SubdomainScanner(methods=['cert', 'ct'])
-        # Set the tracker reference
-        st.session_state.subdomain_scanner.tracker = st.session_state.cert_scanner.tracker
-    
-    # Initialize session state for tracking scanned domains
-    if 'scanned_domains' not in st.session_state:
-        st.session_state.scanned_domains = set()
-    
-    # Reset scanned domains when starting a new scan
+    # Reset scan state when requested
     if st.button("Reset Scan History"):
-        st.session_state.scanned_domains = set()
+        st.session_state.scan_manager.reset_scan_state()
         st.success("Scan history has been reset")
-        # Also reset the scanner states
-        st.session_state.cert_scanner.reset_scan_state()
-        st.session_state.subdomain_scanner.tracker = st.session_state.cert_scanner.tracker
     
     st.title("Domain & Certificate Scanner")
     st.markdown("""
@@ -559,18 +539,8 @@ internal.server.local:444"""
             logger.info("[SCAN] Starting new scan session")
             st.session_state.scan_in_progress = True
             
-            # Reset scan results
-            st.session_state.scan_results = {
-                "success": [],
-                "error": [],
-                "warning": []
-            }
-            
-            # Get fresh scanner instances for this scan session
-            domain_scanner, cert_scanner, subdomain_scanner = get_scanners()
-            
-            # Reset scanner state for new scan
-            cert_scanner.reset_scan_state()
+            # Reset scan results for new scan
+            st.session_state.scan_manager.reset_scan_state()
             
             # Validate input
             if not scan_input.strip():
@@ -579,62 +549,21 @@ internal.server.local:444"""
                 st.session_state.scan_in_progress = False
                 return
             
-            # Parse and validate scan targets
-            entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
-            validation_errors = False
-            
             # Process each target
+            validation_errors = False
+            entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
+            
             for entry in entries:
-                try:
-                    # Parse entry
-                    has_scheme = entry.startswith(('http://', 'https://'))
-                    
-                    if has_scheme:
-                        parsed = urlparse(entry)
-                        hostname = parsed.netloc
-                        if ':' in hostname:
-                            hostname, port_str = hostname.rsplit(':', 1)
-                            is_valid, port = validate_port(port_str, entry)
-                            if not is_valid:
-                                validation_errors = True
-                                continue
-                        elif parsed.port:
-                            is_valid, port = validate_port(str(parsed.port), entry)
-                            if not is_valid:
-                                validation_errors = True
-                                continue
-                        else:
-                            port = 443
-                    else:
-                        if ':' in entry:
-                            hostname, port_str = entry.rsplit(':', 1)
-                            is_valid, port = validate_port(port_str, entry)
-                            if not is_valid:
-                                validation_errors = True
-                                continue
-                        else:
-                            hostname = entry
-                            port = 443
-                    
-                    hostname = hostname.strip('/')
-                    if not hostname:
-                        notify("Invalid entry: {} - Hostname cannot be empty", "error", entry)
-                        validation_errors = True
-                        continue
-                    
-                    # Add validated target to scanner queue
-                    if cert_scanner.add_scan_target(hostname, port):
-                        logger.info(f"[SCAN] Added initial target: {hostname}:{port}")
-                    else:
-                        logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned")
-                        st.session_state.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned)")
-                    
-                except Exception as e:
-                    notify(f"Error parsing {entry}: Please check the format", "error")
+                is_valid, hostname, port, error = st.session_state.scan_manager.process_scan_target(entry)
+                if not is_valid:
+                    notify(f"Invalid entry {entry}: {error}", "error")
                     validation_errors = True
                     continue
+                
+                # Add validated target to queue
+                st.session_state.scan_manager.add_to_queue(hostname, port)
             
-            # Show notifications at the end using the placeholder
+            # Show notifications
             with notification_placeholder:
                 show_notifications()
             
@@ -646,8 +575,7 @@ internal.server.local:444"""
                 return
             
             # Execute scans if we have targets
-            if cert_scanner.has_pending_targets():
-                logger.info(f"[SCAN] Starting scan with {cert_scanner.get_queue_size()} initial targets")
+            if st.session_state.scan_manager.has_pending_targets():
                 progress_container = st.empty()
                 status_container = st.empty()
                 queue_status_container = st.empty()
@@ -665,11 +593,11 @@ internal.server.local:444"""
                 # Process targets in a single session
                 with Session(engine) as session:
                     current_step = 0
-                    total_steps = cert_scanner.get_queue_size()
+                    total_steps = st.session_state.scan_manager.cert_scanner.get_queue_size()
                     
-                    while cert_scanner.has_pending_targets():
+                    while st.session_state.scan_manager.has_pending_targets():
                         # Get next target from queue
-                        target = cert_scanner.get_next_target()
+                        target = st.session_state.scan_manager.get_next_target()
                         if not target:
                             break
                             
@@ -677,7 +605,7 @@ internal.server.local:444"""
                         target_key = f"{hostname}:{port}"
                         
                         # Update queue status
-                        queue_status_container.text(f"Remaining targets in queue: {cert_scanner.get_queue_size()}")
+                        queue_status_container.text(f"Remaining targets in queue: {st.session_state.scan_manager.cert_scanner.get_queue_size()}")
                         
                         try:
                             # Skip if this operation is already in progress
@@ -702,18 +630,18 @@ internal.server.local:444"""
                                 status_container=status_container,
                                 current_step=current_step,
                                 total_steps=total_steps,
-                                cert_scanner=cert_scanner,
-                                domain_scanner=domain_scanner,
-                                subdomain_scanner=subdomain_scanner,
-                                scan_queue=cert_scanner.tracker.scan_queue
+                                cert_scanner=st.session_state.scan_manager.cert_scanner,
+                                domain_scanner=st.session_state.scan_manager.domain_scanner,
+                                subdomain_scanner=st.session_state.scan_manager.subdomain_scanner,
+                                scan_queue=st.session_state.scan_manager.cert_scanner.tracker.scan_queue
                             )
                             
                             # Update total steps based on queue size
-                            total_steps = max(total_steps, current_step + cert_scanner.get_queue_size())
+                            total_steps = max(total_steps, current_step + st.session_state.scan_manager.cert_scanner.get_queue_size())
                             
                         except Exception as e:
                             logger.error(f"[SCAN] Error processing {target_key}: {str(e)}")
-                            st.session_state.scan_results["error"].append(f"{target_key} - {str(e)}")
+                            st.session_state.scan_manager.scan_results["error"].append(f"{target_key} - {str(e)}")
                         finally:
                             # Clear current operation
                             if st.session_state.current_operation == target_key:
@@ -728,15 +656,15 @@ internal.server.local:444"""
                 st.session_state.scan_in_progress = False
                 
                 # Get final scan stats
-                stats = cert_scanner.get_scan_stats()
+                stats = st.session_state.scan_manager.get_scan_stats()
                 
                 # Show success message and results
-                if st.session_state.scan_results["success"]:
+                if st.session_state.scan_manager.scan_results["success"]:
                     notify(f"Scan completed! Processed {stats['total_scanned']} targets.", "success")
                 
-                if st.session_state.scan_results["error"]:
+                if st.session_state.scan_manager.scan_results["error"]:
                     notify("Some scans failed:", "error")
-                    for error in st.session_state.scan_results["error"]:
+                    for error in st.session_state.scan_manager.scan_results["error"]:
                         notify(f"- {error}", "error")
                 
                 # Show notifications
@@ -757,7 +685,7 @@ internal.server.local:444"""
                 with tab_domains:
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
-                        for domain in cert_scanner.tracker.scanned_domains:
+                        for domain in st.session_state.scan_manager.cert_scanner.tracker.scanned_domains:
                             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
                             if domain_obj:
                                 st.markdown(f"### {domain_obj.domain_name}")
@@ -774,7 +702,7 @@ internal.server.local:444"""
                 with tab_certs:
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
-                        for domain in cert_scanner.tracker.scanned_domains:
+                        for domain in st.session_state.scan_manager.cert_scanner.tracker.scanned_domains:
                             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
                             if domain_obj and domain_obj.certificates:
                                 st.markdown(f"### {domain_obj.domain_name}")
@@ -795,7 +723,7 @@ internal.server.local:444"""
                 with tab_dns:
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
-                        for domain in cert_scanner.tracker.scanned_domains:
+                        for domain in st.session_state.scan_manager.cert_scanner.tracker.scanned_domains:
                             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
                             if domain_obj and domain_obj.dns_records:
                                 st.markdown(f"### {domain_obj.domain_name}")

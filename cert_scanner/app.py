@@ -19,8 +19,9 @@ The application features multiple views including:
 # Standard library imports
 import threading
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
+from typing import Optional, Dict, List
 
 # Third-party imports
 import streamlit as st
@@ -29,7 +30,9 @@ import plotly.express as px
 from sqlalchemy.orm import Session
 
 # Local application imports
-from .scanner import CertificateScanner, CertificateInfo
+from .settings import settings
+from .certificate_scanner import CertificateScanner, CertificateInfo
+from .scanner import ScanManager
 from .models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
     # Host type constants
@@ -39,7 +42,8 @@ from .models import (
     # Binding type constants
     BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
     # Platform constants
-    PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
+    PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION,
+    Domain
 )
 from .constants import platform_options
 from .db import init_database, get_session

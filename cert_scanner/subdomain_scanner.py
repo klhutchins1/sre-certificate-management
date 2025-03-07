@@ -13,7 +13,7 @@ import socket
 import time
 from typing import Set, List, Optional, Dict
 from .domain_scanner import DomainScanner
-from .scanner import CertificateScanner
+from .certificate_scanner import CertificateScanner
 from .models import IgnoredDomain, Domain
 from .db import get_session
 from sqlalchemy import create_engine

@@ -1,12 +1,17 @@
+"""
+Unit tests for the scanner module.
+"""
+
+import logging
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 import socket
 import ssl
 from unittest.mock import Mock, patch, MagicMock, call
 import OpenSSL
 from OpenSSL.crypto import X509, X509Name
-from cert_scanner.scanner import CertificateScanner, CertificateInfo, ScanResult
-import logging
+from cert_scanner.certificate_scanner import CertificateScanner, CertificateInfo, ScanResult
+from cert_scanner.scanner import ScanTracker, ScanManager
 
 @pytest.fixture
 def scanner():

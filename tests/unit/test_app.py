@@ -1,12 +1,17 @@
+"""
+Unit tests for the app module.
+"""
+
 import pytest
 import streamlit as st
 from cert_scanner.app import init_session_state, render_sidebar, main
-from cert_scanner.scanner import CertificateScanner
+from cert_scanner.certificate_scanner import CertificateScanner, CertificateInfo
+from cert_scanner.scanner import ScanManager
 from cert_scanner.settings import Settings
 from unittest.mock import patch, MagicMock, call
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from cert_scanner.models import Base, Certificate
+from cert_scanner.models import Base, Certificate, Domain
 import threading
 import logging
 

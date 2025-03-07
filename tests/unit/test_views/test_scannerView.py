@@ -1,12 +1,19 @@
+"""
+Unit tests for the scanner view module.
+"""
+
 import pytest
-from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
+import streamlit as st
+from unittest.mock import Mock, patch, MagicMock
+from datetime import datetime, timezone
+
+from cert_scanner.certificate_scanner import CertificateInfo, ScanResult
+from cert_scanner.scanner import ScanManager
+from cert_scanner.models import Domain, Certificate
 from sqlalchemy import create_engine
 from cert_scanner.models import Certificate, CertificateScan, Host
 from cert_scanner.views.scannerView import render_scan_interface
-from cert_scanner.scanner import CertificateInfo, ScanResult
 from urllib.parse import urlparse
-import streamlit as st
 
 @pytest.fixture
 def engine():

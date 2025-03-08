@@ -21,13 +21,14 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import func, not_
+from sqlalchemy import func, not_, select, case
 from ..models import Certificate, Host, Domain, Application
 import plotly.express as px
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from collections import defaultdict
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from ..monitoring import monitor_rendering, monitor_query, performance_metrics
 
 def get_root_domain(domain_name):
     """
@@ -79,48 +80,90 @@ def get_domain_hierarchy(domains):
     
     return domain_tree
 
-def get_root_domains(session):
+def get_root_domains(session, domains=None):
     """Get all root domains (e.g., example.com, not sub.example.com)."""
-    # Get all domains
-    domains = session.query(Domain).all()
+    # Use provided domains or query if not provided
+    if domains is None:
+        domains = session.query(Domain).all()
     
-    # Get domain hierarchy
-    domain_tree = get_domain_hierarchy(domains)
+    # Get domain hierarchy using set operations for better performance
+    root_domain_names = {get_root_domain(d.domain_name) for d in domains}
+    root_domains = [d for d in domains if d.domain_name in root_domain_names]
     
-    # The keys of the domain tree are our root domains
-    root_domain_names = list(domain_tree.keys())
+    # Update registration info in bulk if needed
+    domains_to_update = []
+    for domain in root_domains:
+        if not domain.registration_date or not domain.expiration_date:
+            domain.registration_date = datetime(2007, 5, 31, 21, 27, 42)
+            domain.expiration_date = datetime(2025, 5, 31, 21, 27, 42)
+            domain.updated_at = datetime.now()
+            domains_to_update.append(domain)
     
-    # Find or create Domain objects for these root domains
-    root_domains = []
-    existing_domains = {d.domain_name: d for d in domains}
-    
-    for root_name in root_domain_names:
-        if root_name in existing_domains:
-            # Use existing domain
-            root_domains.append(existing_domains[root_name])
-        else:
-            # Create new domain object
-            new_domain = Domain(
-                domain_name=root_name,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-                is_active=True
-            )
-            session.add(new_domain)
-            root_domains.append(new_domain)
-    
-    # Commit the changes to get IDs for new domains
-    session.commit()
-    
-    # Store debug information
-    st.session_state.debug_root_domains = root_domain_names
-    st.session_state.debug_domain_tree = {k: [d.domain_name for d in v] for k, v in domain_tree.items()}
+    # Bulk update if needed
+    if domains_to_update:
+        session.bulk_save_objects(domains_to_update, update_changed_only=True)
+        session.commit()
     
     return root_domains
 
 def get_root_domains_count(session):
     """Count the number of root domains."""
     return len(get_root_domains(session))
+
+def get_dashboard_metrics(session):
+    """Get all dashboard metrics in a single optimized query."""
+    thirty_days = datetime.now() + timedelta(days=30)
+    now = datetime.now()
+    
+    # Create subquery for root domains
+    domains = session.query(Domain).all()
+    root_domain_names = {get_root_domain(d.domain_name) for d in domains}
+    root_domains = [d for d in domains if d.domain_name in root_domain_names]
+    
+    # Build metrics query
+    metrics_query = select([
+        func.count(Certificate.id).label('total_certs'),
+        func.sum(
+            case(
+                (Certificate.valid_until <= thirty_days, 1),
+                else_=0
+            )
+        ).label('expiring_certs'),
+        func.count(Domain.id).label('total_domains'),
+        func.count(Application.id).label('total_apps'),
+        func.count(Host.id).label('total_hosts')
+    ]).select_from(
+        Certificate.__table__.outerjoin(
+            Domain.__table__
+        ).outerjoin(
+            Application.__table__
+        ).outerjoin(
+            Host.__table__
+        )
+    )
+    
+    # Execute query
+    result = session.execute(metrics_query).first()
+    
+    # Calculate domain-specific metrics
+    total_root_domains = len(root_domains)
+    expiring_domains = sum(
+        1 for d in root_domains
+        if d.expiration_date and d.expiration_date <= thirty_days
+        and d.expiration_date > now
+    )
+    
+    return {
+        'total_certs': result.total_certs,
+        'expiring_certs': result.expiring_certs,
+        'total_domains': result.total_domains,
+        'total_root_domains': total_root_domains,
+        'expiring_domains': expiring_domains,
+        'total_apps': result.total_apps,
+        'total_hosts': result.total_hosts,
+        'total_subdomains': result.total_domains - total_root_domains,
+        'root_domains': root_domains
+    }
 
 def create_timeline(df, title, height=500, color='rgb(31, 119, 180)', title_size=24):
     """Create a standardized timeline visualization."""
@@ -186,70 +229,102 @@ def update_domain_registration_info(domain):
     """Update domain registration and expiration dates if not set."""
     if not domain.registration_date or not domain.expiration_date:
         # Set some reasonable defaults for now
-        # virtualterminal.com, elementexpress.com, and hostedpayments.com
-        # were likely registered around the same time as coremanagementsystem.com
         domain.registration_date = datetime(2007, 5, 31, 21, 27, 42)
         domain.expiration_date = datetime(2025, 5, 31, 21, 27, 42)
         domain.updated_at = datetime.now()
 
-def render_dashboard(engine) -> None:
-    """
-    Render the main certificate management dashboard.
+@monitor_rendering("performance_metrics")
+def render_performance_metrics():
+    """Render performance metrics if enabled."""
+    if st.checkbox("Show Performance Metrics"):
+        st.subheader("Performance Metrics")
+        
+        # Display average durations
+        metrics_data = []
+        for name in performance_metrics.metrics.keys():
+            avg_duration = performance_metrics.get_average_duration(name)
+            metrics_data.append({
+                'Component': name,
+                'Average Duration (s)': f"{avg_duration:.3f}",
+                'Calls': len(performance_metrics.get_metrics(name))
+            })
+        
+        if metrics_data:
+            df = pd.DataFrame(metrics_data).sort_values('Average Duration (s)', ascending=False)
+            st.dataframe(df, use_container_width=True)
+            
+            # Add a chart of the slowest components
+            fig = px.bar(
+                df.head(10),
+                x='Component',
+                y='Average Duration (s)',
+                title='Top 10 Slowest Components'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Option to clear metrics
+        if st.button("Clear Performance Metrics"):
+            performance_metrics.clear_metrics()
+            st.success("Performance metrics cleared")
 
-    This function creates an interactive dashboard that provides a high-level
-    overview of the certificate management system's current state, including:
-    - Total number of certificates, domains, and applications
-    - Certificates and domains expiring within 30 days
-    - Total number of monitored hosts
-    - Interactive timeline visualizations
-    """
+@monitor_rendering("dashboard")
+def render_dashboard(engine) -> None:
+    """Render the main certificate management dashboard."""
     # Initialize UI components and styles
     load_warning_suppression()
     load_css()
-    
-    # Initialize and clear notifications
     initialize_notifications()
     clear_notifications()
-    
-    # Create notification placeholder at the top
     notification_placeholder = st.empty()
     
     st.title("Dashboard")
     st.divider()
     
     try:
-        with SessionManager(engine) as session:
+        with monitor_query("dashboard_data"), SessionManager(engine) as session:
             if not session:
                 notify("Database connection failed. \n", "error")
                 show_notifications()
                 return
             
             try:
-                # Query and calculate key metrics
-                total_certs = session.query(Certificate).count()
-                total_domains = session.query(Domain).count()
-                total_apps = session.query(Application).count()
-                total_hosts = session.query(Host).count()
-                
-                # Get all root domains and ensure they have registration info
-                root_domains = get_root_domains(session)
-                for domain in root_domains:
-                    update_domain_registration_info(domain)
-                session.commit()
-                
-                total_root_domains = len(root_domains)
-                
-                expiring_domains = sum(
-                    1 for d in root_domains
-                    if d.expiration_date and d.expiration_date <= datetime.now() + timedelta(days=30)
-                    and d.expiration_date > datetime.now()
-                )
-                
-                # Calculate expiring certificates
-                expiring_certs = session.query(Certificate).filter(
-                    Certificate.valid_until <= datetime.now() + timedelta(days=30),
-                    Certificate.valid_until > datetime.now()
-                ).count()
+                # Query all metrics in a single block to minimize round trips
+                with monitor_query("dashboard_metrics"):
+                    # Get current time once
+                    now = datetime.now()
+                    thirty_days = now + timedelta(days=30)
+                    
+                    # Get all domains once and reuse
+                    domains = session.query(Domain).all()
+                    total_domains = len(domains)
+                    
+                    # Get root domains using cached domain list
+                    root_domains = get_root_domains(session, domains)
+                    total_root_domains = len(root_domains)
+                    
+                    # Calculate expiring domains using list comprehension
+                    expiring_domains = len([
+                        d for d in root_domains
+                        if d.expiration_date and now < d.expiration_date <= thirty_days
+                    ])
+                    
+                    # Get certificate metrics using ORM query
+                    cert_metrics = session.query(
+                        func.count(Certificate.id),
+                        func.sum(
+                            case(
+                                (Certificate.valid_until <= thirty_days, 1),
+                                else_=0
+                            )
+                        )
+                    ).first()
+                    
+                    total_certs = cert_metrics[0] or 0
+                    expiring_certs = cert_metrics[1] or 0
+                    
+                    # Get other counts using simple count queries
+                    total_apps = session.query(Application).count()
+                    total_hosts = session.query(Host).count()
                 
                 # Display metrics in two rows
                 st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
@@ -270,21 +345,22 @@ def render_dashboard(engine) -> None:
                 
                 st.divider()
                 
-                # Create certificate timeline
-                certs = session.query(
-                    Certificate.common_name,
-                    Certificate.valid_from,
-                    Certificate.valid_until
-                ).all()
+                # Create certificate timeline with optimized query
+                with monitor_query("certificate_timeline"):
+                    certs = session.query(
+                        Certificate.common_name.label('Name'),
+                        Certificate.valid_from.label('Start'),
+                        Certificate.valid_until.label('End')
+                    ).all()
+                    certs_df = pd.DataFrame(certs) if certs else pd.DataFrame()
                 
-                if certs:
-                    df_certs = pd.DataFrame(certs, columns=['Name', 'Start', 'End'])
+                if not certs_df.empty:
                     min_height = 500
                     height_per_cert = 30
-                    cert_chart_height = max(min_height, len(certs) * height_per_cert)
+                    cert_chart_height = max(min_height, len(certs_df) * height_per_cert)
                     
                     fig_certs = create_timeline(
-                        df_certs,
+                        certs_df,
                         'Certificate Validity Periods',
                         cert_chart_height,
                         title_size=28
@@ -293,30 +369,31 @@ def render_dashboard(engine) -> None:
                 else:
                     notify("No certificates found in database. \n", "info")
                 
-                # Add separator between graphs
                 st.divider()
                 
-                # Create root domain timeline using only the identified root domains
-                root_domain_data = []
-                for domain in root_domains:
-                    if domain.registration_date and domain.expiration_date:
-                        root_domain_data.append({
-                            'Name': domain.domain_name,
-                            'Start': domain.registration_date,
-                            'End': domain.expiration_date
-                        })
+                # Create root domain timeline with optimized data handling
+                with monitor_query("domain_timeline"):
+                    domain_data = [
+                        {
+                            'Name': d.domain_name,
+                            'Start': d.registration_date,
+                            'End': d.expiration_date
+                        }
+                        for d in root_domains
+                        if d.registration_date and d.expiration_date
+                    ]
+                    df_domains = pd.DataFrame(domain_data) if domain_data else pd.DataFrame()
                 
-                if root_domain_data:
-                    df_domains = pd.DataFrame(root_domain_data)
+                if not df_domains.empty:
                     min_height = 500
                     height_per_domain = 30
-                    domain_chart_height = max(min_height, len(root_domain_data) * height_per_domain)
+                    domain_chart_height = max(min_height, len(df_domains) * height_per_domain)
                     
                     fig_domains = create_timeline(
                         df_domains,
                         'Domain Registration Periods',
                         domain_chart_height,
-                        color='rgb(255, 127, 14)',  # Orange color for domain timeline
+                        color='rgb(255, 127, 14)',
                         title_size=28
                     )
                     st.plotly_chart(fig_domains, use_container_width=True)
@@ -334,4 +411,7 @@ def render_dashboard(engine) -> None:
         notify(f"Error connecting to database: {str(e)} \n", "error")
         with notification_placeholder:
             show_notifications()
+    
+    # Show performance metrics at the bottom
+    render_performance_metrics()
 

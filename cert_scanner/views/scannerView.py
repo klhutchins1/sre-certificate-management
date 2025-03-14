@@ -14,9 +14,12 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 import logging
 from typing import Tuple
-from ..models import Domain, Certificate, DomainDNSRecord
+from ..models import Domain, Certificate, DomainDNSRecord, Host, HostIP, CertificateBinding, CertificateScan, HOST_TYPE_SERVER, ENV_PRODUCTION
 from ..static.styles import load_warning_suppression, load_css
-from ..scanner import ScanManager
+from ..scanner import ScanManager, ScanProcessor
+from ..domain_scanner import DomainScanner
+from ..certificate_scanner import CertificateScanner
+from ..subdomain_scanner import SubdomainScanner
 import pandas as pd
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import time
@@ -695,21 +698,20 @@ internal.server.local:444"""
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
                         scanned_domains = st.session_state.scan_manager.cert_scanner.tracker.scanned_domains
-                        logger.info(f"[DNS] Processing DNS records for {len(scanned_domains)} domains")
+                        logger.info(f"[DNS] Processing {len(scanned_domains)} domains for display")
                         
                         for domain in scanned_domains:
                             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
                             if domain_obj:
                                 dns_records = domain_obj.dns_records
-                                logger.info(f"[DNS] Found {len(dns_records)} DNS records for {domain}")
-                                
                                 if dns_records:
+                                    logger.info(f"[DNS] Found {len(dns_records)} records for {domain}")
                                     st.markdown(f"### {domain_obj.domain_name}")
                                     records_df = []
                                     
                                     for record in dns_records:
                                         # Convert priority to string 'N/A' if None, otherwise keep as int
-                                        priority = record.priority if record.priority is not None else 'N/A'
+                                        priority = str(record.priority) if record.priority is not None else 'N/A'
                                         
                                         record_data = {
                                             'Type': record.record_type,
@@ -723,10 +725,6 @@ internal.server.local:444"""
                                     
                                     if records_df:
                                         df = pd.DataFrame(records_df)
-                                        
-                                        # Convert Priority column to string type to handle mixed data
-                                        df['Priority'] = df['Priority'].astype(str)
-                                        
                                         st.dataframe(
                                             df,
                                             column_config={

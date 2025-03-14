@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .settings import settings
 from .domain_scanner import DomainScanner, DomainInfo
 from .subdomain_scanner import SubdomainScanner
-from .models import IgnoredDomain, Domain, DomainDNSRecord, Certificate, Host, HostIP, CertificateBinding, CertificateScan, HOST_TYPE_SERVER, ENV_PRODUCTION
+from .models import IgnoredDomain, Domain, DomainDNSRecord, Certificate, Host, HostIP, CertificateBinding, CertificateScan, HOST_TYPE_SERVER, ENV_PRODUCTION, IgnoredCertificate
 
 # Import CertificateScanner and CertificateInfo lazily to avoid circular imports
 CertificateScanner = None

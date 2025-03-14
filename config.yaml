@@ -24,6 +24,11 @@ ignore_lists:
     - '*stage*'
     - '*qa*'
     - '*sandbox*'
+    - '*.cloudflaressl.com'
+    - '*.cloudflare.net'
+    - '*.akam.net'
+    - '*.akamaiedge.net'
+    - '*.edgekey.net'
     enabled: true
     hide_from_results: true
     match_by: common_name
@@ -40,6 +45,12 @@ ignore_lists:
     - '*stage*'
     - '*qa*'
     - '*sandbox*'
+    - '*.cloudflaressl.com'
+    - '*.cloudflare.net'
+    - '*.akam.net'
+    - '*.akamaiedge.net'
+    - '*.akadns.net'
+    - '*.edgekey.net'
     enabled: true
     hide_from_results: true
     pattern_types:

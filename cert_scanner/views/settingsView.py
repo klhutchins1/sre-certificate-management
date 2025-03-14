@@ -747,6 +747,34 @@ def render_settings_view(engine) -> None:
             # Show existing ignored domains
             st.divider()
             try:
+                # First show default patterns from config
+                settings = Settings()
+                default_patterns = settings.get("ignore_lists.domains.default_patterns", [])
+                if default_patterns:
+                    st.subheader("Default Ignore Patterns")
+                    st.caption("These patterns are defined in the configuration file. Removing them will update the configuration.")
+                    for i, pattern in enumerate(default_patterns):
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.markdown(f"**{pattern}**")
+                            st.caption("Default configuration pattern")
+                        with col2:
+                            if st.button("Remove", key=f"remove_default_{i}"):
+                                try:
+                                    # Remove the pattern from the list
+                                    default_patterns.remove(pattern)
+                                    # Update the configuration
+                                    settings.update("ignore_lists.domains.default_patterns", default_patterns)
+                                    if settings.save():
+                                        notify(f"Removed default pattern '{pattern}' from configuration", "success")
+                                        st.rerun()
+                                    else:
+                                        notify("Failed to save configuration changes", "error")
+                                except Exception as e:
+                                    notify(f"Error removing default pattern: {str(e)}", "error")
+                
+                # Then show custom patterns from database
+                st.subheader("Custom Ignore Patterns")
                 with Session(engine) as session:
                     ignored_domains = session.query(IgnoredDomain).order_by(IgnoredDomain.created_at.desc()).all()
                     if ignored_domains:
@@ -767,7 +795,7 @@ def render_settings_view(engine) -> None:
                                     except Exception as e:
                                         notify(f"Error removing domain: {str(e)}", "error")
                     else:
-                        notify("No ignored domains configured. \n", "info")
+                        notify("No custom ignored domains configured.\nDefault patterns will still be applied.", "info")
             except Exception as e:
                 notify(f"Error loading ignored domains: {str(e)}", "error")
         

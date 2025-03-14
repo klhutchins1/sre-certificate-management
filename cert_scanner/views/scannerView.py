@@ -178,7 +178,14 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                     if status_container:
                         status_container.text(f'Processing DNS records for {domain}...')
                     
-                    self.processor.process_dns_records(
+                    # Create processor if needed
+                    if not hasattr(st.session_state.scan_manager, 'processor'):
+                        st.session_state.scan_manager.processor = ScanProcessor(session, status_container)
+                    else:
+                        st.session_state.scan_manager.processor.session = session
+                        st.session_state.scan_manager.processor.status_container = status_container
+                    
+                    st.session_state.scan_manager.processor.process_dns_records(
                         domain_obj,
                         domain_info.dns_records,
                         scan_queue,
@@ -687,29 +694,61 @@ internal.server.local:444"""
                 with tab_dns:
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
-                        for domain in st.session_state.scan_manager.cert_scanner.tracker.scanned_domains:
+                        scanned_domains = st.session_state.scan_manager.cert_scanner.tracker.scanned_domains
+                        logger.info(f"[DNS] Processing DNS records for {len(scanned_domains)} domains")
+                        
+                        for domain in scanned_domains:
                             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
-                            if domain_obj and domain_obj.dns_records:
-                                st.markdown(f"### {domain_obj.domain_name}")
-                                records_df = []
-                                for record in domain_obj.dns_records:
-                                    records_df.append({
-                                        'Type': record.record_type,
-                                        'Name': record.name,
-                                        'Value': record.value,
-                                        'TTL': int(record.ttl),
-                                        'Priority': str(record.priority if record.priority is not None else 'N/A')
-                                    })
-                                if records_df:
-                                    st.dataframe(
-                                        pd.DataFrame(records_df),
-                                        hide_index=True,
-                                        use_container_width=True
-                                    )
+                            if domain_obj:
+                                dns_records = domain_obj.dns_records
+                                logger.info(f"[DNS] Found {len(dns_records)} DNS records for {domain}")
+                                
+                                if dns_records:
+                                    st.markdown(f"### {domain_obj.domain_name}")
+                                    records_df = []
+                                    
+                                    for record in dns_records:
+                                        # Convert priority to string 'N/A' if None, otherwise keep as int
+                                        priority = record.priority if record.priority is not None else 'N/A'
+                                        
+                                        record_data = {
+                                            'Type': record.record_type,
+                                            'Name': record.name,
+                                            'Value': record.value,
+                                            'TTL': int(record.ttl),
+                                            'Priority': priority
+                                        }
+                                        records_df.append(record_data)
+                                        logger.debug(f"[DNS] Processing record: {record_data}")
+                                    
+                                    if records_df:
+                                        df = pd.DataFrame(records_df)
+                                        
+                                        # Convert Priority column to string type to handle mixed data
+                                        df['Priority'] = df['Priority'].astype(str)
+                                        
+                                        st.dataframe(
+                                            df,
+                                            column_config={
+                                                'Type': st.column_config.TextColumn('Type', width='small'),
+                                                'Name': st.column_config.TextColumn('Name', width='medium'),
+                                                'Value': st.column_config.TextColumn('Value', width='large'),
+                                                'TTL': st.column_config.NumberColumn('TTL', width='small'),
+                                                'Priority': st.column_config.TextColumn('Priority', width='small')
+                                            },
+                                            hide_index=True,
+                                            use_container_width=True
+                                        )
+                                    else:
+                                        st.info(f"No DNS records found for {domain}")
+                                else:
+                                    st.info(f"No DNS records found for {domain}")
+                            else:
+                                logger.warning(f"[DNS] Domain object not found for {domain}")
     
-    # Recent scans sidebar
+    # Recent scans section in the right column
     with col2:
-        st.subheader("Recent Scans")
+        st.markdown("### Recent Scans")
         with Session(engine) as session:
             recent_domains = session.query(Domain)\
                 .order_by(Domain.updated_at.desc())\

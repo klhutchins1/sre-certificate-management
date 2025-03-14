@@ -380,20 +380,58 @@ class ScanManager:
         session = Session(engine)
         
         try:
-            # Check if domain is ignored
-            is_ignored, reason = self._is_domain_ignored(session, hostname)
-            if is_ignored:
-                self.logger.info(f"[SCAN] Skipping {hostname} - Domain is in ignore list" + 
-                               (f" ({reason})" if reason else ""))
-                self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (domain in ignore list)")
-                return False
-            
-            # Only check if the endpoint has been scanned in this session
+            # First check if already scanned to avoid unnecessary DB queries
             if self.cert_scanner.tracker.is_endpoint_scanned(hostname, port):
                 self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned in this scan session")
                 self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned in this scan session)")
                 return False
+
+            # Check if domain is ignored using all pattern types
+            is_ignored = False
+            ignore_reason = None
             
+            # Get all ignore patterns at once to minimize DB queries
+            patterns = session.query(IgnoredDomain).all()
+            
+            # First check exact matches
+            for pattern in patterns:
+                if pattern.pattern == hostname:
+                    is_ignored = True
+                    ignore_reason = pattern.reason
+                    break
+                    
+                # Handle wildcard prefix (*.example.com)
+                if pattern.pattern.startswith('*.'):
+                    suffix = pattern.pattern[2:]  # Remove *. from pattern
+                    if hostname.endswith(suffix):
+                        is_ignored = True
+                        ignore_reason = pattern.reason
+                        break
+                        
+                # Handle suffix match (example.com)
+                elif hostname.endswith(pattern.pattern):
+                    is_ignored = True
+                    ignore_reason = pattern.reason
+                    break
+                    
+                # Handle contains pattern (*test*)
+                elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
+                    search_term = pattern.pattern.strip('*')
+                    if search_term in hostname:
+                        is_ignored = True
+                        ignore_reason = pattern.reason
+                        break
+            
+            if is_ignored:
+                self.logger.info(f"[SCAN] Skipping {hostname} - Domain is in ignore list" + 
+                               (f" ({ignore_reason})" if ignore_reason else ""))
+                self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (domain in ignore list)")
+                # Mark as scanned to prevent re-scanning attempts
+                self.cert_scanner.tracker.add_scanned_domain(hostname)
+                self.cert_scanner.tracker.add_scanned_endpoint(hostname, port)
+                return False
+            
+            # If not ignored and not already scanned, add to queue
             if self.cert_scanner.add_scan_target(hostname, port):
                 self.scan_history.append(hostname)
                 self.logger.info(f"[SCAN] Added target to queue: {hostname}:{port}")
@@ -426,6 +464,18 @@ class ScanManager:
             total_steps: Total number of steps for progress tracking
         """
         try:
+            # Check if domain is in ignore list BEFORE any scanning
+            is_ignored, reason = self._is_domain_ignored(session, domain)
+            if is_ignored:
+                self.logger.info(f"[SCAN] Skipping {domain} - Domain is in ignore list" + 
+                               (f" ({reason})" if reason else ""))
+                if status_container:
+                    status_container.text(f'Skipping {domain} (in ignore list)')
+                # Mark as scanned to prevent re-scanning
+                self.cert_scanner.tracker.add_scanned_domain(domain)
+                self.cert_scanner.tracker.add_scanned_endpoint(domain, port)
+                return True
+
             def calculate_progress(sub_step: int, total_sub_steps: int) -> float:
                 """
                 Calculate overall progress including sub-steps.
@@ -466,17 +516,7 @@ class ScanManager:
                 total_sub_steps += 1  # Subdomain processing
             
             current_sub_step = 0
-
-            # Check if domain is in ignore list
-            is_ignored, reason = self._is_domain_ignored(session, domain)
-            if is_ignored:
-                self.logger.info(f"[SCAN] Skipping {domain} - Domain is in ignore list" + 
-                               (f" ({reason})" if reason else ""))
-                if status_container:
-                    status_container.text(f'Skipping {domain} (in ignore list)')
-                update_progress(total_sub_steps, total_sub_steps)  # Complete progress for skipped domain
-                return True
-
+            
             # Initialize processor if needed
             if not self.processor:
                 self.processor = ScanProcessor(session, status_container)
@@ -768,6 +808,7 @@ class ScanProcessor:
                 return
                 
             self.set_status(f'Updating DNS records for {domain_obj.domain_name}...')
+            self.logger.info(f"[DNS] Processing {len(dns_records)} DNS records for {domain_obj.domain_name}")
             
             with self.session.no_autoflush:
                 # Get existing DNS records
@@ -785,8 +826,29 @@ class ScanProcessor:
                     # Check for CNAME records that might point to new domains
                     if record['type'] == 'CNAME' and scan_queue is not None:
                         cname_target = record['value'].rstrip('.')
-                        scan_queue.add((cname_target, port))
-                        self.logger.info(f"[SCAN] Added CNAME target to queue: {cname_target}:{port}")
+                        
+                        # Check if CNAME target should be ignored
+                        is_ignored = False
+                        patterns = self.session.query(IgnoredDomain).all()
+                        for pattern in patterns:
+                            if pattern.pattern.startswith('*.'):
+                                suffix = pattern.pattern[2:]  # Remove *. from pattern
+                                if cname_target.endswith(suffix):
+                                    self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Matches ignore pattern {pattern.pattern}")
+                                    is_ignored = True
+                                    break
+                            elif pattern.pattern in cname_target:
+                                self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Contains ignored pattern {pattern.pattern}")
+                                is_ignored = True
+                                break
+                            elif cname_target.endswith(pattern.pattern):
+                                self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Matches ignore pattern {pattern.pattern}")
+                                is_ignored = True
+                                break
+                        
+                        if not is_ignored:
+                            scan_queue.add((cname_target, port))
+                            self.logger.info(f"[SCAN] Added CNAME target to queue: {cname_target}:{port}")
                     
                     if record_key in existing_map:
                         # Update existing record
@@ -794,6 +856,7 @@ class ScanProcessor:
                         existing_record.ttl = record['ttl']
                         existing_record.priority = record.get('priority')
                         existing_record.updated_at = datetime.now()
+                        self.logger.debug(f"[DNS] Updated record: {record_key}")
                     else:
                         # Add new record
                         dns_record = DomainDNSRecord(
@@ -807,13 +870,16 @@ class ScanProcessor:
                             updated_at=datetime.now()
                         )
                         self.session.add(dns_record)
+                        self.logger.debug(f"[DNS] Added new record: {record_key}")
                 
                 # Remove old records that no longer exist
                 for key, record in existing_map.items():
                     if key not in updated_records:
                         self.session.delete(record)
+                        self.logger.debug(f"[DNS] Removed old record: {key}")
                 
                 self.session.flush()
+                self.logger.info(f"[DNS] Successfully processed {len(dns_records)} records for {domain_obj.domain_name}")
                 
         except Exception as e:
             self.logger.error(f"Error processing DNS records for {domain_obj.domain_name}: {str(e)}")

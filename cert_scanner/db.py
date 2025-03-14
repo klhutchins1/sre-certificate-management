@@ -35,7 +35,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
 
 # Local application imports
-from .models import Base
+from .models import Base, IgnoredDomain, IgnoredCertificate
 from .settings import Settings
 
 #------------------------------------------------------------------------------
@@ -369,6 +369,53 @@ def migrate_database(engine):
         logger.error(f"Failed to migrate database: {str(e)}")
         raise
 
+def sync_default_ignore_patterns(engine):
+    """
+    Synchronize default ignore patterns from config file to database.
+    
+    This ensures that the default patterns defined in config.yaml are
+    present in the database tables where they are needed for scanning.
+    """
+    try:
+        from .settings import Settings
+        from .models import IgnoredDomain, IgnoredCertificate
+        from sqlalchemy.orm import Session
+        
+        settings = Settings()
+        
+        with Session(engine) as session:
+            # Sync domain patterns
+            default_domain_patterns = settings.get("ignore_lists.domains.default_patterns", [])
+            for pattern in default_domain_patterns:
+                # Check if pattern already exists
+                existing = session.query(IgnoredDomain).filter_by(pattern=pattern).first()
+                if not existing:
+                    ignored = IgnoredDomain(
+                        pattern=pattern,
+                        reason="Default configuration pattern",
+                        created_at=datetime.now()
+                    )
+                    session.add(ignored)
+            
+            # Sync certificate patterns
+            default_cert_patterns = settings.get("ignore_lists.certificates.default_patterns", [])
+            for pattern in default_cert_patterns:
+                # Check if pattern already exists
+                existing = session.query(IgnoredCertificate).filter_by(pattern=pattern).first()
+                if not existing:
+                    ignored = IgnoredCertificate(
+                        pattern=pattern,
+                        reason="Default configuration pattern",
+                        created_at=datetime.now()
+                    )
+                    session.add(ignored)
+            
+            session.commit()
+            logger.info("Successfully synchronized default ignore patterns")
+            
+    except Exception as e:
+        logger.error(f"Failed to sync default ignore patterns: {str(e)}")
+
 def init_database(db_path=None):
     """Initialize the database and perform migrations."""
     try:
@@ -444,6 +491,9 @@ def init_database(db_path=None):
         
         # Perform migrations
         migrate_database(engine)
+        
+        # Sync default ignore patterns
+        sync_default_ignore_patterns(engine)
         
         # Verify database is functional
         with engine.connect() as conn:

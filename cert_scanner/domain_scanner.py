@@ -109,6 +109,9 @@ class DomainScanner:
         self.internal_domains = set(settings.get('scanning.internal.domains', []))
         self.external_domains = set(settings.get('scanning.external.domains', []))
         
+        # Cache for successful nameserver sets
+        self.successful_nameservers = {}
+        
         self.logger = logging.getLogger(__name__)
         
         logger.info(f"Initialized DomainScanner with WHOIS rate limit: {self.whois_rate_limit}/min, "
@@ -214,7 +217,14 @@ class DomainScanner:
     def _get_whois_info(self, domain: str) -> Dict:
         """Get WHOIS information for a domain."""
         try:
-            logger.info(f"[WHOIS] Starting query for {domain}")
+            # Check if domain should be ignored before doing WHOIS query
+            is_ignored, reason = self._is_domain_ignored(domain)
+            if is_ignored:
+                self.logger.info(f"[WHOIS] Skipping WHOIS query for {domain} - Domain is in ignore list" + 
+                               (f" ({reason})" if reason else ""))
+                return {}
+
+            self.logger.info(f"[WHOIS] Starting query for {domain}")
             
             # Apply rate limiting
             self.last_whois_query_time = self._apply_rate_limit(
@@ -226,19 +236,19 @@ class DomainScanner:
             w = whois.whois(domain)
             
             if not w:
-                logger.warning(f"[WHOIS] No information found for {domain}")
+                self.logger.warning(f"[WHOIS] No information found for {domain}")
                 return {}
             
             # Process dates
             creation_date = w.creation_date
             if isinstance(creation_date, list):
                 creation_date = creation_date[0]
-                logger.debug(f"[WHOIS] Multiple creation dates found for {domain}, using {creation_date}")
+                self.logger.debug(f"[WHOIS] Multiple creation dates found for {domain}, using {creation_date}")
             
             expiration_date = w.expiration_date
             if isinstance(expiration_date, list):
                 expiration_date = expiration_date[0]
-                logger.debug(f"[WHOIS] Multiple expiration dates found for {domain}, using {expiration_date}")
+                self.logger.debug(f"[WHOIS] Multiple expiration dates found for {domain}, using {expiration_date}")
             
             # Get registrar info with fallbacks
             registrar = None
@@ -248,7 +258,7 @@ class DomainScanner:
                     if isinstance(value, list):
                         value = value[0]
                     registrar = value
-                    logger.info(f"[WHOIS] Found registrar for {domain}: {value}")
+                    self.logger.info(f"[WHOIS] Found registrar for {domain}: {value}")
                     break
             
             # Get registrant info with fallbacks
@@ -259,7 +269,7 @@ class DomainScanner:
                     if isinstance(value, list):
                         value = value[0]
                     registrant = value
-                    logger.info(f"[WHOIS] Found registrant for {domain}: {value}")
+                    self.logger.info(f"[WHOIS] Found registrant for {domain}: {value}")
                     break
             
             # Get status and nameservers
@@ -284,11 +294,11 @@ class DomainScanner:
                 'nameservers': nameservers
             }
             
-            logger.info(f"[WHOIS] Successfully retrieved information for {domain}")
+            self.logger.info(f"[WHOIS] Successfully retrieved information for {domain}")
             return result
             
         except Exception as e:
-            logger.error(f"[WHOIS] Error retrieving information for {domain}: {str(e)}")
+            self.logger.error(f"[WHOIS] Error retrieving information for {domain}: {str(e)}")
             return {}
     
     def _get_dns_records(self, domain: str) -> List[Dict[str, Any]]:
@@ -301,44 +311,73 @@ class DomainScanner:
         Returns:
             list: List of DNS records
         """
+        # Check if domain should be ignored before doing DNS lookup
+        is_ignored, reason = self._is_domain_ignored(domain)
+        if is_ignored:
+            self.logger.info(f"[DNS] Skipping DNS lookup for {domain} - Domain is in ignore list" + 
+                           (f" ({reason})" if reason else ""))
+            return []
+
         records = []
-        logger.info(f"[DNS] Starting record lookup for {domain}")
+        self.logger.info(f"[DNS] Starting record lookup for {domain}")
         
         # Configure DNS resolver with timeout and nameservers
         resolver = dns.resolver.Resolver()
         resolver.timeout = self.dns_timeout
         resolver.lifetime = self.dns_timeout
         
-        # Use system nameservers first, then fall back to well-known public DNS servers
-        system_nameservers = resolver.nameservers
-        public_nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1']  # Google DNS and Cloudflare
+        # Check if we have a successful nameserver set for this domain's TLD
+        tld = domain.split('.')[-1]
+        if tld in self.successful_nameservers:
+            nameserver_sets = [self.successful_nameservers[tld]]
+            self.logger.debug(f"[DNS] Using cached nameservers for .{tld}: {self.successful_nameservers[tld]}")
+        else:
+            # Define nameserver sets to try in order
+            nameserver_sets = [
+                resolver.nameservers,  # System nameservers
+                ['8.8.8.8', '8.8.4.4'],  # Google DNS
+                ['1.1.1.1', '1.0.0.1']   # Cloudflare
+            ]
         
-        # Combine system and public nameservers, prioritizing system ones
-        resolver.nameservers = system_nameservers + [ns for ns in public_nameservers if ns not in system_nameservers]
+        # Try each nameserver set until we get a successful resolution
+        resolved = False
+        successful_nameservers = None
         
-        logger.debug(f"[DNS] Using nameservers: {resolver.nameservers}")
-        
-        # First check if the domain exists
-        try:
-            # Try to resolve the domain first to check existence
-            resolver.resolve(domain, 'A')
-        except dns.resolver.NXDOMAIN:
-            error_msg = f"The domain '{domain}' does not exist in DNS records"
-            logger.warning(f"[DNS] {error_msg}")
-            raise Exception(error_msg)
-        except dns.resolver.NoNameservers:
-            error_msg = f"No DNS servers could be reached to resolve '{domain}'"
-            logger.warning(f"[DNS] {error_msg}")
-            # Try with different nameservers
-            resolver.nameservers = public_nameservers
+        for nameservers in nameserver_sets:
+            if resolved:
+                break
+                
+            resolver.nameservers = nameservers
+            self.logger.debug(f"[DNS] Trying nameservers: {nameservers}")
+            
             try:
+                # Try to resolve the domain first to check existence
                 resolver.resolve(domain, 'A')
+                resolved = True
+                successful_nameservers = nameservers
+                self.logger.info(f"[DNS] Successfully resolved {domain} using nameservers: {nameservers}")
+                
+                # Cache successful nameservers for this TLD
+                if tld not in self.successful_nameservers:
+                    self.successful_nameservers[tld] = nameservers
+                    self.logger.debug(f"[DNS] Cached nameservers for .{tld}: {nameservers}")
+                
+            except dns.resolver.NXDOMAIN:
+                self.logger.warning(f"[DNS] Domain {domain} does not exist using nameservers: {nameservers}")
+                continue
+            except dns.resolver.NoNameservers:
+                self.logger.warning(f"[DNS] No response from nameservers: {nameservers}")
+                continue
             except Exception as e:
-                logger.error(f"[DNS] Failed to resolve {domain} with public nameservers: {str(e)}")
-                return []
-        except Exception as e:
-            logger.warning(f"[DNS] Initial domain check failed for {domain}: {str(e)}")
-            # Continue anyway as some record types might still be available
+                self.logger.warning(f"[DNS] Error resolving {domain} with nameservers {nameservers}: {str(e)}")
+                continue
+        
+        if not resolved:
+            self.logger.error(f"[DNS] Could not resolve {domain} with any nameservers")
+            return []
+        
+        # Use the successful nameserver set for all subsequent queries
+        resolver.nameservers = successful_nameservers
         
         # Query each record type
         for record_type in self.dns_record_types:
@@ -350,14 +389,14 @@ class DomainScanner:
                     "DNS"
                 )
                 
-                logger.debug(f"[DNS] Querying {record_type} records for {domain}")
+                self.logger.debug(f"[DNS] Querying {record_type} records for {domain}")
                 try:
                     answers = resolver.resolve(domain, record_type)
                     for rdata in answers:
                         record = {
                             'type': record_type,
                             'name': domain,
-                            'value': str(rdata),
+                            'value': str(rdata).rstrip('.'),  # Remove trailing dot
                             'ttl': answers.ttl
                         }
                         
@@ -365,8 +404,8 @@ class DomainScanner:
                         if record_type == 'MX':
                             record['priority'] = rdata.preference
                         elif record_type == 'SOA':
-                            record['primary_ns'] = str(rdata.mname)
-                            record['email'] = str(rdata.rname)
+                            record['primary_ns'] = str(rdata.mname).rstrip('.')
+                            record['email'] = str(rdata.rname).rstrip('.')
                             record['serial'] = rdata.serial
                             record['refresh'] = rdata.refresh
                             record['retry'] = rdata.retry
@@ -374,28 +413,28 @@ class DomainScanner:
                             record['minimum'] = rdata.minimum
                         
                         records.append(record)
-                        logger.info(f"[DNS] Found {record_type} record for {domain}: {str(rdata)}")
+                        self.logger.info(f"[DNS] Found {record_type} record for {domain}: {str(rdata)}")
                 except dns.resolver.NoAnswer:
-                    logger.debug(f"[DNS] No {record_type} records found for {domain}")
+                    self.logger.debug(f"[DNS] No {record_type} records found for {domain}")
                     continue
                 except dns.resolver.NXDOMAIN:
-                    logger.debug(f"[DNS] Domain {domain} does not exist (trying next record type)")
+                    self.logger.debug(f"[DNS] Domain {domain} does not exist (trying next record type)")
                     continue
                 except dns.resolver.NoNameservers:
-                    logger.warning(f"[DNS] No nameservers could provide an answer for {record_type} records")
+                    self.logger.warning(f"[DNS] No nameservers could provide an answer for {record_type} records")
                     continue
                 except Exception as e:
-                    logger.warning(f"[DNS] Error querying {record_type} records for {domain}: {str(e)}")
+                    self.logger.warning(f"[DNS] Error querying {record_type} records for {domain}: {str(e)}")
                     continue
                 
             except Exception as e:
-                logger.warning(f"[DNS] Unexpected error querying {record_type} records for {domain}: {str(e)}")
+                self.logger.warning(f"[DNS] Unexpected error querying {record_type} records for {domain}: {str(e)}")
                 continue
         
         if not records:
-            logger.warning(f"[DNS] No DNS records found for {domain}")
+            self.logger.warning(f"[DNS] No DNS records found for {domain}")
         else:
-            logger.info(f"[DNS] Found {len(records)} total records for {domain}")
+            self.logger.info(f"[DNS] Found {len(records)} total records for {domain}")
         
         return records
     
@@ -454,8 +493,9 @@ class DomainScanner:
         try:
             # Create database session
             from sqlalchemy import create_engine
-            from .settings import settings
             from sqlalchemy.orm import Session
+            from .settings import settings
+            from .models import IgnoredDomain
             
             # Get database path from settings
             db_path = settings.get("paths.database", "data/certificates.db")
@@ -468,15 +508,21 @@ class DomainScanner:
                 if ignored:
                     return True, ignored.reason
                 
-                # Then check wildcard patterns
-                wildcard_patterns = session.query(IgnoredDomain).filter(
-                    IgnoredDomain.pattern.like('*.*')
-                ).all()
-                
-                for pattern in wildcard_patterns:
+                # Then check all patterns
+                patterns = session.query(IgnoredDomain).all()
+                for pattern in patterns:
+                    # Handle wildcard prefix (*.example.com)
                     if pattern.pattern.startswith('*.'):
                         suffix = pattern.pattern[2:]  # Remove *. from pattern
                         if domain.endswith(suffix):
+                            return True, pattern.reason
+                    # Handle suffix match (example.com)
+                    elif domain.endswith(pattern.pattern):
+                        return True, pattern.reason
+                    # Handle contains pattern (*test*)
+                    elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
+                        search_term = pattern.pattern.strip('*')
+                        if search_term in domain:
                             return True, pattern.reason
                 
                 return False, None
@@ -518,15 +564,16 @@ class DomainScanner:
             # Note: This is a simplified approach - in practice you'd want to use
             # a more sophisticated WHOIS query service that supports registrant-based searching
             w = whois.whois(registrant)
-            if w and hasattr(w, 'domains'):
+            if w and hasattr(w, 'domains') and w.domains:
                 for domain in w.domains:
                     if self._validate_domain(domain):
                         related_domains.add(domain)
-                    
+            
             return related_domains
             
         except Exception as e:
-            self.logger.error(f"Error finding related domains: {str(e)}")
+            # Log at debug level since this is non-critical functionality
+            self.logger.debug(f"Could not find related domains: {str(e)}")
             return related_domains
 
     def scan_domain(self, domain: str, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
@@ -550,16 +597,62 @@ class DomainScanner:
             )
         
         try:
-            # Check if domain is in ignore list
-            is_ignored, reason = self._is_domain_ignored(domain)
-            if is_ignored:
-                self.logger.info(f"[SCAN] Skipping {domain} - Domain is in ignore list" + 
-                               (f" ({reason})" if reason else ""))
-                return DomainInfo(
-                    domain_name=domain,
-                    is_valid=True,
-                    error=f"Domain is in ignore list" + (f" ({reason})" if reason else "")
-                )
+            # Create database session for ignore list check
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import Session
+            from .settings import settings
+            from .models import IgnoredDomain
+            
+            db_path = settings.get("paths.database", "data/certificates.db")
+            engine = create_engine(f"sqlite:///{db_path}")
+            session = Session(engine)
+            
+            try:
+                # Check if domain is in ignore list FIRST, before any scanning
+                is_ignored = False
+                ignore_reason = None
+                
+                # First check exact matches
+                ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
+                if ignored:
+                    is_ignored = True
+                    ignore_reason = ignored.reason
+                else:
+                    # Then check all patterns
+                    patterns = session.query(IgnoredDomain).all()
+                    for pattern in patterns:
+                        # Handle wildcard prefix (*.example.com)
+                        if pattern.pattern.startswith('*.'):
+                            suffix = pattern.pattern[2:]  # Remove *. from pattern
+                            if domain.endswith(suffix):
+                                is_ignored = True
+                                ignore_reason = pattern.reason
+                                break
+                        # Handle suffix match (example.com)
+                        elif domain.endswith(pattern.pattern):
+                            is_ignored = True
+                            ignore_reason = pattern.reason
+                            break
+                        # Handle contains pattern (*test*)
+                        elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
+                            search_term = pattern.pattern.strip('*')
+                            if search_term in domain:
+                                is_ignored = True
+                                ignore_reason = pattern.reason
+                                break
+                
+                if is_ignored:
+                    self.logger.info(f"[SCAN] Skipping {domain} - Domain is in ignore list" + 
+                                   (f" ({ignore_reason})" if ignore_reason else ""))
+                    return DomainInfo(
+                        domain_name=domain,
+                        is_valid=True,
+                        error=f"Domain is in ignore list" + (f" ({ignore_reason})" if ignore_reason else "")
+                    )
+            
+            finally:
+                session.close()
+                engine.dispose()
 
             whois_info = {}
             dns_records = []
@@ -569,7 +662,8 @@ class DomainScanner:
             if get_whois:
                 whois_info = self._get_whois_info(domain)
                 # Find related domains based on WHOIS info
-                related_domains = self._find_related_domains(whois_info)
+                if whois_info:  # Only try to find related domains if we got WHOIS info
+                    related_domains = self._find_related_domains(whois_info)
             
             # Get DNS records if requested
             if get_dns:
@@ -578,6 +672,7 @@ class DomainScanner:
                 except Exception as e:
                     self.logger.warning(f"Error getting DNS records for {domain}: {str(e)}")
             
+            # Create and return domain info object
             return DomainInfo(
                 domain_name=domain,
                 is_valid=True,

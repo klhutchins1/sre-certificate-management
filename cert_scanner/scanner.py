@@ -49,24 +49,27 @@ EXTERNAL_TLDS = {
 #------------------------------------------------------------------------------
 
 class ScanTracker:
-    """Centralized tracking for domain scanning operations."""
+    """Track scan progress and state."""
     
     def __init__(self):
-        """Initialize the scan tracker."""
-        self.reset()
+        """Initialize scan tracking state."""
+        self.scanned_domains = set()  # Domains that have been scanned
+        self.scanned_endpoints = set()  # Domain:port combinations that have been scanned
+        self.discovered_ips = {}  # Domain -> List[IP] mapping
+        self.scan_queue = set()  # Set of (domain, port) tuples to scan
+        self.processed_certificates = set()  # Set of certificate serial numbers that have been processed
+        self.master_domain_list = set()  # All known domains
         self.logger = logging.getLogger(__name__)
     
     def reset(self):
-        """Reset all tracking data."""
-        self.master_domain_list = set()  # Master list of all domains discovered
-        self.scanned_domains = set()  # Domains already scanned
-        self.pending_domains = set()  # Domains discovered but not yet scanned
-        self.scanned_endpoints = set()  # (host, port) combinations already scanned
-        self.discovered_ips = {}  # Map of domain to list of IPs
-        self.scan_history = []  # List of all scan operations in order
-        self.total_discovered = 0  # Total number of domains discovered
-        self.total_scanned = 0  # Total number of domains scanned
-        self.scan_queue = set()  # Queue of (domain, port) pairs to scan
+        """Reset all tracking state."""
+        self.scanned_domains.clear()
+        self.scanned_endpoints.clear()
+        self.discovered_ips.clear()
+        self.scan_queue.clear()
+        self.processed_certificates.clear()
+        self.master_domain_list.clear()
+        self.logger.info("[TRACKER] Reset all tracking state")
     
     def is_domain_known(self, domain: str) -> bool:
         """Check if a domain is in our master list."""
@@ -84,7 +87,6 @@ class ScanTracker:
         """Add a domain to the master list if not already present."""
         if domain not in self.master_domain_list:
             self.master_domain_list.add(domain)
-            self.total_discovered += 1
             self.logger.info(f"[TRACKER] Added new domain to master list: {domain}")
             return True
         return False
@@ -95,18 +97,12 @@ class ScanTracker:
             self.add_to_master_list(domain)  # Ensure it's in master list
             self.logger.info(f"[TRACKER] Marking domain as scanned: {domain}")
             self.scanned_domains.add(domain)
-            self.total_scanned += 1
-            self.scan_history.append({"action": "scanned", "domain": domain})
-        if domain in self.pending_domains:
-            self.logger.info(f"[TRACKER] Removing {domain} from pending list")
-            self.pending_domains.remove(domain)
     
     def add_scanned_endpoint(self, host: str, port: int):
         """Mark a host:port combination as scanned."""
         if (host, port) not in self.scanned_endpoints:
             self.logger.info(f"[TRACKER] Marking endpoint as scanned: {host}:{port}")
             self.scanned_endpoints.add((host, port))
-            self.scan_history.append({"action": "scanned_endpoint", "host": host, "port": port})
     
     def add_to_queue(self, domain: str, port: int) -> bool:
         """Add a domain:port pair to the scan queue if not already processed."""
@@ -140,11 +136,10 @@ class ScanTracker:
         self.add_to_master_list(domain)  # Ensure domain is in master list
         self.discovered_ips[domain] = ips
         self.logger.info(f"[TRACKER] Recorded IPs for {domain}: {ips}")
-        self.scan_history.append({"action": "discovered_ips", "domain": domain, "ips": ips})
     
     def get_pending_domains(self) -> Set[str]:
         """Get list of domains waiting to be scanned."""
-        pending = self.pending_domains.copy()  # Create a copy to avoid modification during iteration
+        pending = self.master_domain_list - self.scanned_domains
         self.logger.info(f"[TRACKER] Current pending domains ({len(pending)}): {sorted(pending)}")
         return pending
     
@@ -157,7 +152,7 @@ class ScanTracker:
         return {
             "total_discovered": len(self.master_domain_list),
             "total_scanned": len(self.scanned_domains),
-            "pending_count": len(self.pending_domains),
+            "pending_count": len(self.master_domain_list - self.scanned_domains),
             "scanned_count": len(self.scanned_domains),
             "endpoints_count": len(self.scanned_endpoints),
             "queue_size": len(self.scan_queue)
@@ -174,9 +169,18 @@ class ScanTracker:
         self.logger.info(f"Scanned Endpoints: {stats['endpoints_count']}")
         self.logger.info(f"Queue Size: {stats['queue_size']}")
         self.logger.info("=== Pending Domains ===")
-        for domain in sorted(self.pending_domains):
+        for domain in sorted(self.master_domain_list - self.scanned_domains):
             self.logger.info(f"- {domain}")
         self.logger.info("===================")
+    
+    def is_certificate_processed(self, serial_number: str) -> bool:
+        """Check if a certificate has already been processed."""
+        return serial_number in self.processed_certificates
+    
+    def add_processed_certificate(self, serial_number: str):
+        """Mark a certificate as processed."""
+        self.processed_certificates.add(serial_number)
+        self.logger.info(f"[TRACKER] Marked certificate as processed: {serial_number}")
 
 class ScanManager:
     """
@@ -204,7 +208,7 @@ class ScanManager:
         self.subdomain_scanner.tracker = self.cert_scanner.tracker
         
         # Initialize scan state
-        self.scan_history = set()
+        self.scan_history = []  # Changed from set() to [] since we want to maintain order
         self.scan_results = {
             "success": [],
             "error": [],
@@ -219,7 +223,7 @@ class ScanManager:
     def reset_scan_state(self):
         """Reset scan state for a new scan session."""
         self.cert_scanner.reset_scan_state()
-        self.scan_history.clear()
+        self.scan_history.clear()  # Clear scan history for new session
         self.scan_results = {
             "success": [],
             "error": [],
@@ -286,28 +290,6 @@ class ScanManager:
         except Exception as e:
             return False, None, None, str(e)
     
-    def add_to_queue(self, hostname: str, port: int) -> bool:
-        """
-        Add target to scan queue if not already processed.
-        
-        Args:
-            hostname: Domain to scan
-            port: Port to scan
-            
-        Returns:
-            bool: True if target was added, False if already scanned
-        """
-        if hostname in self.scan_history:
-            self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned)")
-            return False
-        
-        if self.cert_scanner.add_scan_target(hostname, port):
-            self.scan_history.add(hostname)
-            self.logger.info(f"[SCAN] Added target to queue: {hostname}:{port}")
-            return True
-        
-        return False
-    
     def _is_domain_ignored(self, session: Session, domain: str) -> Tuple[bool, Optional[str]]:
         """
         Check if a domain is in the ignore list.
@@ -325,15 +307,21 @@ class ScanManager:
             if ignored:
                 return True, ignored.reason
             
-            # Then check wildcard patterns
-            wildcard_patterns = session.query(IgnoredDomain).filter(
-                IgnoredDomain.pattern.like('*.*')
-            ).all()
-            
-            for pattern in wildcard_patterns:
+            # Then check all patterns
+            patterns = session.query(IgnoredDomain).all()
+            for pattern in patterns:
+                # Handle wildcard prefix (*.example.com)
                 if pattern.pattern.startswith('*.'):
                     suffix = pattern.pattern[2:]  # Remove *. from pattern
                     if domain.endswith(suffix):
+                        return True, pattern.reason
+                # Handle suffix match (example.com)
+                elif domain.endswith(pattern.pattern):
+                    return True, pattern.reason
+                # Handle contains pattern (*test*)
+                elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
+                    search_term = pattern.pattern.strip('*')
+                    if search_term in domain:
                         return True, pattern.reason
             
             return False, None
@@ -342,11 +330,100 @@ class ScanManager:
             self.logger.error(f"Error checking ignore list for {domain}: {str(e)}")
             return False, None
 
+    def _is_certificate_ignored(self, session: Session, common_name: str) -> Tuple[bool, Optional[str]]:
+        """
+        Check if a certificate should be ignored based on its Common Name.
+        
+        Args:
+            session: Database session
+            common_name: Certificate Common Name to check
+            
+        Returns:
+            Tuple[bool, Optional[str]]: (is_ignored, reason)
+        """
+        try:
+            # First check exact matches
+            ignored = session.query(IgnoredCertificate).filter_by(pattern=common_name).first()
+            if ignored:
+                return True, ignored.reason
+            
+            # Then check patterns
+            patterns = session.query(IgnoredCertificate).all()
+            for pattern in patterns:
+                if pattern.matches(common_name):
+                    return True, pattern.reason
+            
+            return False, None
+            
+        except Exception as e:
+            self.logger.error(f"Error checking certificate ignore list for {common_name}: {str(e)}")
+            return False, None
+    
+    def add_to_queue(self, hostname: str, port: int) -> bool:
+        """
+        Add target to scan queue if not already processed.
+        
+        Args:
+            hostname: Domain to scan
+            port: Port to scan
+            
+        Returns:
+            bool: True if target was added, False if already scanned
+        """
+        # Create a session to check ignore lists
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+        from .settings import settings
+        
+        db_path = settings.get("paths.database", "data/certificates.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        session = Session(engine)
+        
+        try:
+            # Check if domain is ignored
+            is_ignored, reason = self._is_domain_ignored(session, hostname)
+            if is_ignored:
+                self.logger.info(f"[SCAN] Skipping {hostname} - Domain is in ignore list" + 
+                               (f" ({reason})" if reason else ""))
+                self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (domain in ignore list)")
+                return False
+            
+            # Only check if the endpoint has been scanned in this session
+            if self.cert_scanner.tracker.is_endpoint_scanned(hostname, port):
+                self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned in this scan session")
+                self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned in this scan session)")
+                return False
+            
+            if self.cert_scanner.add_scan_target(hostname, port):
+                self.scan_history.append(hostname)
+                self.logger.info(f"[SCAN] Added target to queue: {hostname}:{port}")
+                return True
+            
+            return False
+            
+        finally:
+            session.close()
+            engine.dispose()
+    
     def scan_target(self, session, domain: str, port: int, check_whois: bool = True, 
                    check_dns: bool = True, check_subdomains: bool = True,
+                   check_sans: bool = False,
                    status_container=None, progress_container=None, current_step=None, total_steps=None) -> bool:
         """
         Scan a single target and process results.
+        
+        Args:
+            session: Database session
+            domain: Domain to scan
+            port: Port to scan
+            check_whois: Whether to check WHOIS information
+            check_dns: Whether to check DNS records
+            check_subdomains: Whether to check for subdomains
+            check_sans: Whether to scan Subject Alternative Names
+            status_container: Optional container for status updates
+            progress_container: Optional container for progress updates
+            current_step: Current step number for progress tracking
+            total_steps: Total number of steps for progress tracking
         """
         try:
             def calculate_progress(sub_step: int, total_sub_steps: int) -> float:
@@ -379,7 +456,7 @@ class ScanManager:
                     progress_container.text(f"Remaining targets in queue: {self.cert_scanner.tracker.queue_size()}")
 
             # Calculate total sub-steps
-            total_sub_steps = 1  # Base step
+            total_sub_steps = 1
             if check_whois or check_dns:
                 total_sub_steps += 1  # Domain info gathering
                 if check_dns:
@@ -415,9 +492,6 @@ class ScanManager:
                 update_progress(total_sub_steps, total_sub_steps)  # Complete progress for skipped domain
                 return True
             
-            # Mark domain and endpoint as scanned
-            self.cert_scanner.add_scanned_domain(domain)
-            self.cert_scanner.tracker.add_scanned_endpoint(domain, port)
             current_sub_step += 1
             update_progress(current_sub_step, total_sub_steps)
             
@@ -436,6 +510,14 @@ class ScanManager:
                     )
                     current_sub_step += 1
                     update_progress(current_sub_step, total_sub_steps)
+                    
+                    # Add related domains to scan queue
+                    if domain_info and domain_info.related_domains:
+                        for related_domain in domain_info.related_domains:
+                            if not self.cert_scanner.tracker.is_endpoint_scanned(related_domain, port):
+                                self.cert_scanner.tracker.add_to_queue(related_domain, port)
+                                self.logger.info(f"[SCAN] Added related domain to scan queue: {related_domain}:{port}")
+                
                 except Exception as e:
                     self.logger.error(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
                     self.scan_results["error"].append(f"{domain}:{port} - Error gathering domain info: {str(e)}")
@@ -482,6 +564,28 @@ class ScanManager:
             
             if scan_result and scan_result.certificate_info:
                 try:
+                    cert_info = scan_result.certificate_info
+                    
+                    # Check if we've already processed this certificate
+                    if self.cert_scanner.tracker.is_certificate_processed(cert_info.serial_number):
+                        self.logger.info(f"[SCAN] Skipping certificate processing for {domain}:{port} - Certificate {cert_info.serial_number} already processed")
+                        if status_container:
+                            status_container.text(f'Skipping certificate processing for {domain}:{port} (already processed)')
+                        
+                        # Still mark the domain and endpoint as scanned
+                        self.cert_scanner.tracker.add_scanned_domain(domain)
+                        self.cert_scanner.tracker.add_scanned_endpoint(domain, port)
+                        return True
+                    
+                    # Check if certificate should be ignored
+                    is_ignored, reason = self._is_certificate_ignored(session, cert_info.common_name)
+                    if is_ignored:
+                        self.logger.info(f"[SCAN] Skipping certificate for {domain}:{port} - Certificate is in ignore list" + 
+                                       (f" ({reason})" if reason else ""))
+                        if status_container:
+                            status_container.text(f'Skipping certificate for {domain}:{port} (in ignore list)')
+                        return True
+                    
                     # Process certificate info
                     if status_container:
                         status_container.text(f'Processing certificate for {domain}:{port}...')
@@ -489,20 +593,33 @@ class ScanManager:
                     self.processor.process_certificate(
                         domain,
                         port,
-                        scan_result.certificate_info,
+                        cert_info,
                         domain_obj
                     )
                     current_sub_step += 1
                     update_progress(current_sub_step, total_sub_steps)
                     
-                    # Process any discovered SANs
-                    if check_subdomains and scan_result.certificate_info.san:
-                        for san in scan_result.certificate_info.san:
-                            if san.startswith('DNS:'):
-                                discovered_domain = san[4:]  # Remove 'DNS:' prefix
-                                if not self.cert_scanner.tracker.is_endpoint_scanned(discovered_domain, port):
-                                    self.cert_scanner.tracker.add_to_queue(discovered_domain, port)
-                                    self.logger.info(f"[SCAN] Added SAN to scan queue: {discovered_domain}:{port}")
+                    # Process any discovered SANs only if we haven't processed this certificate before
+                    if check_sans and cert_info.san:
+                        self.logger.info(f"[SCAN] Found {len(cert_info.san)} SANs in certificate for {domain}:{port}")
+                        for san in cert_info.san:
+                            # Remove any DNS: prefix if present
+                            discovered_domain = san[4:] if san.startswith('DNS:') else san
+                            self.logger.info(f"[SCAN] Processing SAN: {discovered_domain}")
+                            if not self.cert_scanner.tracker.is_endpoint_scanned(discovered_domain, port):
+                                self.logger.info(f"[SCAN] Adding SAN to scan queue: {discovered_domain}:{port}")
+                                self.cert_scanner.tracker.add_to_queue(discovered_domain, port)
+                            else:
+                                self.logger.info(f"[SCAN] Skipping already scanned SAN: {discovered_domain}:{port}")
+                    else:
+                        self.logger.info(f"[SCAN] No SANs to process for {domain}:{port} (check_sans={check_sans}, san_count={len(cert_info.san) if cert_info.san else 0})")
+                    
+                    # Mark certificate as processed
+                    self.cert_scanner.tracker.add_processed_certificate(cert_info.serial_number)
+                    
+                    # Mark domain and endpoint as scanned
+                    self.cert_scanner.tracker.add_scanned_domain(domain)
+                    self.cert_scanner.tracker.add_scanned_endpoint(domain, port)
                     
                     session.commit()
                     self.logger.info(f"[SCAN] Successfully processed certificate for {domain}:{port}")

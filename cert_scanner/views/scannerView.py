@@ -20,6 +20,7 @@ from ..scanner import ScanManager
 import pandas as pd
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import time
+import json
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def get_scanners():
     return domain_scanner, cert_scanner, subdomain_scanner
 
 def process_scan_target(session, domain: str, port: int, check_whois: bool, check_dns: bool, check_subdomains: bool, 
+                       check_sans: bool = False,  # New parameter to control SAN scanning
                        progress_container=None, status_container=None, current_step=None, total_steps=None,
                        cert_scanner=None, domain_scanner=None, subdomain_scanner=None,
                        scan_queue=None) -> None:
@@ -105,10 +107,6 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
         if status_container:
             status_container.text(f'Skipping {domain}:{port} (already scanned in this scan)')
         return
-    
-    # Mark domain and endpoint as scanned
-    cert_scanner.add_scanned_domain(domain)
-    cert_scanner.tracker.add_scanned_endpoint(domain, port)
     
     # Get or create domain
     domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
@@ -159,70 +157,33 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                     if domain_info.registrant:
                         domain_obj.owner = domain_info.registrant
                 
+                # Process related domains if found
+                if domain_info.related_domains and scan_queue is not None:
+                    related_count = 0
+                    for related_domain in domain_info.related_domains:
+                        if not cert_scanner.tracker.is_endpoint_scanned(related_domain, port):
+                            scan_queue.add((related_domain, port))
+                            related_count += 1
+                            logger.info(f"[SCAN] Added related domain to scan queue: {related_domain}:{port}")
+                    
+                    # Update total steps count for related domains
+                    if related_count > 0 and total_steps is not None:
+                        total_steps += related_count
+                        if progress_container and current_step is not None:
+                            with progress_container:
+                                progress = st.progress(min(current_step / total_steps, 1.0))
+                
+                # Process DNS records if available
                 if check_dns and domain_info.dns_records:
                     if status_container:
-                        status_container.text(f'Updating DNS records for {domain}...')
-                    logger.info(f"[SCAN] Updating DNS records for {domain}")
-                    try:
-                        with session.no_autoflush:
-                            # Get existing DNS records
-                            existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
-                            existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
-                            
-                            # Track which records are updated
-                            updated_records = set()
-                            
-                            # Process new records
-                            for record in domain_info.dns_records:
-                                record_key = (record['type'], record['name'], record['value'])
-                                updated_records.add(record_key)
-                                
-                                # Check for CNAME records that might point to new domains
-                                if record['type'] == 'CNAME' and scan_queue is not None:
-                                    cname_target = record['value'].rstrip('.')
-                                    if not cert_scanner.tracker.is_endpoint_scanned(cname_target, port):
-                                        scan_queue.add((cname_target, port))
-                                        logger.info(f"[SCAN] Added CNAME target to queue: {cname_target}:{port}")
-                                
-                                if record_key in existing_map:
-                                    # Update existing record
-                                    existing_record = existing_map[record_key]
-                                    existing_record.ttl = record['ttl']
-                                    existing_record.priority = record.get('priority')
-                                    existing_record.updated_at = datetime.now()
-                                    logger.debug(f"[SCAN] Updated DNS record: {record['type']} {record['name']} = {record['value']}")
-                                else:
-                                    # Add new record
-                                    dns_record = DomainDNSRecord(
-                                        domain_id=domain_obj.id,
-                                        record_type=record['type'],
-                                        name=record['name'],
-                                        value=record['value'],
-                                        ttl=record['ttl'],
-                                        priority=record.get('priority'),
-                                        created_at=datetime.now(),
-                                        updated_at=datetime.now()
-                                    )
-                                    session.add(dns_record)
-                                    logger.debug(f"[SCAN] Added new DNS record: {record['type']} {record['name']} = {record['value']}")
-                            
-                            # Remove old records that no longer exist
-                            for key, record in existing_map.items():
-                                if key not in updated_records:
-                                    session.delete(record)
-                                    logger.debug(f"[SCAN] Removed obsolete DNS record: {record.record_type} {record.name}")
-                            
-                            # Commit DNS changes
-                            session.flush()
-                            session.commit()
-                            logger.info(f"[SCAN] Successfully updated DNS records for {domain}")
-                    except Exception as dns_error:
-                        logger.error(f"[SCAN] Error updating DNS records for {domain}: {str(dns_error)}")
-                        session.rollback()
-                        has_errors = True
-                        error_messages.append(f"Error updating DNS records: {str(dns_error)}")
-                elif check_dns:
-                    logger.warning(f"[SCAN] No DNS records found for {domain}")
+                        status_container.text(f'Processing DNS records for {domain}...')
+                    
+                    self.processor.process_dns_records(
+                        domain_obj,
+                        domain_info.dns_records,
+                        scan_queue,
+                        port
+                    )
                 
                 # Commit domain information changes
                 session.commit()
@@ -247,15 +208,6 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
     if scan_result and scan_result.certificate_info:
         cert_info = scan_result.certificate_info
         try:
-            # Process certificate info and add any new SANs to scan queue
-            if check_subdomains and cert_info.san and scan_queue is not None:
-                for san in cert_info.san:
-                    if san.startswith('DNS:'):
-                        discovered_domain = san[4:]  # Remove 'DNS:' prefix
-                        if not cert_scanner.tracker.is_endpoint_scanned(discovered_domain, port):
-                            scan_queue.add((discovered_domain, port))
-                            logger.info(f"[SCAN] Added SAN to scan queue: {discovered_domain}:{port}")
-            
             # Get or create certificate
             cert = session.query(Certificate).filter_by(
                 serial_number=cert_info.serial_number
@@ -424,18 +376,20 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 logger.info(f"[SCAN] Found {len(subdomain_results)} subdomains for {domain}")
                 
                 # Add discovered subdomains to scan queue and update total steps
+                new_subdomains = 0
                 for result in subdomain_results:
                     subdomain = result['domain']
                     if not cert_scanner.tracker.is_endpoint_scanned(subdomain, port):
                         scan_queue.add((subdomain, port))
-                        if total_steps is not None:
-                            total_steps += 1  # Increment total steps for each new subdomain
+                        new_subdomains += 1
                         logger.info(f"[SCAN] Added new subdomain to scan queue: {subdomain}:{port}")
                 
-                # Update progress bar with new total
-                if progress_container and current_step is not None and total_steps is not None:
-                    with progress_container:
-                        progress = st.progress(min(current_step / total_steps, 1.0))
+                # Update total steps count for new subdomains
+                if new_subdomains > 0 and total_steps is not None:
+                    total_steps += new_subdomains
+                    if progress_container and current_step is not None:
+                        with progress_container:
+                            progress = st.progress(min(current_step / total_steps, 1.0))
             
             # Print updated scanner status after subdomain discovery
             cert_scanner.tracker.print_status()
@@ -490,11 +444,6 @@ def render_scan_interface(engine) -> None:
     if 'scan_manager' not in st.session_state:
         st.session_state.scan_manager = ScanManager()
     
-    # Reset scan state when requested
-    if st.button("Reset Scan History"):
-        st.session_state.scan_manager.reset_scan_state()
-        st.success("Scan history has been reset")
-    
     st.title("Domain & Certificate Scanner")
     st.markdown("""
     This scanner performs comprehensive domain analysis including:
@@ -534,10 +483,10 @@ internal.server.local:444"""
         
         with options_col:
             st.markdown("### Scan Options")
-            check_dns = st.checkbox("Scan DNS Records", value=True)
             check_whois = st.checkbox("Get WHOIS Info", value=True)
+            check_dns = st.checkbox("Get DNS Records", value=True)
             check_subdomains = st.checkbox("Include Subdomains", value=True)
-            check_related = st.checkbox("Find Related Domains", value=True)
+            check_sans = st.checkbox("Scan SANs", value=True)  # New checkbox for SAN scanning
         
         # Scan initiation button below both columns
         scan_button_clicked = st.button("Start Scan", type="primary")
@@ -644,6 +593,7 @@ internal.server.local:444"""
                                 check_whois=check_whois,
                                 check_dns=check_dns,
                                 check_subdomains=check_subdomains,
+                                check_sans=check_sans,
                                 status_container=status_container,
                                 progress_container=progress_container,
                                 current_step=current_step,

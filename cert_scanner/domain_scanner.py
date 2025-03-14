@@ -11,7 +11,7 @@ This module provides functionality for scanning and analyzing domain information
 import whois
 import dns.resolver
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set
 import logging
 import re
 import socket
@@ -39,7 +39,8 @@ class DomainInfo:
         dns_records: Optional[List[Dict[str, Any]]] = None,
         is_valid: bool = True,
         error: Optional[str] = None,
-        domain_type: Optional[str] = None
+        domain_type: Optional[str] = None,
+        related_domains: Optional[Set[str]] = None
     ):
         self.domain_name = domain_name
         self.registrar = registrar
@@ -52,6 +53,7 @@ class DomainInfo:
         self.is_valid = is_valid
         self.error = error
         self.domain_type = domain_type
+        self.related_domains = related_domains or set()
         
     def to_dict(self) -> Dict[str, Any]:
         """Convert domain information to dictionary format."""
@@ -66,7 +68,8 @@ class DomainInfo:
             'dns_records': self.dns_records,
             'is_valid': self.is_valid,
             'error': self.error,
-            'domain_type': self.domain_type
+            'domain_type': self.domain_type,
+            'related_domains': list(self.related_domains)
         }
 
 class DomainScanner:
@@ -486,6 +489,46 @@ class DomainScanner:
             self.logger.error(f"Error checking ignore list for {domain}: {str(e)}")
             return False, None
 
+    def _find_related_domains(self, whois_info: Dict) -> Set[str]:
+        """
+        Find related domains based on WHOIS information.
+        
+        Args:
+            whois_info: WHOIS information dictionary
+            
+        Returns:
+            Set[str]: Set of related domain names
+        """
+        related_domains = set()
+        
+        try:
+            # Get registrant information
+            registrant = whois_info.get('registrant', '')
+            if not registrant:
+                return related_domains
+            
+            # Apply rate limiting for WHOIS queries
+            self.last_whois_query_time = self._apply_rate_limit(
+                self.last_whois_query_time,
+                self.whois_rate_limit,
+                "WHOIS"
+            )
+            
+            # Query WHOIS for domains with same registrant
+            # Note: This is a simplified approach - in practice you'd want to use
+            # a more sophisticated WHOIS query service that supports registrant-based searching
+            w = whois.whois(registrant)
+            if w and hasattr(w, 'domains'):
+                for domain in w.domains:
+                    if self._validate_domain(domain):
+                        related_domains.add(domain)
+                    
+            return related_domains
+            
+        except Exception as e:
+            self.logger.error(f"Error finding related domains: {str(e)}")
+            return related_domains
+
     def scan_domain(self, domain: str, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
         """
         Scan a domain for all available information.
@@ -520,19 +563,21 @@ class DomainScanner:
 
             whois_info = {}
             dns_records = []
+            related_domains = set()
             
             # Get WHOIS information if requested
             if get_whois:
                 whois_info = self._get_whois_info(domain)
+                # Find related domains based on WHOIS info
+                related_domains = self._find_related_domains(whois_info)
             
             # Get DNS records if requested
             if get_dns:
                 try:
                     dns_records = self._get_dns_records(domain)
                 except Exception as e:
-                    logger.warning(f"Error getting DNS records for {domain}: {str(e)}")
+                    self.logger.warning(f"Error getting DNS records for {domain}: {str(e)}")
             
-            # Create domain info object
             return DomainInfo(
                 domain_name=domain,
                 is_valid=True,
@@ -543,11 +588,12 @@ class DomainScanner:
                 status=whois_info.get('status', []),
                 nameservers=whois_info.get('nameservers', []),
                 dns_records=dns_records,
-                domain_type=self._get_domain_type(domain)
+                domain_type=self._get_domain_type(domain),
+                related_domains=related_domains
             )
             
         except Exception as e:
-            logger.error(f"Error scanning domain {domain}: {str(e)}")
+            self.logger.error(f"Error scanning domain {domain}: {str(e)}")
             return DomainInfo(
                 domain_name=domain,
                 is_valid=True,

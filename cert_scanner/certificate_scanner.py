@@ -523,6 +523,11 @@ class CertificateScanner:
                 for extension in cert.extensions:
                     if extension.oid == x509.oid.ExtensionOID.SUBJECT_ALTERNATIVE_NAME:
                         san = [name.value for name in extension.value]
+                        self.logger.info(f"Found {len(san)} SANs in certificate for {address}:{port}")
+                        for name in san:
+                            self.logger.info(f"SAN: {name}")
+                if not san:
+                    self.logger.info(f"No SANs found in certificate for {address}:{port}")
                 
                 # Get signature algorithm
                 sig_algorithm = cert.signature_algorithm_oid._name

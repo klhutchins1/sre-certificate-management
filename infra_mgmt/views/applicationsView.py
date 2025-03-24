@@ -32,7 +32,7 @@ from ..constants import APP_TYPES, app_types
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
-from cert_scanner.notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from infra_mgmt.notifications import initialize_notifications, show_notifications, notify, clear_notifications
 
 # Configure logging
 logger = logging.getLogger(__name__)

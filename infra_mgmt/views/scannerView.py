@@ -81,31 +81,31 @@ def get_scanners():
     """Get scanner instances with shared tracking."""
     # Create scanner instances
     domain_scanner = DomainScanner()
-    cert_scanner = CertificateScanner()
+    infra_mgmt = CertificateScanner()
     subdomain_scanner = SubdomainScanner()
     
     # Share the tracking system between scanners
-    subdomain_scanner.tracker = cert_scanner.tracker
+    subdomain_scanner.tracker = infra_mgmt.tracker
     
-    return domain_scanner, cert_scanner, subdomain_scanner
+    return domain_scanner, infra_mgmt, subdomain_scanner
 
 def process_scan_target(session, domain: str, port: int, check_whois: bool, check_dns: bool, check_subdomains: bool, 
                        check_sans: bool = False,  # New parameter to control SAN scanning
                        progress_container=None, status_container=None, current_step=None, total_steps=None,
-                       cert_scanner=None, domain_scanner=None, subdomain_scanner=None,
+                       infra_mgmt=None, domain_scanner=None, subdomain_scanner=None,
                        scan_queue=None) -> None:
     """Process a single scan target."""
     logger.info(f"[SCAN] Processing target: {domain}:{port}")
     
     # Use provided scanner instances or get new ones
-    if not all([cert_scanner, domain_scanner, subdomain_scanner]):
-        domain_scanner, cert_scanner, subdomain_scanner = get_scanners()
+    if not all([infra_mgmt, domain_scanner, subdomain_scanner]):
+        domain_scanner, infra_mgmt, subdomain_scanner = get_scanners()
     
     # Print current scanner status
-    cert_scanner.tracker.print_status()
+    infra_mgmt.tracker.print_status()
     
     # Skip if already scanned in this scan session
-    if cert_scanner.tracker.is_endpoint_scanned(domain, port):
+    if infra_mgmt.tracker.is_endpoint_scanned(domain, port):
         logger.info(f"[SCAN] Skipping {domain}:{port} - Already scanned in this scan")
         if status_container:
             status_container.text(f'Skipping {domain}:{port} (already scanned in this scan)')
@@ -164,7 +164,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 if domain_info.related_domains and scan_queue is not None:
                     related_count = 0
                     for related_domain in domain_info.related_domains:
-                        if not cert_scanner.tracker.is_endpoint_scanned(related_domain, port):
+                        if not infra_mgmt.tracker.is_endpoint_scanned(related_domain, port):
                             scan_queue.add((related_domain, port))
                             related_count += 1
                             logger.info(f"[SCAN] Added related domain to scan queue: {related_domain}:{port}")
@@ -213,7 +213,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
     if status_container:
         status_container.text(f'Scanning certificates for {domain}:{port}...')
     logger.info(f"[SCAN] Starting certificate scan for {domain}:{port}")
-    scan_result = cert_scanner.scan_certificate(domain, port)
+    scan_result = infra_mgmt.scan_certificate(domain, port)
     
     if scan_result and scan_result.certificate_info:
         cert_info = scan_result.certificate_info
@@ -282,7 +282,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
             if cert_info.ip_addresses:
                 if status_container:
                     status_container.text(f'Updating IP addresses for {domain}...')
-                cert_scanner.tracker.add_discovered_ips(domain, cert_info.ip_addresses)
+                infra_mgmt.tracker.add_discovered_ips(domain, cert_info.ip_addresses)
                 existing_ips = {ip.ip_address for ip in host.ip_addresses}
                 for ip_addr in cert_info.ip_addresses:
                     if ip_addr not in existing_ips:
@@ -377,7 +377,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 port=port,
                 check_whois=check_whois,
                 check_dns=check_dns,
-                scanned_domains=cert_scanner.tracker.scanned_domains
+                scanned_domains=infra_mgmt.tracker.scanned_domains
             )
             
             if subdomain_results and scan_queue is not None:
@@ -389,7 +389,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 new_subdomains = 0
                 for result in subdomain_results:
                     subdomain = result['domain']
-                    if not cert_scanner.tracker.is_endpoint_scanned(subdomain, port):
+                    if not infra_mgmt.tracker.is_endpoint_scanned(subdomain, port):
                         scan_queue.add((subdomain, port))
                         new_subdomains += 1
                         logger.info(f"[SCAN] Added new subdomain to scan queue: {subdomain}:{port}")
@@ -402,7 +402,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                             progress = st.progress(min(current_step / total_steps, 1.0))
             
             # Print updated scanner status after subdomain discovery
-            cert_scanner.tracker.print_status()
+            infra_mgmt.tracker.print_status()
             
             # Clear status container from subdomain scanner
             subdomain_scanner.set_status_container(None)
@@ -421,7 +421,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
             st.session_state.scan_results["error"].append(error_msg)
     
     # Print final scanner status for this target
-    cert_scanner.tracker.print_status()
+    infra_mgmt.tracker.print_status()
 
 def render_scan_interface(engine) -> None:
     """Render the main domain and certificate scanning interface."""
@@ -575,7 +575,7 @@ internal.server.local:444"""
                 # Process targets in a single session
                 with Session(engine) as session:
                     current_step = 0
-                    total_steps = st.session_state.scan_manager.cert_scanner.get_queue_size()
+                    total_steps = st.session_state.scan_manager.infra_mgmt.get_queue_size()
                     
                     while st.session_state.scan_manager.has_pending_targets():
                         # Get next target from queue
@@ -611,7 +611,7 @@ internal.server.local:444"""
                             )
                             
                             # Update total steps based on queue size
-                            total_steps = max(total_steps, current_step + st.session_state.scan_manager.cert_scanner.get_queue_size())
+                            total_steps = max(total_steps, current_step + st.session_state.scan_manager.infra_mgmt.get_queue_size())
                             
                         except Exception as e:
                             logger.error(f"[SCAN] Error processing {target_key}: {str(e)}")
@@ -659,7 +659,7 @@ internal.server.local:444"""
                 with tab_domains:
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
-                        for domain in st.session_state.scan_manager.cert_scanner.tracker.scanned_domains:
+                        for domain in st.session_state.scan_manager.infra_mgmt.tracker.scanned_domains:
                             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
                             if domain_obj:
                                 st.markdown(f"### {domain_obj.domain_name}")
@@ -676,7 +676,7 @@ internal.server.local:444"""
                 with tab_certs:
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
-                        for domain in st.session_state.scan_manager.cert_scanner.tracker.scanned_domains:
+                        for domain in st.session_state.scan_manager.infra_mgmt.tracker.scanned_domains:
                             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
                             if domain_obj and domain_obj.certificates:
                                 st.markdown(f"### {domain_obj.domain_name}")
@@ -697,7 +697,7 @@ internal.server.local:444"""
                 with tab_dns:
                     with Session(engine) as session:
                         # Get all scanned domains from tracker
-                        scanned_domains = st.session_state.scan_manager.cert_scanner.tracker.scanned_domains
+                        scanned_domains = st.session_state.scan_manager.infra_mgmt.tracker.scanned_domains
                         logger.info(f"[DNS] Processing {len(scanned_domains)} domains for display")
                         
                         for domain in scanned_domains:

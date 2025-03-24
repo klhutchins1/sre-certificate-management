@@ -2,7 +2,7 @@ import pytest
 import os
 from pathlib import Path
 import yaml
-from cert_scanner.settings import Settings, DEFAULT_CONFIG
+from infra_mgmt.settings import Settings, DEFAULT_CONFIG
 
 @pytest.fixture(autouse=True)
 def reset_settings():

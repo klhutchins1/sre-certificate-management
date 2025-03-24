@@ -5,9 +5,9 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
-from cert_scanner.models import Base, Application, CertificateBinding, Certificate, Host, HostIP
-from cert_scanner.views.applicationsView import render_applications_view, render_application_details, APP_TYPES, app_types
-from cert_scanner.constants import HOST_TYPE_SERVER, ENV_PRODUCTION
+from infra_mgmt.models import Base, Application, CertificateBinding, Certificate, Host, HostIP
+from infra_mgmt.views.applicationsView import render_applications_view, render_application_details, APP_TYPES, app_types
+from infra_mgmt.constants import HOST_TYPE_SERVER, ENV_PRODUCTION
 
 @pytest.fixture(scope="function")
 def engine():
@@ -28,7 +28,7 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit functionality"""
-    with patch('cert_scanner.views.applicationsView.st') as mock_st:
+    with patch('infra_mgmt.views.applicationsView.st') as mock_st:
         # Create column mocks with metrics
         def create_column_mock():
             col = MagicMock()
@@ -102,9 +102,9 @@ def mock_streamlit():
 @pytest.fixture
 def mock_aggrid():
     """Mock ag-grid functionality"""
-    with patch('cert_scanner.views.applicationsView.AgGrid') as mock_aggrid, \
-         patch('cert_scanner.views.applicationsView.GridOptionsBuilder') as mock_gb, \
-         patch('cert_scanner.views.applicationsView.JsCode') as mock_jscode:
+    with patch('infra_mgmt.views.applicationsView.AgGrid') as mock_aggrid, \
+         patch('infra_mgmt.views.applicationsView.GridOptionsBuilder') as mock_gb, \
+         patch('infra_mgmt.views.applicationsView.JsCode') as mock_jscode:
         
         # Create a mock GridOptionsBuilder that supports all required methods
         class MockGridOptionsBuilder:

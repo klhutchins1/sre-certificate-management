@@ -3,8 +3,8 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from cert_scanner.models import Base, Certificate, Host, CertificateBinding, HostIP
-from cert_scanner.exports import (
+from infra_mgmt.models import Base, Certificate, Host, CertificateBinding, HostIP
+from infra_mgmt.exports import (
     export_certificates_to_csv,
     export_hosts_to_csv,
     create_timeline_chart,

@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
-from cert_scanner.models import Base, Certificate, Host, HostIP, CertificateBinding, CertificateScan
-from cert_scanner.views.historyView import (
+from infra_mgmt.models import Base, Certificate, Host, HostIP, CertificateBinding, CertificateScan
+from infra_mgmt.views.historyView import (
     render_history_view,
     render_scan_history,
     render_host_certificate_history,
@@ -32,7 +32,7 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit module"""
-    with patch('cert_scanner.views.historyView.st') as mock_st:
+    with patch('infra_mgmt.views.historyView.st') as mock_st:
         # Mock columns to return list of MagicMocks
         def mock_columns(*args):
             num_cols = len(args[0]) if isinstance(args[0], (list, tuple)) else args[0]
@@ -241,7 +241,7 @@ def test_host_certificate_history_timeline(mock_streamlit, engine, sample_data):
     mock_streamlit.selectbox.return_value = f"{sample_data['host'].name} ({sample_data['binding'].host_ip.ip_address})"
     
     # Mock plotly chart
-    with patch('cert_scanner.views.historyView.create_timeline_chart') as mock_create_chart:
+    with patch('infra_mgmt.views.historyView.create_timeline_chart') as mock_create_chart:
         mock_fig = MagicMock()
         mock_create_chart.return_value = mock_fig
         
@@ -254,9 +254,9 @@ def test_host_certificate_history_timeline(mock_streamlit, engine, sample_data):
 @pytest.fixture(scope="function")
 def mock_aggrid():
     """Mock st_aggrid module"""
-    with patch('cert_scanner.views.historyView.AgGrid') as mock_aggrid, \
-         patch('cert_scanner.views.historyView.GridOptionsBuilder') as mock_gb, \
-         patch('cert_scanner.views.historyView.JsCode') as mock_jscode:
+    with patch('infra_mgmt.views.historyView.AgGrid') as mock_aggrid, \
+         patch('infra_mgmt.views.historyView.GridOptionsBuilder') as mock_gb, \
+         patch('infra_mgmt.views.historyView.JsCode') as mock_jscode:
         
         # Create a mock GridOptionsBuilder that supports all required methods
         class MockGridOptionsBuilder:

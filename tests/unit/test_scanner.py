@@ -11,8 +11,8 @@ from unittest.mock import Mock, patch, MagicMock, call
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
-from cert_scanner.certificate_scanner import CertificateScanner, CertificateInfo, ScanResult
-from cert_scanner.scanner import ScanTracker, ScanManager
+from infra_mgmt.certificate_scanner import CertificateScanner, CertificateInfo, ScanResult
+from infra_mgmt.scanner import ScanTracker, ScanManager
 
 @pytest.fixture
 def scanner():

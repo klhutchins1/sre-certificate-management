@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 import json
-from cert_scanner.models import (
+from infra_mgmt.models import (
     Base, Host, HostIP, Certificate, CertificateBinding,
     CertificateTracking, CertificateScan,
     HOST_TYPE_SERVER, ENV_PRODUCTION, BINDING_TYPE_IP,

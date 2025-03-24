@@ -112,7 +112,7 @@ def render_sidebar():
         by triggering page reruns when necessary.
     """
     with st.sidebar:
-        st.title("Certificate Manager")
+        st.title("SRO Infra Manager")
         st.markdown("---")
         
         # Define mapping of page names to their display versions with icons

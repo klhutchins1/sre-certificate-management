@@ -55,7 +55,7 @@ from ..backup import create_backup
 from ..models import IgnoredDomain, IgnoredCertificate
 from sqlalchemy.orm import Session
 import re
-from cert_scanner.notifications import initialize_notifications, show_notifications, notify
+from infra_mgmt.notifications import initialize_notifications, show_notifications, notify
 
 
 logger = logging.getLogger(__name__)

@@ -2,12 +2,12 @@ import pytest
 from sqlalchemy import create_engine, inspect, Column, Integer, String
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
-from cert_scanner.db import (
+from infra_mgmt.db import (
     init_database, get_session, backup_database, restore_database, 
     update_database_schema, reset_database, check_database, SessionManager, _is_network_path, _normalize_path,
     migrate_database
 )
-from cert_scanner.models import Base, Certificate, Host, HostIP
+from infra_mgmt.models import Base, Certificate, Host, HostIP
 from datetime import datetime
 import os
 import tempfile
@@ -16,7 +16,7 @@ import time
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 from sqlalchemy import text
-from cert_scanner.settings import Settings
+from infra_mgmt.settings import Settings
 import logging
 import gc
 import stat
@@ -206,7 +206,7 @@ def test_check_database():
 
     try:
         # Mock the settings to return our test database path
-        with patch('cert_scanner.db.Settings') as mock_settings:
+        with patch('infra_mgmt.db.Settings') as mock_settings:
             mock_settings.return_value.get.return_value = db_path
             
             # Database should not exist initially
@@ -694,7 +694,7 @@ def test_backup_database_no_permission():
         
         # Attempt backup with mocked permissions
         with patch('os.access', side_effect=mock_access), \
-             patch('cert_scanner.db.os.access', side_effect=mock_access):
+             patch('infra_mgmt.db.os.access', side_effect=mock_access):
             with pytest.raises(Exception) as exc_info:
                 backup_database(engine, backup_dir)
             assert "No write permission for backup directory" in str(exc_info.value)
@@ -774,7 +774,7 @@ def test_check_database_corrupted():
             f.write("corrupted data")
         
         # Mock settings to return corrupted database path
-        with patch('cert_scanner.db.Settings') as mock_settings:
+        with patch('infra_mgmt.db.Settings') as mock_settings:
             mock_settings.return_value.get.return_value = db_path
             
             # Check should return False for corrupted database
@@ -794,7 +794,7 @@ def test_check_database_valid():
         engine.dispose()
         
         # Mock settings to return valid database path
-        with patch('cert_scanner.db.Settings') as mock_settings:
+        with patch('infra_mgmt.db.Settings') as mock_settings:
             mock_settings.return_value.get.return_value = db_path
             
             # Check should return True for valid database
@@ -1077,7 +1077,7 @@ def test_database_network_path():
         
         with patch('sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite.connect', return_value=mock_connection), \
              patch('sqlalchemy.create_engine', return_value=mock_engine), \
-             patch('cert_scanner.db.create_engine', return_value=mock_engine) as mock_create_engine, \
+             patch('infra_mgmt.db.create_engine', return_value=mock_engine) as mock_create_engine, \
              patch('pathlib.Path.exists', return_value=True), \
              patch('pathlib.Path.is_dir', return_value=True), \
              patch('os.access', return_value=True), \
@@ -1233,7 +1233,7 @@ def test_update_database_schema_error_handling():
         mock_engine = MagicMock()
         mock_inspect = MagicMock()
         mock_inspect.get_table_names.side_effect = Exception("Connection error")
-        with patch('cert_scanner.db.inspect', return_value=mock_inspect):
+        with patch('infra_mgmt.db.inspect', return_value=mock_inspect):
             # Test with invalid engine
             assert update_database_schema(mock_engine) is False
 
@@ -1398,7 +1398,7 @@ def test_init_database_error_handling():
         assert "file is not a database" in str(exc_info.value)
         
         # Test with settings error
-        with patch('cert_scanner.db.Settings') as mock_settings:
+        with patch('infra_mgmt.db.Settings') as mock_settings:
             mock_settings.return_value.get.side_effect = Exception("Settings error")
             with pytest.raises(Exception):
                 init_database()
@@ -1443,7 +1443,7 @@ def test_backup_restore_database_error_handling():
             return True
 
         with patch('os.access', side_effect=mock_access), \
-             patch('cert_scanner.db.os.access', side_effect=mock_access):
+             patch('infra_mgmt.db.os.access', side_effect=mock_access):
             with pytest.raises(Exception) as exc_info:
                 backup_database(engine, backup_dir)
             assert "No write permission for backup directory" in str(exc_info.value)

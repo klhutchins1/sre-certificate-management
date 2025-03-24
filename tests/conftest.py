@@ -22,8 +22,8 @@ def setup_test_env(tmp_path):
     yield
     
     # Clean up after tests
-    if 'CERT_SCANNER_CONFIG' in os.environ:
-        del os.environ['CERT_SCANNER_CONFIG']
+    if 'infra_mgmt_CONFIG' in os.environ:
+        del os.environ['infra_mgmt_CONFIG']
 
 # Create a proper mock for streamlit components
 components_mock = MagicMock()

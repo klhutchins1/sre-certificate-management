@@ -2,8 +2,8 @@ import pytest
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from cert_scanner.models import Base, Certificate, Host
-from cert_scanner.views.dashboardView import render_dashboard
+from infra_mgmt.models import Base, Certificate, Host
+from infra_mgmt.views.dashboardView import render_dashboard
 import streamlit as st
 
 @pytest.fixture

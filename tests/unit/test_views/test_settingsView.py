@@ -3,10 +3,10 @@ from unittest.mock import Mock, patch, MagicMock, call
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
-from cert_scanner.views.settingsView import render_settings_view, restore_backup, list_backups
-from cert_scanner.backup import create_backup
-from cert_scanner.settings import Settings
-from cert_scanner.models import Base, Domain
+from infra_mgmt.views.settingsView import render_settings_view, restore_backup, list_backups
+from infra_mgmt.backup import create_backup
+from infra_mgmt.settings import Settings
+from infra_mgmt.models import Base, Domain
 from pathlib import Path
 import json
 import yaml
@@ -131,8 +131,8 @@ def mock_settings(mocker):
     # Define a side effect function for get method
     def get_side_effect(key, default=None):
         settings_values = {
-            "paths.database": "test/data/test.db",
-            "paths.backups": "test/data/backups",
+            "paths.database": "tests/data/test.db",
+            "paths.backups": "tests/data/backups",
             "scanning.default_rate_limit": 60,
             "scanning.internal.rate_limit": 60,
             "scanning.external.rate_limit": 30,
@@ -164,8 +164,8 @@ def mock_settings(mocker):
     settings.save = mocker.MagicMock(return_value=True)
     
     # Patch the Settings class to use our mock
-    mocker.patch('cert_scanner.views.settingsView.Settings', return_value=settings)
-    mocker.patch('cert_scanner.settings.Settings', return_value=settings)
+    mocker.patch('infra_mgmt.views.settingsView.Settings', return_value=settings)
+    mocker.patch('infra_mgmt.settings.Settings', return_value=settings)
     
     return settings
 
@@ -276,8 +276,8 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
             {"days": warning_days, "level": "warning"}
         ],
         "alerts.failed_scans.consecutive_failures": consecutive_failures,
-        "paths.database": "test/data/test.db",
-        "paths.backups": "test/data/backups",
+        "paths.database": "tests/data/test.db",
+        "paths.backups": "tests/data/backups",
         "scanning.default_rate_limit": 60,
         "scanning.internal.rate_limit": 60,
         "scanning.external.rate_limit": 30,
@@ -397,7 +397,7 @@ def test_create_backup_success(engine):
     with patch('streamlit.button') as mock_button, \
          patch('streamlit.success') as mock_success, \
          patch('streamlit.error') as mock_error, \
-         patch('cert_scanner.settings.Settings') as mock_settings_class:
+         patch('infra_mgmt.settings.Settings') as mock_settings_class:
         
         # Configure mock settings
         mock_settings = MagicMock()
@@ -431,7 +431,7 @@ def test_backup_with_missing_database(engine):
     """Test backup handling when database is missing or inaccessible."""
     with patch('streamlit.button') as mock_button, \
          patch('streamlit.error') as mock_error, \
-         patch('cert_scanner.settings.Settings') as mock_settings_class:
+         patch('infra_mgmt.settings.Settings') as mock_settings_class:
         
         # Configure mock settings
         mock_settings = MagicMock()

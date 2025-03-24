@@ -15,7 +15,7 @@ def clean_imports():
 def test_wide_space_default(mock_set_page_config):
     """Test that wide_space_default sets the correct page configuration"""
     # Mock app_main to prevent it from running
-    with patch('cert_scanner.app.main'):
+    with patch('infra_mgmt.app.main'):
         # Import the module (this will execute the top-level code)
         import run
         

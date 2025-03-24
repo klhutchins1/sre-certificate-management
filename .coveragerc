@@ -1,5 +1,5 @@
 [run]
-source = cert_scanner
+source = infra_mgmt
 omit = 
     */tests/*
     */venv/*

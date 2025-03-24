@@ -11,8 +11,8 @@ import yaml
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from cert_scanner.settings import Settings
-from cert_scanner.models import Base
+from infra_mgmt.settings import Settings
+from infra_mgmt.models import Base
 
 def create_backup(engine=None):
     """

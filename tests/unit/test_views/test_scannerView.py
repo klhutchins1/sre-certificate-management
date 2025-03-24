@@ -7,12 +7,12 @@ import streamlit as st
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timezone
 
-from cert_scanner.certificate_scanner import CertificateInfo, ScanResult
-from cert_scanner.scanner import ScanManager
-from cert_scanner.models import Domain, Certificate
+from infra_mgmt.certificate_scanner import CertificateInfo, ScanResult
+from infra_mgmt.scanner import ScanManager
+from infra_mgmt.models import Domain, Certificate
 from sqlalchemy import create_engine
-from cert_scanner.models import Certificate, CertificateScan, Host
-from cert_scanner.views.scannerView import render_scan_interface
+from infra_mgmt.models import Certificate, CertificateScan, Host
+from infra_mgmt.views.scannerView import render_scan_interface
 from urllib.parse import urlparse
 
 @pytest.fixture
@@ -143,7 +143,7 @@ def test_render_scan_interface(mock_streamlit, engine):
     mock_streamlit.expander.return_value = mock_expander
     
     # Call the function
-    with patch('cert_scanner.views.scannerView.st', mock_streamlit):
+    with patch('infra_mgmt.views.scannerView.st', mock_streamlit):
         domains, scan_button, stop_button, clear_button, results_container = render_scan_interface(engine)
     
     # Verify title was set
@@ -297,8 +297,8 @@ def test_scan_button_functionality(engine, mock_session_state, mock_cert_info):
 @pytest.mark.test_display
 def test_recent_scans_display(engine, mock_session_state):
     """Test that recent scans are displayed correctly"""
-    with patch('cert_scanner.views.scannerView.Session') as mock_session_class, \
-         patch('cert_scanner.views.scannerView.st') as mock_st:
+    with patch('infra_mgmt.views.scannerView.Session') as mock_session_class, \
+         patch('infra_mgmt.views.scannerView.st') as mock_st:
 
         # Configure mocks
         mock_st.text_area.return_value = "example.com"
@@ -452,8 +452,8 @@ def test_input_validation_scenarios(engine, mock_session_state):
             'spinner.return_value.__exit__.return_value': None
         })
 
-        with patch('cert_scanner.views.scannerView.st', new=mock_st), \
-             patch('cert_scanner.views.scannerView.Session') as mock_session_class:
+        with patch('infra_mgmt.views.scannerView.st', new=mock_st), \
+             patch('infra_mgmt.views.scannerView.Session') as mock_session_class:
 
             # Initialize session state
             mock_session_state.scan_results = {
@@ -622,7 +622,7 @@ def test_database_integration(engine, mock_session_state, mock_cert_info):
         mock_session_state.get.return_value = False  # For transitioning flag
         
         # Create tables
-        from cert_scanner.models import Base
+        from infra_mgmt.models import Base
         Base.metadata.create_all(engine)
         
         render_scan_interface(engine)

@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
-from cert_scanner.models import Base, Certificate, Host, HostIP, CertificateBinding
-from cert_scanner.views.searchView import render_search_view, perform_search
+from infra_mgmt.models import Base, Certificate, Host, HostIP, CertificateBinding
+from infra_mgmt.views.searchView import render_search_view, perform_search
 
 @pytest.fixture(scope="function")
 def engine():
@@ -27,7 +27,7 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit module"""
-    with patch('cert_scanner.views.searchView.st') as mock_st:
+    with patch('infra_mgmt.views.searchView.st') as mock_st:
         # Create persistent column mocks
         column_mocks = {}
         def get_column_mocks(*args):

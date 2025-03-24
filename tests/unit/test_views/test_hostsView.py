@@ -5,9 +5,9 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
-from cert_scanner.models import Base, Certificate, Host, HostIP, CertificateBinding
-from cert_scanner.views.hostsView import render_hosts_view, render_details
-from cert_scanner.constants import platform_options
+from infra_mgmt.models import Base, Certificate, Host, HostIP, CertificateBinding
+from infra_mgmt.views.hostsView import render_hosts_view, render_details
+from infra_mgmt.constants import platform_options
 import logging
 from unittest.mock import call
 
@@ -49,7 +49,7 @@ def get_column_mocks(spec):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit module"""
-    with patch('cert_scanner.views.hostsView.st') as mock_st:
+    with patch('infra_mgmt.views.hostsView.st') as mock_st:
         # Mock columns to return the correct number of column objects
         mock_st.columns = MagicMock(side_effect=get_column_mocks)
         
@@ -251,7 +251,7 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
     mock_aggrid.side_effect = mock_aggrid_host_selection
     
     # Mock current time for validity checks
-    with patch('cert_scanner.views.hostsView.datetime') as mock_datetime:
+    with patch('infra_mgmt.views.hostsView.datetime') as mock_datetime:
         mock_datetime.now.return_value = fixed_time
         mock_datetime.strptime = datetime.strptime
         
@@ -341,7 +341,7 @@ def test_binding_details_render(mock_streamlit, sample_data):
     
     # Mock current time for validity check
     fixed_time = datetime(2024, 1, 1, 12, 0)
-    with patch('cert_scanner.views.hostsView.datetime') as mock_datetime:
+    with patch('infra_mgmt.views.hostsView.datetime') as mock_datetime:
         mock_datetime.now.return_value = fixed_time
         mock_datetime.strptime = datetime.strptime
         
@@ -495,9 +495,9 @@ def test_inline_platform_update_error(mock_streamlit, mock_aggrid, engine, sampl
 @pytest.fixture(scope="function")
 def mock_aggrid():
     """Mock st_aggrid module"""
-    with patch('cert_scanner.views.hostsView.AgGrid') as mock_aggrid, \
-         patch('cert_scanner.views.hostsView.GridOptionsBuilder') as mock_gb, \
-         patch('cert_scanner.views.hostsView.JsCode') as mock_jscode:
+    with patch('infra_mgmt.views.hostsView.AgGrid') as mock_aggrid, \
+         patch('infra_mgmt.views.hostsView.GridOptionsBuilder') as mock_gb, \
+         patch('infra_mgmt.views.hostsView.JsCode') as mock_jscode:
         
         # Create a mock GridOptionsBuilder that supports all required methods
         class MockGridOptionsBuilder:

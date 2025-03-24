@@ -48,6 +48,7 @@ The application will be available at http://localhost:8501 by default.
 If you encounter port conflicts, you can modify the port in `run_custom.py` by changing the `--server.port` value.
 
 To see detailed logs of the application startup:
+
 1. Run the application using the custom runner
 2. Check the `streamlit_runner.log` file in the application directory
 3. The log file contains detailed information about the startup process and any errors
@@ -395,7 +396,6 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 2. Advanced reporting
 3. Search capabilities
 
-
 ### Phase 4: Enhancement
 
 1. Performance optimization
@@ -415,6 +415,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 ## Planned Features
 
 ### Certificate Authority Management
+
 - [ ] Track CA certificates separately from end-entity certificates
 - [ ] Display CA information in Certificates view
 - [ ] Track CA certificate chain relationships
@@ -423,6 +424,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 - [ ] Import trusted CA certificates from system store
 
 ### Multi-Instance Support
+
 - [ ] Enable multiple application instances to run simultaneously
 - [ ] Implement proper database locking mechanisms
 - [ ] Handle concurrent database access
@@ -430,6 +432,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 - [ ] Provide conflict resolution for concurrent updates
 
 ### JWT Certificate Management
+
 - [ ] Scan for JWT certificates on RDS servers using PowerShell
 - [ ] Define standardized JWT certificate format
 - [ ] Import JWT certificates from scan results
@@ -438,6 +441,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 - [ ] Validate JWT certificate signatures
 
 ### Enhanced Scanning Features
+
 - [ ] Maintain historical certificate data when scans fail
   - Preserve existing certificate data if new scan fails
   - Keep last successful scan data for each IP/domain
@@ -475,6 +479,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
   - Optimize scanning efficiency
 
 ### Domain Management
+
 - [ ] Track domain registration expiration
 - [ ] Monitor domain ownership
 - [ ] Integrate with domain registrars
@@ -483,6 +488,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 - [ ] Support for wildcard domain management
 
 ### Data Resilience
+
 - [ ] Implement robust database locking
 - [ ] Add transaction rollback support
 - [ ] Maintain audit trail of changes
@@ -491,6 +497,7 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 - [ ] Add conflict resolution mechanisms
 
 These planned features will enhance the system's capabilities in:
+
 - Certificate Authority tracking and validation
 - Multi-instance deployment support
 - JWT certificate management
@@ -498,3 +505,4 @@ These planned features will enhance the system's capabilities in:
 - Domain lifecycle management
 - Data integrity and resilience
 - create CSR
+  

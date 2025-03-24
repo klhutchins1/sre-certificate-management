@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
-from cert_scanner.models import Base, Certificate, Host, HostIP, CertificateBinding, CertificateTracking
-from cert_scanner.views.certificatesView import (
+from infra_mgmt.models import Base, Certificate, Host, HostIP, CertificateBinding, CertificateTracking
+from infra_mgmt.views.certificatesView import (
     render_certificate_list,
     render_certificate_card,
     render_certificate_overview,
@@ -22,9 +22,9 @@ from unittest.mock import call
 @pytest.fixture(scope="function")
 def mock_aggrid():
     """Mock st_aggrid module"""
-    with patch('cert_scanner.views.certificatesView.AgGrid') as mock_aggrid, \
-         patch('cert_scanner.views.certificatesView.GridOptionsBuilder') as mock_gb, \
-         patch('cert_scanner.views.certificatesView.JsCode') as mock_jscode:
+    with patch('infra_mgmt.views.certificatesView.AgGrid') as mock_aggrid, \
+         patch('infra_mgmt.views.certificatesView.GridOptionsBuilder') as mock_gb, \
+         patch('infra_mgmt.views.certificatesView.JsCode') as mock_jscode:
         
         # Create a mock GridOptionsBuilder that supports all required methods
         class MockGridOptionsBuilder:
@@ -89,7 +89,7 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit module"""
-    with patch('cert_scanner.views.certificatesView.st') as mock_st:
+    with patch('infra_mgmt.views.certificatesView.st') as mock_st:
         # Mock columns to always return a list of MagicMocks
         def mock_columns(*args):
             # If args is a list/tuple, use its length, otherwise use the first arg
@@ -196,9 +196,9 @@ def test_render_certificate_list_with_data(mock_streamlit, mock_aggrid, engine, 
     mock_session_manager.__enter__ = MagicMock(return_value=session)
     mock_session_manager.__exit__ = MagicMock(return_value=None)
     
-    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+    with patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager):
         # Mock current time to ensure certificate is valid
-        with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+        with patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime:
             mock_datetime.now.return_value = datetime(2024, 6, 1)  # A date between valid_from and valid_until
             mock_datetime.strptime = datetime.strptime
             
@@ -236,7 +236,7 @@ def test_render_certificate_overview(mock_streamlit, sample_certificate, sample_
     session.commit()
     
     # Mock current time to ensure certificate is valid
-    with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+    with patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime:
         mock_datetime.now.return_value = datetime(2024, 6, 1)  # A date between valid_from and valid_until
         mock_datetime.strptime = datetime.strptime
         
@@ -349,7 +349,7 @@ def test_render_certificate_card(mock_streamlit, sample_certificate, session):
     session.commit()
     
     # Mock current time to ensure certificate is valid
-    with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+    with patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime:
         mock_datetime.now.return_value = datetime(2024, 6, 1)  # A date between valid_from and valid_until
         mock_datetime.strptime = datetime.strptime
         
@@ -507,9 +507,9 @@ def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certi
         }
     mock_aggrid.side_effect = mock_aggrid_with_selection
     
-    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+    with patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager):
         # Mock current time to ensure certificate is valid
-        with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+        with patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime:
             mock_datetime.now.return_value = datetime(2024, 6, 1)
             mock_datetime.strptime = datetime.strptime
             
@@ -552,7 +552,7 @@ def test_expired_certificate_styling(mock_streamlit, mock_aggrid, engine, sessio
     mock_session_manager.__enter__ = MagicMock(return_value=session)
     mock_session_manager.__exit__ = MagicMock(return_value=None)
     
-    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+    with patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager):
         render_certificate_list(engine)
     
     # Verify AG Grid was created with styling configuration
@@ -597,7 +597,7 @@ def test_new_certificate_appears_in_list(mock_streamlit, mock_aggrid, engine, se
     mock_session_manager.__exit__ = MagicMock(return_value=None)
 
     # First render to get initial state
-    with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+    with patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager):
         render_certificate_list(engine)
 
     # Verify first certificate appears
@@ -624,12 +624,12 @@ def test_new_certificate_appears_in_list(mock_streamlit, mock_aggrid, engine, se
     session.commit()
 
     # Mock current time to ensure certificates are valid
-    with patch('cert_scanner.views.certificatesView.datetime') as mock_datetime:
+    with patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime:
         mock_datetime.now.return_value = datetime.now()
         mock_datetime.strptime = datetime.strptime
         
         # Render again after adding new certificate
-        with patch('cert_scanner.views.certificatesView.SessionManager', return_value=mock_session_manager):
+        with patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager):
             render_certificate_list(engine)
 
     # Verify both certificates appear

@@ -4,14 +4,14 @@ Unit tests for the app module.
 
 import pytest
 import streamlit as st
-from cert_scanner.app import init_session_state, render_sidebar, main
-from cert_scanner.certificate_scanner import CertificateScanner, CertificateInfo
-from cert_scanner.scanner import ScanManager
-from cert_scanner.settings import Settings
+from infra_mgmt.app import init_session_state, render_sidebar, main
+from infra_mgmt.certificate_scanner import CertificateScanner, CertificateInfo
+from infra_mgmt.scanner import ScanManager
+from infra_mgmt.settings import Settings
 from unittest.mock import patch, MagicMock, call
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from cert_scanner.models import Base, Certificate, Domain
+from infra_mgmt.models import Base, Certificate, Domain
 import threading
 import logging
 
@@ -65,14 +65,14 @@ def mock_settings(monkeypatch):
 @pytest.fixture
 def mock_render_functions():
     """Mock all render functions for views"""
-    with patch('cert_scanner.app.render_dashboard') as mock_dashboard, \
-         patch('cert_scanner.app.render_certificate_list') as mock_certificates, \
-         patch('cert_scanner.app.render_hosts_view') as mock_hosts, \
-         patch('cert_scanner.app.render_applications_view') as mock_applications, \
-         patch('cert_scanner.app.render_scan_interface') as mock_scan, \
-         patch('cert_scanner.app.render_history_view') as mock_history, \
-         patch('cert_scanner.app.render_search_view') as mock_search, \
-         patch('cert_scanner.app.render_settings_view') as mock_settings:
+    with patch('infra_mgmt.app.render_dashboard') as mock_dashboard, \
+         patch('infra_mgmt.app.render_certificate_list') as mock_certificates, \
+         patch('infra_mgmt.app.render_hosts_view') as mock_hosts, \
+         patch('infra_mgmt.app.render_applications_view') as mock_applications, \
+         patch('infra_mgmt.app.render_scan_interface') as mock_scan, \
+         patch('infra_mgmt.app.render_history_view') as mock_history, \
+         patch('infra_mgmt.app.render_search_view') as mock_search, \
+         patch('infra_mgmt.app.render_settings_view') as mock_settings:
         
         yield {
             'dashboard': mock_dashboard,
@@ -85,7 +85,7 @@ def mock_render_functions():
             'settings': mock_settings
         }
 
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.init_database')
 def test_init_session_state(mock_init_db, mock_settings, mock_db_engine):
     """Test session state initialization"""
     # Setup mock database
@@ -149,8 +149,8 @@ def test_sidebar_navigation_options(mock_radio):
         assert new_view == view, f"Expected view {view} but got {new_view}"
         assert st.session_state.current_view == view
 
-@patch('cert_scanner.app.render_sidebar')
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.render_sidebar')
+@patch('infra_mgmt.app.init_database')
 def test_main_view_rendering(mock_init_db, mock_sidebar, mock_render_functions, mock_settings, mock_db_engine):
     """Test that main function renders the correct view based on current_view"""
     # Setup mock database
@@ -186,8 +186,8 @@ def test_main_view_rendering(mock_init_db, mock_sidebar, mock_render_functions, 
         for mock_func in mock_functions.values():
             mock_func.reset_mock()
 
-@patch('cert_scanner.app.render_sidebar')
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.render_sidebar')
+@patch('infra_mgmt.app.init_database')
 def test_main_initializes_session(mock_init_db, mock_sidebar, mock_settings, mock_db_engine):
     """Test that main function initializes session state if not initialized"""
     # Setup mock database
@@ -199,7 +199,7 @@ def test_main_initializes_session(mock_init_db, mock_sidebar, mock_settings, moc
         del st.session_state[key]
     
     # Run main
-    with patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+    with patch('infra_mgmt.app.render_dashboard') as mock_dashboard:
         main()
         
         # Verify session was initialized
@@ -211,9 +211,9 @@ def test_main_initializes_session(mock_init_db, mock_sidebar, mock_settings, moc
         # Verify dashboard was rendered
         mock_dashboard.assert_called_once_with(mock_db_engine)
 
-@patch('cert_scanner.app.init_session_state')
-@patch('cert_scanner.app.render_sidebar')
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.init_session_state')
+@patch('infra_mgmt.app.render_sidebar')
+@patch('infra_mgmt.app.init_database')
 def test_main_preserves_session(mock_init_db, mock_sidebar, mock_init_session, mock_settings, mock_db_engine):
     """Test that main function preserves existing session state"""
     # Setup mock database
@@ -224,8 +224,8 @@ def test_main_preserves_session(mock_init_db, mock_sidebar, mock_init_session, m
     test_scanner = CertificateScanner()
 
     # Run main with all necessary mocks
-    with patch('cert_scanner.app.st.session_state', new_callable=MagicMock) as mock_session_state, \
-         patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+    with patch('infra_mgmt.app.st.session_state', new_callable=MagicMock) as mock_session_state, \
+         patch('infra_mgmt.app.render_dashboard') as mock_dashboard:
         # Initialize session with custom values
         mock_session_state.initialized = True
         mock_session_state.scanner = test_scanner
@@ -247,7 +247,7 @@ def test_main_preserves_session(mock_init_db, mock_sidebar, mock_init_session, m
         # Verify dashboard was rendered
         mock_dashboard.assert_called_once_with(mock_db_engine)
 
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.init_database')
 def test_main_handles_database_failure(mock_init_db, mock_settings):
     """Test that main function handles database initialization failure gracefully"""
     # Setup mock database to return None (initialization failure)
@@ -258,8 +258,8 @@ def test_main_handles_database_failure(mock_init_db, mock_settings):
         del st.session_state[key]
     
     # Run main with necessary mocks
-    with patch('cert_scanner.app.render_sidebar') as mock_sidebar, \
-         patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+    with patch('infra_mgmt.app.render_sidebar') as mock_sidebar, \
+         patch('infra_mgmt.app.render_dashboard') as mock_dashboard:
         mock_sidebar.return_value = "Dashboard"
         
         # Run main
@@ -274,18 +274,18 @@ def test_main_handles_database_failure(mock_init_db, mock_settings):
         # Verify dashboard was still rendered
         mock_dashboard.assert_called_once_with(None)
 
-@patch('cert_scanner.static.styles.load_css')
+@patch('infra_mgmt.static.styles.load_css')
 def test_styling_and_layout(mock_load_css):
     """Test that styling and layout is properly loaded"""
     # Force module reload to trigger module-level code
     import importlib
-    import cert_scanner.app
-    importlib.reload(cert_scanner.app)
+    import infra_mgmt.app
+    importlib.reload(infra_mgmt.app)
 
     # Run main to trigger CSS loading
     with patch('streamlit.radio', return_value="📊 Dashboard"), \
-         patch('cert_scanner.app.render_dashboard'), \
-         patch('cert_scanner.app.st.sidebar', new_callable=MagicMock) as mock_st_sidebar:
+         patch('infra_mgmt.app.render_dashboard'), \
+         patch('infra_mgmt.app.st.sidebar', new_callable=MagicMock) as mock_st_sidebar:
         
         # Mock the sidebar context manager
         mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)
@@ -322,7 +322,7 @@ def test_sidebar_complete_render(mock_caption, mock_radio, mock_markdown, mock_t
     mock_caption.assert_called_once_with("v1.0.0")
     mock_radio.assert_called_once()
 
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.init_database')
 def test_database_initialization_logging(mock_init_db, caplog):
     """Test that database initialization is properly logged"""
     # Setup
@@ -341,7 +341,7 @@ def test_database_initialization_logging(mock_init_db, caplog):
     assert "Initializing database engine..." in caplog.text
     assert "Database engine initialized successfully" in caplog.text
 
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.init_database')
 def test_database_initialization_error_logging(mock_init_db, caplog):
     """Test that database initialization errors are properly logged"""
     # Setup database initialization to fail
@@ -382,7 +382,7 @@ def test_thread_safe_initialization():
     assert st.session_state.initialized is True
     assert isinstance(st.session_state.scanner, CertificateScanner)
 
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.init_database')
 def test_database_initialization_failure(mock_init_db, mock_settings):
     """Test handling of database initialization failure"""
     # Mock database initialization to fail
@@ -431,7 +431,7 @@ def test_view_change_triggers_rerun(mock_radio, mock_rerun):
     assert st.session_state.current_view == "Certificates"
     mock_rerun.assert_called_once()
 
-@patch('cert_scanner.app.init_database')
+@patch('infra_mgmt.app.init_database')
 @patch('streamlit.sidebar')
 def test_main_error_handling(mock_sidebar, mock_init_db):
     """Test that main() properly initializes even when views have errors"""
@@ -451,11 +451,11 @@ def test_main_error_handling(mock_sidebar, mock_init_db):
     
     # Setup all required mocks
     with patch('streamlit.radio', return_value="📊 Dashboard") as mock_radio, \
-         patch('cert_scanner.app.render_dashboard') as mock_dashboard, \
+         patch('infra_mgmt.app.render_dashboard') as mock_dashboard, \
          patch('streamlit.title'), \
          patch('streamlit.markdown'), \
          patch('streamlit.caption'), \
-         patch('cert_scanner.app.st.sidebar', new_callable=MagicMock) as mock_st_sidebar:
+         patch('infra_mgmt.app.st.sidebar', new_callable=MagicMock) as mock_st_sidebar:
         
         # Mock the sidebar context manager
         mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)
@@ -467,7 +467,7 @@ def test_main_error_handling(mock_sidebar, mock_init_db):
         # Verify the dashboard render was attempted
         mock_dashboard.assert_called_once_with(engine)
 
-@patch('cert_scanner.app.render_domain_list')
+@patch('infra_mgmt.app.render_domain_list')
 def test_domains_view_rendering(mock_domain_list, mock_render_functions, mock_db_engine):
     """Test that the Domains view is properly rendered"""
     # Clear session state first
@@ -481,7 +481,7 @@ def test_domains_view_rendering(mock_domain_list, mock_render_functions, mock_db
     
     with patch('streamlit.radio', return_value="🌐 Domains"), \
          patch('streamlit.sidebar') as mock_sidebar, \
-         patch('cert_scanner.app.init_database', return_value=mock_db_engine):
+         patch('infra_mgmt.app.init_database', return_value=mock_db_engine):
         # Mock the sidebar context manager
         mock_sidebar.__enter__ = MagicMock(return_value=mock_sidebar)
         mock_sidebar.__exit__ = MagicMock(return_value=None)
@@ -489,17 +489,17 @@ def test_domains_view_rendering(mock_domain_list, mock_render_functions, mock_db
         main()
         mock_domain_list.assert_called_once_with(mock_db_engine)
 
-@patch('cert_scanner.static.styles.load_css')
+@patch('infra_mgmt.static.styles.load_css')
 def test_css_loading_failure(mock_load_css):
     """Test that application continues to function even if CSS loading fails"""
     mock_load_css.side_effect = Exception("CSS loading failed")
     
     with patch('streamlit.radio', return_value="📊 Dashboard"), \
-         patch('cert_scanner.app.render_dashboard') as mock_dashboard:
+         patch('infra_mgmt.app.render_dashboard') as mock_dashboard:
         main()
         mock_dashboard.assert_called_once()
 
-@patch('cert_scanner.app.render_dashboard')
+@patch('infra_mgmt.app.render_dashboard')
 def test_view_rendering_failure(mock_dashboard):
     """Test that application handles view rendering failures gracefully"""
     mock_dashboard.side_effect = Exception("View rendering failed")
@@ -525,7 +525,7 @@ def test_concurrent_view_changes():
     engine = create_engine('sqlite:///:memory:')
     Base.metadata.create_all(engine)
     
-    with patch('cert_scanner.app.render_sidebar') as mock_sidebar, \
+    with patch('infra_mgmt.app.render_sidebar') as mock_sidebar, \
          patch('streamlit.radio', return_value="📊 Dashboard"), \
          patch('streamlit.columns') as mock_columns, \
          patch('streamlit.sidebar') as mock_st_sidebar, \
@@ -535,8 +535,8 @@ def test_concurrent_view_changes():
          patch('streamlit.button', return_value=False), \
          patch('streamlit.empty'), \
          patch('streamlit.divider'), \
-         patch('cert_scanner.app.init_database', return_value=engine), \
-         patch('cert_scanner.views.certificatesView.SessionManager') as mock_session_manager:
+         patch('infra_mgmt.app.init_database', return_value=engine), \
+         patch('infra_mgmt.views.certificatesView.SessionManager') as mock_session_manager:
         
         # Mock the sidebar context manager
         mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)

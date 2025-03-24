@@ -200,12 +200,12 @@ class ScanManager:
         if CertificateScanner is None:
             from .certificate_scanner import CertificateScanner, CertificateInfo
         
-        self.cert_scanner = CertificateScanner()
+        self.infra_mgmt = CertificateScanner()
         self.domain_scanner = DomainScanner()
         self.subdomain_scanner = SubdomainScanner()
         
         # Share tracker between scanners
-        self.subdomain_scanner.tracker = self.cert_scanner.tracker
+        self.subdomain_scanner.tracker = self.infra_mgmt.tracker
         
         # Initialize scan state
         self.scan_history = []  # Changed from set() to [] since we want to maintain order
@@ -222,7 +222,7 @@ class ScanManager:
     
     def reset_scan_state(self):
         """Reset scan state for a new scan session."""
-        self.cert_scanner.reset_scan_state()
+        self.infra_mgmt.reset_scan_state()
         self.scan_history.clear()  # Clear scan history for new session
         self.scan_results = {
             "success": [],
@@ -381,7 +381,7 @@ class ScanManager:
         
         try:
             # First check if already scanned to avoid unnecessary DB queries
-            if self.cert_scanner.tracker.is_endpoint_scanned(hostname, port):
+            if self.infra_mgmt.tracker.is_endpoint_scanned(hostname, port):
                 self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned in this scan session")
                 self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned in this scan session)")
                 return False
@@ -427,12 +427,12 @@ class ScanManager:
                                (f" ({ignore_reason})" if ignore_reason else ""))
                 self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (domain in ignore list)")
                 # Mark as scanned to prevent re-scanning attempts
-                self.cert_scanner.tracker.add_scanned_domain(hostname)
-                self.cert_scanner.tracker.add_scanned_endpoint(hostname, port)
+                self.infra_mgmt.tracker.add_scanned_domain(hostname)
+                self.infra_mgmt.tracker.add_scanned_endpoint(hostname, port)
                 return False
             
             # If not ignored and not already scanned, add to queue
-            if self.cert_scanner.add_scan_target(hostname, port):
+            if self.infra_mgmt.add_scan_target(hostname, port):
                 self.scan_history.append(hostname)
                 self.logger.info(f"[SCAN] Added target to queue: {hostname}:{port}")
                 return True
@@ -472,8 +472,8 @@ class ScanManager:
                 if status_container:
                     status_container.text(f'Skipping {domain} (in ignore list)')
                 # Mark as scanned to prevent re-scanning
-                self.cert_scanner.tracker.add_scanned_domain(domain)
-                self.cert_scanner.tracker.add_scanned_endpoint(domain, port)
+                self.infra_mgmt.tracker.add_scanned_domain(domain)
+                self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
                 return True
 
             def calculate_progress(sub_step: int, total_sub_steps: int) -> float:
@@ -503,7 +503,7 @@ class ScanManager:
                 if progress_container and current_step is not None and total_steps is not None:
                     progress = calculate_progress(sub_step, total_sub_steps)
                     progress_container.progress(progress)
-                    progress_container.text(f"Remaining targets in queue: {self.cert_scanner.tracker.queue_size()}")
+                    progress_container.text(f"Remaining targets in queue: {self.infra_mgmt.tracker.queue_size()}")
 
             # Calculate total sub-steps
             total_sub_steps = 1
@@ -525,7 +525,7 @@ class ScanManager:
                 self.processor.status_container = status_container
             
             # Skip if already scanned in this scan session
-            if self.cert_scanner.tracker.is_endpoint_scanned(domain, port):
+            if self.infra_mgmt.tracker.is_endpoint_scanned(domain, port):
                 self.logger.info(f"[SCAN] Skipping {domain}:{port} - Already scanned in this scan")
                 if status_container:
                     status_container.text(f'Skipping {domain}:{port} (already scanned in this scan)')
@@ -554,8 +554,8 @@ class ScanManager:
                     # Add related domains to scan queue
                     if domain_info and domain_info.related_domains:
                         for related_domain in domain_info.related_domains:
-                            if not self.cert_scanner.tracker.is_endpoint_scanned(related_domain, port):
-                                self.cert_scanner.tracker.add_to_queue(related_domain, port)
+                            if not self.infra_mgmt.tracker.is_endpoint_scanned(related_domain, port):
+                                self.infra_mgmt.tracker.add_to_queue(related_domain, port)
                                 self.logger.info(f"[SCAN] Added related domain to scan queue: {related_domain}:{port}")
                 
                 except Exception as e:
@@ -578,7 +578,7 @@ class ScanManager:
                     self.processor.process_dns_records(
                         domain_obj,
                         domain_info.dns_records,
-                        self.cert_scanner.tracker.scan_queue,
+                        self.infra_mgmt.tracker.scan_queue,
                         port
                     )
                     current_sub_step += 1
@@ -598,7 +598,7 @@ class ScanManager:
                 status_container.text(f'Scanning certificates for {domain}:{port}...')
             
             self.logger.info(f"[SCAN] Starting certificate scan for {domain}:{port}")
-            scan_result = self.cert_scanner.scan_certificate(domain, port)
+            scan_result = self.infra_mgmt.scan_certificate(domain, port)
             current_sub_step += 1
             update_progress(current_sub_step, total_sub_steps)
             
@@ -607,14 +607,14 @@ class ScanManager:
                     cert_info = scan_result.certificate_info
                     
                     # Check if we've already processed this certificate
-                    if self.cert_scanner.tracker.is_certificate_processed(cert_info.serial_number):
+                    if self.infra_mgmt.tracker.is_certificate_processed(cert_info.serial_number):
                         self.logger.info(f"[SCAN] Skipping certificate processing for {domain}:{port} - Certificate {cert_info.serial_number} already processed")
                         if status_container:
                             status_container.text(f'Skipping certificate processing for {domain}:{port} (already processed)')
                         
                         # Still mark the domain and endpoint as scanned
-                        self.cert_scanner.tracker.add_scanned_domain(domain)
-                        self.cert_scanner.tracker.add_scanned_endpoint(domain, port)
+                        self.infra_mgmt.tracker.add_scanned_domain(domain)
+                        self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
                         return True
                     
                     # Check if certificate should be ignored
@@ -646,20 +646,20 @@ class ScanManager:
                             # Remove any DNS: prefix if present
                             discovered_domain = san[4:] if san.startswith('DNS:') else san
                             self.logger.info(f"[SCAN] Processing SAN: {discovered_domain}")
-                            if not self.cert_scanner.tracker.is_endpoint_scanned(discovered_domain, port):
+                            if not self.infra_mgmt.tracker.is_endpoint_scanned(discovered_domain, port):
                                 self.logger.info(f"[SCAN] Adding SAN to scan queue: {discovered_domain}:{port}")
-                                self.cert_scanner.tracker.add_to_queue(discovered_domain, port)
+                                self.infra_mgmt.tracker.add_to_queue(discovered_domain, port)
                             else:
                                 self.logger.info(f"[SCAN] Skipping already scanned SAN: {discovered_domain}:{port}")
                     else:
                         self.logger.info(f"[SCAN] No SANs to process for {domain}:{port} (check_sans={check_sans}, san_count={len(cert_info.san) if cert_info.san else 0})")
                     
                     # Mark certificate as processed
-                    self.cert_scanner.tracker.add_processed_certificate(cert_info.serial_number)
+                    self.infra_mgmt.tracker.add_processed_certificate(cert_info.serial_number)
                     
                     # Mark domain and endpoint as scanned
-                    self.cert_scanner.tracker.add_scanned_domain(domain)
-                    self.cert_scanner.tracker.add_scanned_endpoint(domain, port)
+                    self.infra_mgmt.tracker.add_scanned_domain(domain)
+                    self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
                     
                     session.commit()
                     self.logger.info(f"[SCAN] Successfully processed certificate for {domain}:{port}")
@@ -693,7 +693,7 @@ class ScanManager:
                         port=port,
                         check_whois=check_whois,
                         check_dns=check_dns,
-                        scanned_domains=self.cert_scanner.tracker.scanned_domains
+                        scanned_domains=self.infra_mgmt.tracker.scanned_domains
                     )
                     current_sub_step += 1
                     update_progress(current_sub_step, total_sub_steps)
@@ -704,8 +704,8 @@ class ScanManager:
                         # Add discovered subdomains to scan queue
                         for result in subdomain_results:
                             subdomain = result['domain']
-                            if not self.cert_scanner.tracker.is_endpoint_scanned(subdomain, port):
-                                self.cert_scanner.tracker.add_to_queue(subdomain, port)
+                            if not self.infra_mgmt.tracker.is_endpoint_scanned(subdomain, port):
+                                self.infra_mgmt.tracker.add_to_queue(subdomain, port)
                                 self.logger.info(f"[SCAN] Added new subdomain to scan queue: {subdomain}:{port}")
                     
                     # Clear status container from subdomain scanner
@@ -727,7 +727,7 @@ class ScanManager:
     
     def get_scan_stats(self) -> dict:
         """Get current scanning statistics."""
-        stats = self.cert_scanner.get_scan_stats()
+        stats = self.infra_mgmt.get_scan_stats()
         stats.update({
             "scan_history_size": len(self.scan_history),
             "success_count": len(self.scan_results["success"]),
@@ -738,11 +738,11 @@ class ScanManager:
     
     def has_pending_targets(self) -> bool:
         """Check if there are targets waiting to be scanned."""
-        return self.cert_scanner.has_pending_targets()
+        return self.infra_mgmt.has_pending_targets()
     
     def get_next_target(self) -> Optional[Tuple[str, int]]:
         """Get the next target from the queue."""
-        return self.cert_scanner.get_next_target()
+        return self.infra_mgmt.get_next_target()
 
 class ScanProcessor:
     """

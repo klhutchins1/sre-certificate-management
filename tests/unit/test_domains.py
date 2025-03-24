@@ -14,8 +14,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from cert_scanner.models import Base, Domain, DomainDNSRecord, Certificate
-from cert_scanner.db import init_database
+from infra_mgmt.models import Base, Domain, DomainDNSRecord, Certificate
+from infra_mgmt.db import init_database
 
 @pytest.fixture
 def engine():

@@ -16,7 +16,7 @@ os.makedirs(".streamlit", exist_ok=True)
 def wide_space_default():
     """Configure Streamlit page settings for optimal display."""
     st.set_page_config(
-        page_title="Certificate Manager",
+        page_title="Infra Manager",
         page_icon="🔐",
         layout="wide",  # Force wide mode
         initial_sidebar_state="expanded",
@@ -30,7 +30,7 @@ def main():
         wide_space_default()
         
         # Import and run the main application
-        from cert_scanner.app import main as app_main
+        from infra_mgmt.app import main as app_main
         app_main()
     except ImportError as e:
         logger.error(f"Failed to import application: {str(e)}")

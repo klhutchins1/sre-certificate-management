@@ -41,7 +41,7 @@ class SubdomainScanner:
     def __init__(self, methods=None):
         """Initialize the subdomain scanner."""
         self.domain_scanner = DomainScanner()
-        self.cert_scanner = CertificateScanner()
+        self.infra_mgmt = CertificateScanner()
         self.last_ct_query_time = 0
         self.tracker = None  # Will be set by scanner view
         self.status_container = None  # Will be set by scanner view
@@ -84,7 +84,7 @@ class SubdomainScanner:
             base_domain = domain.lstrip('*.')
             
             # Use CertificateScanner to get certificate
-            scan_result = self.cert_scanner.scan_certificate(domain, port)
+            scan_result = self.infra_mgmt.scan_certificate(domain, port)
             if scan_result:
                 if scan_result.error:
                     logger.warning(f"[CERT] Error scanning certificate for {domain}: {scan_result.error}")

@@ -4,11 +4,11 @@ from pathlib import Path, WindowsPath
 import shutil
 import json
 from datetime import datetime
-from cert_scanner.backup import create_backup, restore_backup, list_backups
-from cert_scanner.settings import Settings
+from infra_mgmt.backup import create_backup, restore_backup, list_backups
+from infra_mgmt.settings import Settings
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from cert_scanner.models import Base, Certificate
+from infra_mgmt.models import Base, Certificate
 import time
 import yaml
 

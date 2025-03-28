@@ -19,11 +19,12 @@ from sqlalchemy.orm import Session
 from .settings import settings
 from .domain_scanner import DomainScanner, DomainInfo
 from .subdomain_scanner import SubdomainScanner
-from .models import IgnoredDomain, Domain, DomainDNSRecord, Certificate, Host, HostIP, CertificateBinding, CertificateScan, HOST_TYPE_SERVER, ENV_PRODUCTION, IgnoredCertificate
+from .models import IgnoredDomain, Domain, DomainDNSRecord, Certificate, Host, HostIP, CertificateBinding, CertificateScan, HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION, IgnoredCertificate
+from .constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
+from .certificate_scanner import CertificateInfo
 
 # Import CertificateScanner and CertificateInfo lazily to avoid circular imports
 CertificateScanner = None
-CertificateInfo = None
 
 #------------------------------------------------------------------------------
 # Domain Configuration
@@ -196,9 +197,9 @@ class ScanManager:
     def __init__(self):
         """Initialize scan manager with required scanners."""
         # Import CertificateScanner lazily to avoid circular imports
-        global CertificateScanner, CertificateInfo
+        global CertificateScanner
         if CertificateScanner is None:
-            from .certificate_scanner import CertificateScanner, CertificateInfo
+            from .certificate_scanner import CertificateScanner
         
         self.infra_mgmt = CertificateScanner()
         self.domain_scanner = DomainScanner()
@@ -593,89 +594,155 @@ class ScanManager:
                 self.scan_results["error"].append(f"{domain}:{port} - Error processing domain info: {str(e)}")
                 return False
             
-            # Scan for certificates
+            # Now scan for certificates
             if status_container:
                 status_container.text(f'Scanning certificates for {domain}:{port}...')
-            
-            self.logger.info(f"[SCAN] Starting certificate scan for {domain}:{port}")
             scan_result = self.infra_mgmt.scan_certificate(domain, port)
-            current_sub_step += 1
-            update_progress(current_sub_step, total_sub_steps)
             
             if scan_result and scan_result.certificate_info:
+                cert_info = scan_result.certificate_info
                 try:
-                    cert_info = scan_result.certificate_info
+                    # Get or create certificate
+                    cert = session.query(Certificate).filter_by(
+                        serial_number=cert_info.serial_number
+                    ).first()
                     
-                    # Check if we've already processed this certificate
-                    if self.infra_mgmt.tracker.is_certificate_processed(cert_info.serial_number):
-                        self.logger.info(f"[SCAN] Skipping certificate processing for {domain}:{port} - Certificate {cert_info.serial_number} already processed")
+                    if not cert:
                         if status_container:
-                            status_container.text(f'Skipping certificate processing for {domain}:{port} (already processed)')
-                        
-                        # Still mark the domain and endpoint as scanned
-                        self.infra_mgmt.tracker.add_scanned_domain(domain)
-                        self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
-                        return True
-                    
-                    # Check if certificate should be ignored
-                    is_ignored, reason = self._is_certificate_ignored(session, cert_info.common_name)
-                    if is_ignored:
-                        self.logger.info(f"[SCAN] Skipping certificate for {domain}:{port} - Certificate is in ignore list" + 
-                                       (f" ({reason})" if reason else ""))
-                        if status_container:
-                            status_container.text(f'Skipping certificate for {domain}:{port} (in ignore list)')
-                        return True
-                    
-                    # Process certificate info
-                    if status_container:
-                        status_container.text(f'Processing certificate for {domain}:{port}...')
-                    
-                    self.processor.process_certificate(
-                        domain,
-                        port,
-                        cert_info,
-                        domain_obj
-                    )
-                    current_sub_step += 1
-                    update_progress(current_sub_step, total_sub_steps)
-                    
-                    # Process any discovered SANs only if we haven't processed this certificate before
-                    if check_sans and cert_info.san:
-                        self.logger.info(f"[SCAN] Found {len(cert_info.san)} SANs in certificate for {domain}:{port}")
-                        for san in cert_info.san:
-                            # Remove any DNS: prefix if present
-                            discovered_domain = san[4:] if san.startswith('DNS:') else san
-                            self.logger.info(f"[SCAN] Processing SAN: {discovered_domain}")
-                            if not self.infra_mgmt.tracker.is_endpoint_scanned(discovered_domain, port):
-                                self.logger.info(f"[SCAN] Adding SAN to scan queue: {discovered_domain}:{port}")
-                                self.infra_mgmt.tracker.add_to_queue(discovered_domain, port)
-                            else:
-                                self.logger.info(f"[SCAN] Skipping already scanned SAN: {discovered_domain}:{port}")
+                            status_container.text(f'Found new certificate for {domain}...')
+                        cert = Certificate(
+                            serial_number=cert_info.serial_number,
+                            thumbprint=cert_info.thumbprint,
+                            common_name=cert_info.common_name,
+                            valid_from=cert_info.valid_from,
+                            valid_until=cert_info.expiration_date,
+                            _issuer=json.dumps(cert_info.issuer),
+                            _subject=json.dumps(cert_info.subject),
+                            _san=json.dumps(cert_info.san),
+                            key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
+                            signature_algorithm=cert_info.signature_algorithm,
+                            chain_valid=cert_info.chain_valid,
+                            sans_scanned=True,
+                            created_at=datetime.now(),
+                            updated_at=datetime.now()
+                        )
+                        session.add(cert)
                     else:
-                        self.logger.info(f"[SCAN] No SANs to process for {domain}:{port} (check_sans={check_sans}, san_count={len(cert_info.san) if cert_info.san else 0})")
+                        if status_container:
+                            status_container.text(f'Updating existing certificate for {domain}...')
+                        cert.thumbprint = cert_info.thumbprint
+                        cert.common_name = cert_info.common_name
+                        cert.valid_from = cert_info.valid_from
+                        cert.valid_until = cert_info.expiration_date
+                        cert._issuer = json.dumps(cert_info.issuer)
+                        cert._subject = json.dumps(cert_info.subject)
+                        cert._san = json.dumps(cert_info.san)
+                        cert.key_usage = json.dumps(cert_info.key_usage) if cert_info.key_usage else None
+                        cert.signature_algorithm = cert_info.signature_algorithm
+                        cert.chain_valid = cert_info.chain_valid
+                        cert.sans_scanned = True
+                        cert.updated_at = datetime.now()
                     
-                    # Mark certificate as processed
-                    self.infra_mgmt.tracker.add_processed_certificate(cert_info.serial_number)
+                    # Associate certificate with domain
+                    if cert not in domain_obj.certificates:
+                        domain_obj.certificates.append(cert)
                     
-                    # Mark domain and endpoint as scanned
-                    self.infra_mgmt.tracker.add_scanned_domain(domain)
-                    self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
+                    # Create host record
+                    host = session.query(Host).filter_by(name=domain).first()
+                    if not host:
+                        if status_container:
+                            status_container.text(f'Creating host record for {domain}...')
+                        host = Host(
+                            name=domain,
+                            host_type=HOST_TYPE_SERVER,
+                            environment=ENV_PRODUCTION,
+                            last_seen=datetime.now()
+                        )
+                        session.add(host)
+                    else:
+                        host.last_seen = datetime.now()
                     
+                    # Create or update IP addresses
+                    if cert_info.ip_addresses:
+                        if status_container:
+                            status_container.text(f'Updating IP addresses for {domain}...')
+                        self.infra_mgmt.tracker.add_discovered_ips(domain, cert_info.ip_addresses)
+                        existing_ips = {ip.ip_address for ip in host.ip_addresses}
+                        for ip_addr in cert_info.ip_addresses:
+                            if ip_addr not in existing_ips:
+                                host_ip = HostIP(
+                                    host=host,
+                                    ip_address=ip_addr,
+                                    is_active=True,
+                                    last_seen=datetime.now()
+                                )
+                                session.add(host_ip)
+                            else:
+                                # Update last_seen for existing IP
+                                for ip in host.ip_addresses:
+                                    if ip.ip_address == ip_addr:
+                                        ip.last_seen = datetime.now()
+                                        ip.is_active = True
+                    
+                    # Create certificate binding
+                    host_ip = None
+                    if cert_info.ip_addresses:
+                        for ip in host.ip_addresses:
+                            if ip.ip_address in cert_info.ip_addresses:
+                                host_ip = ip
+                                break
+                    
+                    binding = session.query(CertificateBinding).filter_by(
+                        host=host,
+                        host_ip=host_ip,
+                        port=port
+                    ).first()
+                    
+                    if not binding:
+                        if status_container:
+                            status_container.text(f'Creating certificate binding for {domain}:{port}...')
+                        binding = CertificateBinding(
+                            host=host,
+                            host_ip=host_ip,
+                            certificate=cert,
+                            port=port,
+                            binding_type='IP',
+                            last_seen=datetime.now(),
+                            manually_added=False
+                        )
+                        session.add(binding)
+                    else:
+                        binding.certificate = cert
+                        binding.last_seen = datetime.now()
+                    
+                    # Create scan history record
+                    scan_record = CertificateScan(
+                        certificate=cert,
+                        host=host,
+                        scan_date=datetime.now(),
+                        status="Success",
+                        port=port
+                    )
+                    session.add(scan_record)
+                    
+                    # Commit all changes
                     session.commit()
-                    self.logger.info(f"[SCAN] Successfully processed certificate for {domain}:{port}")
+                    self.logger.debug(f"[SCAN] Successfully processed certificate for {domain}:{port}")
+                    
+                    # Update success state
                     self.scan_results["success"].append(f"{domain}:{port}")
                     
-                except Exception as e:
-                    self.logger.error(f"[SCAN] Error processing certificate for {domain}:{port}: {str(e)}")
+                except Exception as cert_error:
+                    self.logger.error(f"[SCAN] Error processing certificate for {domain}:{port}: {str(cert_error)}")
                     session.rollback()
-                    self.scan_results["error"].append(f"{domain}:{port} - Error processing certificate: {str(e)}")
+                    self.scan_results["error"].append(f"{domain}:{port} - Error processing certificate: {str(cert_error)}")
                     return False
             else:
                 self.logger.error(f"[SCAN] No certificate found or error for {domain}:{port}")
                 if scan_result and scan_result.error:
-                    self.scan_results["error"].append(f"{domain}:{port} - {scan_result.error}")
+                    self.scan_results["error"].append(scan_result.error)
                 else:
-                    self.scan_results["error"].append(f"{domain}:{port} - No certificate found")
+                    self.scan_results["error"].append("No certificate found")
                 return False
             
             # Process subdomains if requested
@@ -935,15 +1002,29 @@ class ScanProcessor:
             host = self.session.query(Host).filter_by(name=domain).first()
             if not host:
                 self.set_status(f'Creating host record for {domain}...')
+                # Set host type based on detected platform
+                host_type = HOST_TYPE_SERVER
+                if cert_info.platform:
+                    if cert_info.platform in [PLATFORM_CLOUDFLARE, PLATFORM_AKAMAI]:
+                        host_type = HOST_TYPE_CDN
+                    elif cert_info.platform == PLATFORM_F5:
+                        host_type = HOST_TYPE_LOAD_BALANCER
+                
                 host = Host(
                     name=domain,
-                    host_type=HOST_TYPE_SERVER,
+                    host_type=host_type,
                     environment=ENV_PRODUCTION,
                     last_seen=datetime.now()
                 )
                 self.session.add(host)
             else:
                 host.last_seen = datetime.now()
+                # Update host type if platform detected
+                if cert_info.platform:
+                    if cert_info.platform in [PLATFORM_CLOUDFLARE, PLATFORM_AKAMAI] and host.host_type != HOST_TYPE_CDN:
+                        host.host_type = HOST_TYPE_CDN
+                    elif cert_info.platform == PLATFORM_F5 and host.host_type != HOST_TYPE_LOAD_BALANCER:
+                        host.host_type = HOST_TYPE_LOAD_BALANCER
             
             # Create or update IP addresses
             if cert_info.ip_addresses:
@@ -987,6 +1068,7 @@ class ScanProcessor:
                     certificate=cert,
                     port=port,
                     binding_type='IP',
+                    platform=cert_info.platform,  # Set detected platform
                     last_seen=datetime.now(),
                     manually_added=False
                 )
@@ -994,6 +1076,8 @@ class ScanProcessor:
             else:
                 binding.certificate = cert
                 binding.last_seen = datetime.now()
+                if cert_info.platform:  # Update platform if detected
+                    binding.platform = cert_info.platform
             
             # Create scan history record
             scan_record = CertificateScan(

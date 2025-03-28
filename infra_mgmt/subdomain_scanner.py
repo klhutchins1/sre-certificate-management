@@ -24,7 +24,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Create console handler if it doesn't exist
+# Only add console handler if no handlers exist
 if not logger.handlers:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -131,7 +131,7 @@ class SubdomainScanner:
             
             if time_since_last < min_time_between_queries:
                 sleep_time = min_time_between_queries - time_since_last
-                logger.info(f"[CT] Rate limiting: sleeping for {sleep_time:.2f} seconds")
+                logger.debug(f"[CT] Rate limiting: sleeping for {sleep_time:.2f} seconds")
                 time.sleep(sleep_time)
             
             # Get request timeout from settings

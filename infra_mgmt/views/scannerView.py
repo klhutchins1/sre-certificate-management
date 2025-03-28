@@ -28,7 +28,7 @@ import json
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Create console handler if it doesn't exist
+# Only add console handler if no handlers exist
 if not logger.handlers:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -449,6 +449,8 @@ def render_scan_interface(engine) -> None:
         }
     if 'scan_input' not in st.session_state:
         st.session_state.scan_input = ""
+    if 'scanned_domains' not in st.session_state:
+        st.session_state.scanned_domains = set()
     
     # Initialize scan manager if not exists
     if 'scan_manager' not in st.session_state:
@@ -465,6 +467,32 @@ def render_scan_interface(engine) -> None:
     
     # Create main layout columns
     col1, col2 = st.columns([3, 1])
+    
+    # Recent scans section in the right column - MOVED TO TOP
+    with col2:
+        st.markdown("### Recent Scans")
+        with Session(engine) as session:
+            recent_domains = session.query(Domain)\
+                .order_by(Domain.updated_at.desc())\
+                .limit(5)\
+                .all()
+            
+            if recent_domains:
+                st.markdown("<div class='text-small'>", unsafe_allow_html=True)
+                for domain in recent_domains:
+                    scan_time = domain.updated_at.strftime("%Y-%m-%d %H:%M")
+                    cert_count = len(domain.certificates)
+                    cert_status = "✅" if any(c.chain_valid for c in domain.certificates) else "❌"
+                    st.markdown(
+                        f"**{domain.domain_name}** "
+                        f"<span class='text-muted'>"
+                        f"(🕒 {scan_time} • {cert_status} {cert_count} certs)</span>",
+                        unsafe_allow_html=True
+                    )
+                st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                notify("No recent scans", "info")
+                show_notifications()
     
     with col1:
         # Create two columns for input and options
@@ -496,7 +524,7 @@ internal.server.local:444"""
             check_whois = st.checkbox("Get WHOIS Info", value=True)
             check_dns = st.checkbox("Get DNS Records", value=True)
             check_subdomains = st.checkbox("Include Subdomains", value=True)
-            check_sans = st.checkbox("Scan SANs", value=True)  # New checkbox for SAN scanning
+            check_sans = st.checkbox("Scan SANs", value=True)
         
         # Scan initiation button below both columns
         scan_button_clicked = st.button("Start Scan", type="primary")
@@ -518,8 +546,16 @@ internal.server.local:444"""
             logger.info("[SCAN] Starting new scan session")
             st.session_state.scan_in_progress = True
             
-            # Reset scan results for new scan
+            # Reset scan state
             st.session_state.scan_manager.reset_scan_state()
+            st.session_state.scanned_domains.clear()  # Clear scanned domains for new session
+            
+            # Reset scan results for new scan
+            st.session_state.scan_results = {
+                "success": [],
+                "error": [],
+                "warning": []
+            }
             
             # Validate input
             if not st.session_state.scan_input.strip():
@@ -594,6 +630,7 @@ internal.server.local:444"""
                             
                             # Update progress
                             current_step += 1
+                            update_progress(0, 1, progress_container, current_step, total_steps)
                             
                             # Process the scan target
                             st.session_state.scan_manager.scan_target(
@@ -610,12 +647,16 @@ internal.server.local:444"""
                                 total_steps=total_steps
                             )
                             
-                            # Update total steps based on queue size
-                            total_steps = max(total_steps, current_step + st.session_state.scan_manager.infra_mgmt.get_queue_size())
+                            # Add domain to scanned domains set
+                            st.session_state.scanned_domains.add(hostname)
+                            
+                            # Commit changes after each successful scan
+                            session.commit()
                             
                         except Exception as e:
                             logger.error(f"[SCAN] Error processing {target_key}: {str(e)}")
                             st.session_state.scan_manager.scan_results["error"].append(f"{target_key} - {str(e)}")
+                            session.rollback()
                         finally:
                             # Clear current operation
                             if st.session_state.current_operation == target_key:
@@ -623,6 +664,9 @@ internal.server.local:444"""
                         
                         # Small delay to allow UI updates
                         time.sleep(0.1)
+                
+                # Set progress to complete
+                progress_container.progress(1.0)
                 
                 # Clear status after completion
                 status_container.empty()
@@ -649,123 +693,146 @@ internal.server.local:444"""
                 st.divider()
                 st.subheader("Scan Results")
                 
-                # Display results in tabs
-                tab_domains, tab_certs, tab_dns = st.tabs([
-                    "🌐 Domains",
-                    "🔐 Certificates",
-                    "📝 DNS Records"
-                ])
+                # Create a container for the tabs
+                results_container = st.container()
                 
-                with tab_domains:
-                    with Session(engine) as session:
-                        # Get all scanned domains from tracker
-                        for domain in st.session_state.scan_manager.infra_mgmt.tracker.scanned_domains:
-                            domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
-                            if domain_obj:
-                                st.markdown(f"### {domain_obj.domain_name}")
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write("**Registrar:**", domain_obj.registrar or "N/A")
-                                    st.write("**Registration Date:**", domain_obj.registration_date.strftime("%Y-%m-%d") if domain_obj.registration_date else "N/A")
-                                    st.write("**Owner:**", domain_obj.owner or "N/A")
-                                with col2:
-                                    st.write("**Expiration Date:**", domain_obj.expiration_date.strftime("%Y-%m-%d") if domain_obj.expiration_date else "N/A")
-                                    st.write("**Certificates:**", len(domain_obj.certificates))
-                                    st.write("**DNS Records:**", len(domain_obj.dns_records))
-                
-                with tab_certs:
-                    with Session(engine) as session:
-                        # Get all scanned domains from tracker
-                        for domain in st.session_state.scan_manager.infra_mgmt.tracker.scanned_domains:
-                            domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
-                            if domain_obj and domain_obj.certificates:
-                                st.markdown(f"### {domain_obj.domain_name}")
-                                for cert in domain_obj.certificates:
-                                    with st.expander(f"Certificate: {cert.common_name}"):
+                # Display results in tabs within the container
+                with results_container:
+                    tab_domains, tab_certs, tab_dns = st.tabs([
+                        "🌐 Domains",
+                        "🔐 Certificates",
+                        "📝 DNS Records"
+                    ])
+                    
+                    # Domains tab
+                    with tab_domains:
+                        with Session(engine) as session:
+                            # Get all scanned domains from session state
+                            scanned_domains = list(st.session_state.scanned_domains)
+                            if not scanned_domains:
+                                st.info("No domains scanned yet.")
+                            else:
+                                for domain in sorted(scanned_domains):
+                                    domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
+                                    if domain_obj:
+                                        st.markdown(f"### {domain_obj.domain_name}")
                                         col1, col2 = st.columns(2)
                                         with col1:
-                                            st.write("**Common Name:**", cert.common_name)
-                                            st.write("**Valid From:**", cert.valid_from.strftime("%Y-%m-%d"))
-                                            st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
-                                            st.write("**Serial Number:**", cert.serial_number)
+                                            st.write("**Registrar:**", domain_obj.registrar or "N/A")
+                                            st.write("**Registration Date:**", domain_obj.registration_date.strftime("%Y-%m-%d") if domain_obj.registration_date else "N/A")
+                                            st.write("**Owner:**", domain_obj.owner or "N/A")
                                         with col2:
-                                            st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
-                                            st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
-                                            st.write("**SANs:**", ", ".join(cert.san))
-                                            st.write("**Signature Algorithm:**", cert.signature_algorithm)
-                
-                with tab_dns:
-                    with Session(engine) as session:
-                        # Get all scanned domains from tracker
-                        scanned_domains = st.session_state.scan_manager.infra_mgmt.tracker.scanned_domains
-                        logger.info(f"[DNS] Processing {len(scanned_domains)} domains for display")
-                        
-                        for domain in scanned_domains:
-                            domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
-                            if domain_obj:
-                                dns_records = domain_obj.dns_records
-                                if dns_records:
-                                    logger.info(f"[DNS] Found {len(dns_records)} records for {domain}")
-                                    st.markdown(f"### {domain_obj.domain_name}")
-                                    records_df = []
-                                    
-                                    for record in dns_records:
-                                        # Convert priority to string 'N/A' if None, otherwise keep as int
-                                        priority = str(record.priority) if record.priority is not None else 'N/A'
-                                        
-                                        record_data = {
-                                            'Type': record.record_type,
-                                            'Name': record.name,
-                                            'Value': record.value,
-                                            'TTL': int(record.ttl),
-                                            'Priority': priority
-                                        }
-                                        records_df.append(record_data)
-                                        logger.debug(f"[DNS] Processing record: {record_data}")
-                                    
-                                    if records_df:
-                                        df = pd.DataFrame(records_df)
-                                        st.dataframe(
-                                            df,
-                                            column_config={
-                                                'Type': st.column_config.TextColumn('Type', width='small'),
-                                                'Name': st.column_config.TextColumn('Name', width='medium'),
-                                                'Value': st.column_config.TextColumn('Value', width='large'),
-                                                'TTL': st.column_config.NumberColumn('TTL', width='small'),
-                                                'Priority': st.column_config.TextColumn('Priority', width='small')
-                                            },
-                                            hide_index=True,
-                                            use_container_width=True
-                                        )
-                                    else:
-                                        st.info(f"No DNS records found for {domain}")
-                                else:
-                                    st.info(f"No DNS records found for {domain}")
+                                            st.write("**Expiration Date:**", domain_obj.expiration_date.strftime("%Y-%m-%d") if domain_obj.expiration_date else "N/A")
+                                            st.write("**Certificates:**", len(domain_obj.certificates))
+                                            st.write("**DNS Records:**", len(domain_obj.dns_records))
+                    
+                    # Certificates tab
+                    with tab_certs:
+                        with Session(engine) as session:
+                            # Get all scanned domains from session state
+                            scanned_domains = list(st.session_state.scanned_domains)
+                            if not scanned_domains:
+                                st.info("No certificates found yet.")
                             else:
-                                logger.warning(f"[DNS] Domain object not found for {domain}")
+                                for domain in sorted(scanned_domains):
+                                    domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
+                                    if domain_obj and domain_obj.certificates:
+                                        st.markdown(f"### {domain_obj.domain_name}")
+                                        for cert in domain_obj.certificates:
+                                            with st.expander(f"Certificate: {cert.common_name}"):
+                                                col1, col2 = st.columns(2)
+                                                with col1:
+                                                    st.write("**Common Name:**", cert.common_name)
+                                                    st.write("**Valid From:**", cert.valid_from.strftime("%Y-%m-%d"))
+                                                    st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
+                                                    st.write("**Serial Number:**", cert.serial_number)
+                                                with col2:
+                                                    st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
+                                                    st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
+                                                    st.write("**SANs:**", ", ".join(cert.san))
+                                                    st.write("**Signature Algorithm:**", cert.signature_algorithm)
+                                                    # Add platform information
+                                                    bindings = session.query(CertificateBinding).filter_by(certificate=cert).all()
+                                                    platforms = [b.platform for b in bindings if b.platform]
+                                                    if platforms:
+                                                        st.write("**Platform:**", ", ".join(set(platforms)))
+                    
+                    # DNS Records tab
+                    with tab_dns:
+                        with Session(engine) as session:
+                            # Get all scanned domains from session state
+                            scanned_domains = list(st.session_state.scanned_domains)
+                            if not scanned_domains:
+                                st.info("No DNS records found yet.")
+                            else:
+                                for domain in sorted(scanned_domains):
+                                    domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
+                                    if domain_obj:
+                                        dns_records = domain_obj.dns_records
+                                        if dns_records:
+                                            st.markdown(f"### {domain_obj.domain_name}")
+                                            records_df = []
+                                            
+                                            for record in dns_records:
+                                                priority = str(record.priority) if record.priority is not None else 'N/A'
+                                                record_data = {
+                                                    'Type': record.record_type,
+                                                    'Name': record.name,
+                                                    'Value': record.value,
+                                                    'TTL': int(record.ttl),
+                                                    'Priority': priority
+                                                }
+                                                records_df.append(record_data)
+                                            
+                                            if records_df:
+                                                df = pd.DataFrame(records_df)
+                                                st.dataframe(
+                                                    df,
+                                                    column_config={
+                                                        'Type': st.column_config.TextColumn('Type', width='small'),
+                                                        'Name': st.column_config.TextColumn('Name', width='medium'),
+                                                        'Value': st.column_config.TextColumn('Value', width='large'),
+                                                        'TTL': st.column_config.NumberColumn('TTL', width='small'),
+                                                        'Priority': st.column_config.TextColumn('Priority', width='small')
+                                                    },
+                                                    hide_index=True,
+                                                    use_container_width=True
+                                                )
+                                            else:
+                                                st.info(f"No DNS records found for {domain}")
+                                        else:
+                                            st.info(f"No DNS records found for {domain}")
+                                    else:
+                                        logger.warning(f"[DNS] Domain object not found for {domain}")
+
+def calculate_progress(sub_step: int, total_sub_steps: int, current_step: int, total_steps: int) -> float:
+    """
+    Calculate overall progress including sub-steps.
     
-    # Recent scans section in the right column
-    with col2:
-        st.markdown("### Recent Scans")
-        with Session(engine) as session:
-            recent_domains = session.query(Domain)\
-                .order_by(Domain.updated_at.desc())\
-                .limit(5)\
-                .all()
-            
-            if recent_domains:
-                st.markdown("<div class='text-small'>", unsafe_allow_html=True)
-                for domain in recent_domains:
-                    scan_time = domain.updated_at.strftime("%Y-%m-%d %H:%M")
-                    cert_count = len(domain.certificates)
-                    cert_status = "✅" if any(c.chain_valid for c in domain.certificates) else "❌"
-                    st.markdown(
-                        f"**{domain.domain_name}** "
-                        f"<span class='text-muted'>"
-                        f"(🕒 {scan_time} • {cert_status} {cert_count} certs)</span>",
-                        unsafe_allow_html=True
-                    )
-                st.markdown("</div>", unsafe_allow_html=True)
-            else:
-                notify("No recent scans", "info")
-                show_notifications()
+    Args:
+        sub_step: Current sub-step (0-based)
+        total_sub_steps: Total number of sub-steps for this domain
+        current_step: Current step in the overall process
+        total_steps: Total number of steps in the overall process
+        
+    Returns:
+        float: Progress value between 0 and 1
+    """
+    if current_step is None or total_steps is None:
+        return 0.0
+    
+    # Calculate base progress for completed steps
+    base_progress = (current_step - 1) / total_steps
+    
+    # Calculate progress for current step
+    step_progress = (sub_step / total_sub_steps) / total_steps
+    
+    # Ensure progress stays within [0.0, 1.0]
+    return max(0.0, min(1.0, base_progress + step_progress))
+
+def update_progress(sub_step: int, total_sub_steps: int, progress_container: StreamlitProgressContainer, current_step: int, total_steps: int):
+    """Update progress bar and queue status."""
+    if progress_container and current_step is not None and total_steps is not None:
+        progress = calculate_progress(sub_step, total_sub_steps, current_step, total_steps)
+        progress_container.progress(progress)
+        progress_container.text(f"Remaining targets in queue: {st.session_state.scan_manager.infra_mgmt.tracker.queue_size()}")

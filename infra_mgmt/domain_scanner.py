@@ -125,7 +125,7 @@ class DomainScanner:
         
         if time_since_last < min_time_between_queries:
             sleep_time = min_time_between_queries - time_since_last
-            logger.info(f"[{query_type}] Rate limiting: sleeping for {sleep_time:.2f} seconds")
+            logger.debug(f"[{query_type}] Rate limiting: sleeping for {sleep_time:.2f} seconds")
             time.sleep(sleep_time)
             current_time = time.time()
         

@@ -17,6 +17,13 @@ from collections import deque
 from typing import Optional, List, Dict, Set, Tuple
 import binascii
 from datetime import datetime, timezone
+import requests
+import urllib3
+import warnings
+import dns.resolver
+
+# Suppress only the specific InsecureRequestWarning
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
@@ -24,6 +31,7 @@ from cryptography.hazmat.backends import default_backend
 
 from .settings import settings
 from .models import Certificate
+from .constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 
 class CertificateInfo:
     """Container for certificate information."""
@@ -41,7 +49,9 @@ class CertificateInfo:
                  common_name: str = None,
                  chain_valid: bool = False,
                  ip_addresses: List[str] = None,
-                 validation_errors: List[str] = None):
+                 validation_errors: List[str] = None,
+                 platform: str = None,
+                 headers: Dict[str, str] = None):
         """Initialize certificate information."""
         self.serial_number = serial_number
         self.thumbprint = thumbprint
@@ -56,6 +66,8 @@ class CertificateInfo:
         self.chain_valid = chain_valid
         self.ip_addresses = ip_addresses or []
         self.validation_errors = validation_errors or []
+        self.platform = platform
+        self.headers = headers or {}
         
         # Validate the certificate
         self._validate()
@@ -123,7 +135,9 @@ class CertificateInfo:
             'ip_addresses': self.ip_addresses,
             'validation_errors': self.validation_errors,
             'is_valid': self.is_valid,
-            'validation_status': self.validation_status
+            'validation_status': self.validation_status,
+            'platform': self.platform,
+            'headers': self.headers
         }
 
 class ScanResult:
@@ -251,7 +265,7 @@ class CertificateScanner:
         if len(self.request_timestamps) >= self.rate_limit:
             sleep_time = self.request_timestamps[0] + 60 - current_time
             if sleep_time > 0:
-                self.logger.info(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+                self.logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
                 time.sleep(sleep_time)
                 current_time = time.time()
                 
@@ -318,6 +332,18 @@ class CertificateScanner:
         max_retries = 3
         retry_delay = 1  # seconds
         last_error = None
+        headers = {}
+        
+        # Try to get HTTP headers first to help with platform detection
+        try:
+            # Only try HTTPS for port 443 or if explicitly using HTTPS port
+            if port == 443 or str(port).endswith('443'):
+                url = f"https://{address}"
+                response = requests.get(url, timeout=self.socket_timeout, verify=False)
+                headers = dict(response.headers)
+                self.logger.debug(f"Got HTTP headers for {address}: {headers}")
+        except Exception as e:
+            self.logger.debug(f"Could not get HTTP headers for {address}: {str(e)}")
         
         for attempt in range(max_retries):
             try:
@@ -379,7 +405,10 @@ class CertificateScanner:
                 cert_binary = ssock.getpeercert(binary_form=True)
                 if cert_binary:
                     self.logger.info(f"Certificate retrieved from {address}:{port}")
-                
+                    
+                    # Store headers for platform detection
+                    self._last_headers = headers
+                    
                     # Validate certificate chain
                     self._validate_cert_chain(address, port, self.socket_timeout)
                     return cert_binary
@@ -491,6 +520,34 @@ class CertificateScanner:
             self._last_cert_chain = False
             self.logger.warning(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
     
+    def _check_dns_for_platform(self, domain: str) -> Optional[str]:
+        """Check DNS records for platform indicators."""
+        try:
+            resolver = dns.resolver.Resolver()
+            
+            # Try to get CNAME record
+            try:
+                answers = resolver.resolve(domain, 'CNAME')
+                for rdata in answers:
+                    cname = str(rdata.target).lower()
+                    self.logger.info(f"[PLATFORM] Found CNAME record: {cname}")
+                    if 'edgekey' in cname or 'akamai' in cname:
+                        self.logger.info(f"[PLATFORM] Detected Akamai via CNAME record: {cname}")
+                        return PLATFORM_AKAMAI
+                    elif 'cloudflare' in cname:
+                        self.logger.info(f"[PLATFORM] Detected Cloudflare via CNAME record: {cname}")
+                        return PLATFORM_CLOUDFLARE
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                pass
+            except Exception as e:
+                self.logger.debug(f"Error checking CNAME records: {str(e)}")
+            
+            return None
+            
+        except Exception as e:
+            self.logger.debug(f"Error in DNS platform check: {str(e)}")
+            return None
+
     def _process_certificate(self, cert_binary: bytes, address: str, port: int) -> Optional[CertificateInfo]:
         """Process a certificate and extract its information."""
         try:
@@ -502,7 +559,6 @@ class CertificateScanner:
                 self.logger.error(f"Failed to load certificate for {address}:{port}")
                 return None
         
-            # Extract certificate information
             try:
                 # Get subject information
                 subject = {attr.oid._name: attr.value for attr in cert.subject}
@@ -523,11 +579,7 @@ class CertificateScanner:
                 for extension in cert.extensions:
                     if extension.oid == x509.oid.ExtensionOID.SUBJECT_ALTERNATIVE_NAME:
                         san = [name.value for name in extension.value]
-                        self.logger.info(f"Found {len(san)} SANs in certificate for {address}:{port}")
-                        for name in san:
-                            self.logger.info(f"SAN: {name}")
-                if not san:
-                    self.logger.info(f"No SANs found in certificate for {address}:{port}")
+                        self.logger.debug(f"Found {len(san)} SANs in certificate for {address}:{port}")
                 
                 # Get signature algorithm
                 sig_algorithm = cert.signature_algorithm_oid._name
@@ -545,8 +597,77 @@ class CertificateScanner:
                     signature_algorithm=sig_algorithm,
                     common_name=subject.get('commonName', address),
                     chain_valid=self._last_cert_chain,
-                    ip_addresses=[]  # Will be set later
+                    ip_addresses=[],  # Will be set later
+                    headers=getattr(self, '_last_headers', {})  # Include headers from scan
                 )
+                
+                # Detect platform
+                platform = None
+                headers = cert_info.headers
+                
+                # Check headers first (most reliable)
+                if headers:
+                    self.logger.info(f"[PLATFORM] Checking response headers for {address}:{port}")
+                    self.logger.info(f"[PLATFORM] Found headers: {list(headers.keys())}")
+                    
+                    # Cloudflare indicators
+                    cf_headers = ['cf-ray', 'cf-cache-status', 'cloudflare-nginx']
+                    matching_cf = [h for h in cf_headers if h.lower() in map(str.lower, headers.keys())]
+                    if matching_cf:
+                        platform = PLATFORM_CLOUDFLARE
+                        self.logger.info(f"[PLATFORM] Detected Cloudflare via headers: {matching_cf}")
+                    
+                    # Akamai indicators
+                    akamai_headers = ['x-akamai-transformed', 'akamai-origin-hop', 'x-akamai-request-id', 'akamai-cache-status']
+                    matching_ak = [h for h in akamai_headers if h.lower() in map(str.lower, headers.keys())]
+                    if matching_ak:
+                        platform = PLATFORM_AKAMAI
+                        self.logger.info(f"[PLATFORM] Detected Akamai via headers: {matching_ak}")
+                    
+                    # F5 indicators
+                    f5_headers = ['x-f5-origin-server', 'x-bigip', 'x-f5-request-id', 'f5-unique-id']
+                    matching_f5 = [h for h in f5_headers if h.lower() in map(str.lower, headers.keys())]
+                    if matching_f5:
+                        platform = PLATFORM_F5
+                        self.logger.info(f"[PLATFORM] Detected F5 via headers: {matching_f5}")
+                
+                # If no platform detected from headers, check certificate and domain patterns
+                if not platform:
+                    self.logger.info(f"[PLATFORM] Checking certificate attributes for {address}:{port}")
+                    issuer_cn = cert_info.issuer.get('CN', '').lower()
+                    issuer_o = cert_info.issuer.get('O', '').lower()
+                    
+                    self.logger.info(f"[PLATFORM] Certificate issuer CN: {issuer_cn}")
+                    self.logger.info(f"[PLATFORM] Certificate issuer O: {issuer_o}")
+                    
+                    # Check for Akamai edgekey pattern in domains
+                    if 'edgekey' in address.lower() or any('edgekey' in san.lower() for san in cert_info.san):
+                        platform = PLATFORM_AKAMAI
+                        self.logger.info(f"[PLATFORM] Detected Akamai via edgekey domain pattern")
+                    # Check certificate issuer
+                    elif 'cloudflare' in issuer_cn or 'cloudflare' in issuer_o:
+                        platform = PLATFORM_CLOUDFLARE
+                        self.logger.info(f"[PLATFORM] Detected Cloudflare via certificate issuer")
+                    elif 'akamai' in issuer_cn or 'akamai' in issuer_o:
+                        platform = PLATFORM_AKAMAI
+                        self.logger.info(f"[PLATFORM] Detected Akamai via certificate issuer")
+                    else:
+                        # Check SANs for F5
+                        self.logger.info(f"[PLATFORM] Checking SANs: {cert_info.san}")
+                        f5_sans = [san for san in cert_info.san if 'f5' in san.lower()]
+                        if f5_sans:
+                            platform = PLATFORM_F5
+                            self.logger.info(f"[PLATFORM] Detected F5 via certificate SAN: {f5_sans}")
+                
+                # If still no platform detected, check DNS records
+                if not platform:
+                    self.logger.info(f"[PLATFORM] Checking DNS records for {address}")
+                    platform = self._check_dns_for_platform(address)
+                
+                if not platform:
+                    self.logger.info(f"[PLATFORM] No platform detected for {address}:{port}")
+                
+                cert_info.platform = platform
                 
                 # Get key usage if present
                 try:
@@ -571,7 +692,7 @@ class CertificateScanner:
                             cert_info.key_usage = key_usage
                             break
                 except Exception as e:
-                    self.logger.warning(f"Could not get key usage for {address}:{port}: {str(e)}")
+                    self.logger.debug(f"Could not get key usage for {address}:{port}: {str(e)}")
                 
                 # Try to get IP addresses
                 try:
@@ -579,9 +700,12 @@ class CertificateScanner:
                     if addrinfo:
                         cert_info.ip_addresses = list(set(addr[4][0] for addr in addrinfo))
                 except Exception as e:
-                    self.logger.warning(f"Could not get IP addresses for {address}:{port}: {str(e)}")
+                    self.logger.debug(f"Could not get IP addresses for {address}:{port}: {str(e)}")
                 
                 self.logger.info(f"Successfully processed certificate for {address}:{port}")
+                if platform:
+                    self.logger.info(f"Detected platform for {address}:{port}: {platform}")
+                
                 return cert_info
                 
             except Exception as e:
@@ -644,4 +768,76 @@ class CertificateScanner:
         cname = cname.rstrip('.')  # Remove trailing dot if present
         if not self.tracker.is_endpoint_scanned(cname, port):
             self.tracker.add_to_queue(cname, port)
-            self.logger.info(f"[SCAN] Added CNAME target to queue: {cname}:{port}") 
+            self.logger.info(f"[SCAN] Added CNAME target to queue: {cname}:{port}")
+
+    def _detect_platform(self, cert_info: CertificateInfo) -> Optional[str]:
+        """
+        Detect if certificate is being served through a WAF/CDN/Load Balancer.
+        
+        Args:
+            cert_info: Certificate information object
+            
+        Returns:
+            Optional[str]: Detected platform (PLATFORM_F5, PLATFORM_AKAMAI, etc.) or None
+        """
+        try:
+            # Check headers first (most reliable)
+            if cert_info.headers:
+                # Log all headers for debugging
+                self.logger.debug("Checking response headers for platform detection:")
+                for header, value in cert_info.headers.items():
+                    self.logger.debug(f"  {header}: {value}")
+                
+                # Cloudflare indicators
+                cloudflare_headers = ['cf-ray', 'cf-cache-status', 'cloudflare-nginx']
+                matching_cf = [h for h in cloudflare_headers if h.lower() in map(str.lower, cert_info.headers.keys())]
+                if matching_cf:
+                    self.logger.info(f"Detected Cloudflare platform via headers: {', '.join(matching_cf)}")
+                    return PLATFORM_CLOUDFLARE
+                
+                # Akamai indicators
+                akamai_headers = ['x-akamai-transformed', 'akamai-origin-hop', 'x-akamai-request-id', 'akamai-cache-status']
+                matching_ak = [h for h in akamai_headers if h.lower() in map(str.lower, cert_info.headers.keys())]
+                if matching_ak:
+                    self.logger.info(f"Detected Akamai platform via headers: {', '.join(matching_ak)}")
+                    return PLATFORM_AKAMAI
+                
+                # F5 indicators
+                f5_headers = ['x-f5-origin-server', 'x-bigip', 'x-f5-request-id', 'f5-unique-id']
+                matching_f5 = [h for h in f5_headers if h.lower() in map(str.lower, cert_info.headers.keys())]
+                if matching_f5:
+                    self.logger.info(f"Detected F5 platform via headers: {', '.join(matching_f5)}")
+                    return PLATFORM_F5
+                
+                self.logger.info("No platform-specific headers detected")
+            else:
+                self.logger.info("No HTTP headers available for platform detection")
+            
+            # Check certificate issuer
+            issuer_cn = cert_info.issuer.get('CN', '').lower()
+            issuer_o = cert_info.issuer.get('O', '').lower()
+            
+            self.logger.debug(f"Checking certificate issuer for platform detection:")
+            self.logger.debug(f"  Issuer CN: {issuer_cn}")
+            self.logger.debug(f"  Issuer O: {issuer_o}")
+            
+            if 'cloudflare' in issuer_cn or 'cloudflare' in issuer_o:
+                self.logger.info(f"Detected Cloudflare platform via certificate issuer")
+                return PLATFORM_CLOUDFLARE
+            
+            if 'akamai' in issuer_cn or 'akamai' in issuer_o:
+                self.logger.info(f"Detected Akamai platform via certificate issuer")
+                return PLATFORM_AKAMAI
+            
+            # Check for F5 specific patterns in subject or SAN
+            if any('f5' in san.lower() for san in cert_info.san):
+                matching_sans = [san for san in cert_info.san if 'f5' in san.lower()]
+                self.logger.info(f"Detected F5 platform via SAN entries: {', '.join(matching_sans)}")
+                return PLATFORM_F5
+            
+            self.logger.info("No platform detected via certificate information")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error during platform detection: {str(e)}")
+            return None 

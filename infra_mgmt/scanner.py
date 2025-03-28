@@ -446,7 +446,7 @@ class ScanManager:
     
     def scan_target(self, session, domain: str, port: int, check_whois: bool = True, 
                    check_dns: bool = True, check_subdomains: bool = True,
-                   check_sans: bool = False,
+                   check_sans: bool = False, detect_platform: bool = True, validate_chain: bool = True,
                    status_container=None, progress_container=None, current_step=None, total_steps=None) -> bool:
         """
         Scan a single target and process results.
@@ -459,6 +459,8 @@ class ScanManager:
             check_dns: Whether to check DNS records
             check_subdomains: Whether to check for subdomains
             check_sans: Whether to scan Subject Alternative Names
+            detect_platform: Whether to detect platform (F5, Akamai, etc.)
+            validate_chain: Whether to validate certificate chain
             status_container: Optional container for status updates
             progress_container: Optional container for progress updates
             current_step: Current step number for progress tracking
@@ -478,16 +480,7 @@ class ScanManager:
                 return True
 
             def calculate_progress(sub_step: int, total_sub_steps: int) -> float:
-                """
-                Calculate overall progress including sub-steps.
-                
-                Args:
-                    sub_step: Current sub-step (0-based)
-                    total_sub_steps: Total number of sub-steps for this domain
-                    
-                Returns:
-                    float: Progress value between 0 and 1
-                """
+                """Calculate overall progress including sub-steps."""
                 if current_step is None or total_steps is None:
                     return 0.0
                 
@@ -515,6 +508,10 @@ class ScanManager:
             total_sub_steps += 2  # Certificate scanning and processing
             if check_subdomains:
                 total_sub_steps += 1  # Subdomain processing
+            if check_sans:
+                total_sub_steps += 1  # SAN processing
+            if detect_platform:
+                total_sub_steps += 1  # Platform detection
             
             current_sub_step = 0
             
@@ -621,8 +618,8 @@ class ScanManager:
                             _san=json.dumps(cert_info.san),
                             key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
                             signature_algorithm=cert_info.signature_algorithm,
-                            chain_valid=cert_info.chain_valid,
-                            sans_scanned=True,
+                            chain_valid=validate_chain and cert_info.chain_valid,
+                            sans_scanned=check_sans,
                             created_at=datetime.now(),
                             updated_at=datetime.now()
                         )
@@ -639,8 +636,8 @@ class ScanManager:
                         cert._san = json.dumps(cert_info.san)
                         cert.key_usage = json.dumps(cert_info.key_usage) if cert_info.key_usage else None
                         cert.signature_algorithm = cert_info.signature_algorithm
-                        cert.chain_valid = cert_info.chain_valid
-                        cert.sans_scanned = True
+                        cert.chain_valid = validate_chain and cert_info.chain_valid
+                        cert.sans_scanned = check_sans
                         cert.updated_at = datetime.now()
                     
                     # Associate certificate with domain
@@ -654,13 +651,22 @@ class ScanManager:
                             status_container.text(f'Creating host record for {domain}...')
                         host = Host(
                             name=domain,
-                            host_type=HOST_TYPE_SERVER,
+                            host_type=HOST_TYPE_SERVER,  # Will be updated if platform detection is enabled
                             environment=ENV_PRODUCTION,
                             last_seen=datetime.now()
                         )
                         session.add(host)
                     else:
                         host.last_seen = datetime.now()
+                    
+                    # Update host type based on platform if enabled
+                    if detect_platform and cert_info.platform:
+                        if cert_info.platform in [PLATFORM_CLOUDFLARE, PLATFORM_AKAMAI]:
+                            host.host_type = HOST_TYPE_CDN
+                        elif cert_info.platform == PLATFORM_F5:
+                            host.host_type = HOST_TYPE_LOAD_BALANCER
+                        current_sub_step += 1
+                        update_progress(current_sub_step, total_sub_steps)
                     
                     # Create or update IP addresses
                     if cert_info.ip_addresses:
@@ -707,6 +713,7 @@ class ScanManager:
                             certificate=cert,
                             port=port,
                             binding_type='IP',
+                            platform=cert_info.platform if detect_platform else None,
                             last_seen=datetime.now(),
                             manually_added=False
                         )
@@ -714,6 +721,8 @@ class ScanManager:
                     else:
                         binding.certificate = cert
                         binding.last_seen = datetime.now()
+                        if detect_platform:
+                            binding.platform = cert_info.platform
                     
                     # Create scan history record
                     scan_record = CertificateScan(
@@ -725,9 +734,8 @@ class ScanManager:
                     )
                     session.add(scan_record)
                     
-                    # Commit all changes
                     session.commit()
-                    self.logger.debug(f"[SCAN] Successfully processed certificate for {domain}:{port}")
+                    self.logger.info(f"[SCAN] Successfully processed certificate for {domain}:{port}")
                     
                     # Update success state
                     self.scan_results["success"].append(f"{domain}:{port}")
@@ -748,13 +756,11 @@ class ScanManager:
             # Process subdomains if requested
             if check_subdomains:
                 try:
-                    # Set status container for subdomain scanner
                     if status_container:
                         status_container.text(f'Discovering subdomains for {domain}...')
                     
                     self.subdomain_scanner.set_status_container(status_container)
                     
-                    # Use the comprehensive subdomain scanning
                     subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(
                         domain=domain,
                         port=port,
@@ -762,26 +768,24 @@ class ScanManager:
                         check_dns=check_dns,
                         scanned_domains=self.infra_mgmt.tracker.scanned_domains
                     )
-                    current_sub_step += 1
-                    update_progress(current_sub_step, total_sub_steps)
                     
                     if subdomain_results:
                         self.logger.info(f"[SCAN] Found {len(subdomain_results)} subdomains for {domain}")
                         
-                        # Add discovered subdomains to scan queue
                         for result in subdomain_results:
                             subdomain = result['domain']
                             if not self.infra_mgmt.tracker.is_endpoint_scanned(subdomain, port):
                                 self.infra_mgmt.tracker.add_to_queue(subdomain, port)
-                                self.logger.info(f"[SCAN] Added new subdomain to scan queue: {subdomain}:{port}")
+                                self.logger.info(f"[SCAN] Added subdomain to queue: {subdomain}:{port}")
                     
-                    # Clear status container from subdomain scanner
+                    current_sub_step += 1
+                    update_progress(current_sub_step, total_sub_steps)
+                    
                     self.subdomain_scanner.set_status_container(None)
                     
-                except Exception as e:
-                    self.logger.error(f"[SCAN] Error in subdomain scanning for {domain}: {str(e)}")
-                    self.scan_results["error"].append(f"{domain}:{port} - Error in subdomain scanning: {str(e)}")
-                    # Clear status container from subdomain scanner in case of error
+                except Exception as subdomain_error:
+                    self.logger.error(f"[SCAN] Error in subdomain scanning for {domain}: {str(subdomain_error)}")
+                    self.scan_results["error"].append(f"{domain}:{port} - Error in subdomain scanning: {str(subdomain_error)}")
                     self.subdomain_scanner.set_status_container(None)
                     return False
             
@@ -973,8 +977,8 @@ class ScanProcessor:
                     _san=json.dumps(cert_info.san),
                     key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
                     signature_algorithm=cert_info.signature_algorithm,
-                    chain_valid=cert_info.chain_valid,
-                    sans_scanned=True,
+                    chain_valid=validate_chain and cert_info.chain_valid,
+                    sans_scanned=check_sans,
                     created_at=datetime.now(),
                     updated_at=datetime.now()
                 )
@@ -990,8 +994,8 @@ class ScanProcessor:
                 cert._san = json.dumps(cert_info.san)
                 cert.key_usage = json.dumps(cert_info.key_usage) if cert_info.key_usage else None
                 cert.signature_algorithm = cert_info.signature_algorithm
-                cert.chain_valid = cert_info.chain_valid
-                cert.sans_scanned = True
+                cert.chain_valid = validate_chain and cert_info.chain_valid
+                cert.sans_scanned = check_sans
                 cert.updated_at = datetime.now()
             
             # Associate certificate with domain
@@ -1068,7 +1072,7 @@ class ScanProcessor:
                     certificate=cert,
                     port=port,
                     binding_type='IP',
-                    platform=cert_info.platform,  # Set detected platform
+                    platform=cert_info.platform if detect_platform else None,
                     last_seen=datetime.now(),
                     manually_added=False
                 )
@@ -1076,7 +1080,7 @@ class ScanProcessor:
             else:
                 binding.certificate = cert
                 binding.last_seen = datetime.now()
-                if cert_info.platform:  # Update platform if detected
+                if detect_platform:
                     binding.platform = cert_info.platform
             
             # Create scan history record

@@ -32,7 +32,7 @@ import json
 import streamlit as st
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, scoped_session
 
 # Local application imports
 from .models import Base, IgnoredDomain, IgnoredCertificate
@@ -370,51 +370,74 @@ def migrate_database(engine):
         raise
 
 def sync_default_ignore_patterns(engine):
-    """
-    Synchronize default ignore patterns from config file to database.
-    
-    This ensures that the default patterns defined in config.yaml are
-    present in the database tables where they are needed for scanning.
-    """
+    """Synchronize default ignore patterns from settings to database."""
+    logger.info("Synchronizing default ignore patterns")
     try:
         from .settings import Settings
         from .models import IgnoredDomain, IgnoredCertificate
-        from sqlalchemy.orm import Session
+        from sqlalchemy.orm import Session, scoped_session, sessionmaker
+        import warnings
+        from sqlalchemy import exc as sa_exc
         
         settings = Settings()
         
-        with Session(engine) as session:
-            # Sync domain patterns
-            default_domain_patterns = settings.get("ignore_lists.domains.default_patterns", [])
-            for pattern in default_domain_patterns:
-                # Check if pattern already exists
-                existing = session.query(IgnoredDomain).filter_by(pattern=pattern).first()
-                if not existing:
-                    ignored = IgnoredDomain(
-                        pattern=pattern,
-                        reason="Default configuration pattern",
-                        created_at=datetime.now()
-                    )
-                    session.add(ignored)
+        # Temporarily filter out SQLAlchemy warnings for transaction state
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', 
+                                  category=sa_exc.SAWarning,
+                                  message='.*connection that is already in a transaction.*')
             
-            # Sync certificate patterns
-            default_cert_patterns = settings.get("ignore_lists.certificates.default_patterns", [])
-            for pattern in default_cert_patterns:
-                # Check if pattern already exists
-                existing = session.query(IgnoredCertificate).filter_by(pattern=pattern).first()
-                if not existing:
-                    ignored = IgnoredCertificate(
-                        pattern=pattern,
-                        reason="Default configuration pattern",
-                        created_at=datetime.now()
-                    )
-                    session.add(ignored)
+            # Create a scoped session factory with explicit connection control
+            session_factory = sessionmaker(bind=engine,
+                                          expire_on_commit=False,
+                                          autoflush=True)
+            session = scoped_session(session_factory)()
             
-            session.commit()
-            logger.info("Successfully synchronized default ignore patterns")
-            
+            try:
+                # Begin a new transaction
+                session.begin()
+                
+                # Sync domain patterns
+                default_domain_patterns = settings.get("ignore_lists.domains.default_patterns", [])
+                for pattern in default_domain_patterns:
+                    # Check if pattern already exists
+                    existing = session.query(IgnoredDomain).filter_by(pattern=pattern).first()
+                    if not existing:
+                        ignored = IgnoredDomain(
+                            pattern=pattern,
+                            reason="Default configuration pattern",
+                            created_at=datetime.now()
+                        )
+                        session.add(ignored)
+                
+                # Sync certificate patterns
+                default_cert_patterns = settings.get("ignore_lists.certificates.default_patterns", [])
+                for pattern in default_cert_patterns:
+                    # Check if pattern already exists
+                    existing = session.query(IgnoredCertificate).filter_by(pattern=pattern).first()
+                    if not existing:
+                        ignored = IgnoredCertificate(
+                            pattern=pattern,
+                            reason="Default configuration pattern",
+                            created_at=datetime.now()
+                        )
+                        session.add(ignored)
+                
+                # Commit the transaction
+                session.commit()
+                logger.info("Successfully synchronized default ignore patterns")
+                
+            except Exception as e:
+                # Rollback the transaction on error
+                session.rollback()
+                raise e
+            finally:
+                # Always close the session
+                session.close()
+                
     except Exception as e:
         logger.error(f"Failed to sync default ignore patterns: {str(e)}")
+        raise
 
 def init_database(db_path=None):
     """Initialize the database and perform migrations."""
@@ -619,6 +642,14 @@ def check_database():
         
         # Try to open and validate the database
         try:
+            # First try to open with sqlite3 to check if it's a valid database
+            with sqlite3.connect(str(db_path)) as conn:
+                # Try to read some basic information to validate the database
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA page_count")
+                cursor.execute("PRAGMA page_size")
+            
+            # If we get here, it's a valid SQLite database
             engine = create_engine(f"sqlite:///{db_path}")
             with engine.connect() as conn:
                 # Check if we can execute a simple query

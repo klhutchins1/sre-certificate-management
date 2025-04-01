@@ -317,7 +317,7 @@ def test_sidebar_complete_render(mock_caption, mock_radio, mock_markdown, mock_t
     render_sidebar()
     
     # Verify all sidebar elements were rendered
-    mock_title.assert_called_once_with("Certificate Manager")
+    mock_title.assert_called_once_with("SRO Infra Manager")
     assert mock_markdown.call_count >= 2  # Should be called at least twice for dividers
     mock_caption.assert_called_once_with("v1.0.0")
     mock_radio.assert_called_once()

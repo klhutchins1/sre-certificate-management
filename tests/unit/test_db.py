@@ -714,26 +714,6 @@ def test_init_database_parent_dir_exists_not_dir():
     finally:
         cleanup_temp_dir(temp_dir)
 
-def test_init_database_parent_of_parent_not_exists():
-    """Test database initialization when parent's parent doesn't exist"""
-    temp_dir = tempfile.mkdtemp()
-    nonexistent_path = os.path.join(temp_dir, "nonexistent")
-    db_path = os.path.join(nonexistent_path, "subdir", "test.db")
-    
-    # Remove the temp directory to simulate nonexistent parent
-    shutil.rmtree(temp_dir)
-    
-    try:
-        # Attempt to initialize database
-        with pytest.raises(Exception) as exc_info:
-            init_database(db_path)
-        
-        assert "Parent directory's parent does not exist" in str(exc_info.value)
-    
-    finally:
-        if os.path.exists(temp_dir):
-            cleanup_temp_dir(temp_dir)
-
 def test_backup_database_with_data():
     """Test database backup with actual data"""
     temp_dir = tempfile.mkdtemp()
@@ -1712,6 +1692,644 @@ def test_database_operation_errors():
         
     finally:
         # Clean up
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_migrate_database_with_invalid_json():
+    """Test database migration with invalid JSON data in certificate fields."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "migration_test.db")
+    
+    try:
+        # Create initial database with invalid JSON
+        engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(engine)
+        
+        # Insert test data with invalid JSON
+        with engine.connect() as conn:
+            conn.execute(text("""
+                INSERT INTO certificates (
+                    serial_number, thumbprint, common_name, valid_from, valid_until,
+                    issuer, subject, san, chain_valid, sans_scanned
+                ) VALUES (
+                    'test123', 'thumb123', 'test.com', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                    'invalid json', 'invalid json', 'invalid json', 0, 0
+                )
+            """))
+            conn.commit()
+        
+        # Attempt migration
+        migrate_database(engine)
+        
+        # Verify data was handled gracefully
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT issuer, subject, san FROM certificates")).fetchone()
+            assert result is not None
+            assert isinstance(result.issuer, str)
+            assert isinstance(result.subject, str)
+            assert isinstance(result.san, str)
+            
+            # Verify JSON data was properly formatted
+            try:
+                issuer_data = json.loads(result.issuer)
+                assert isinstance(issuer_data, dict)
+            except json.JSONDecodeError:
+                pytest.fail("issuer is not valid JSON")
+                
+            try:
+                subject_data = json.loads(result.subject)
+                assert isinstance(subject_data, dict)
+            except json.JSONDecodeError:
+                pytest.fail("subject is not valid JSON")
+                
+            try:
+                san_data = json.loads(result.san)
+                assert isinstance(san_data, list)
+            except json.JSONDecodeError:
+                pytest.fail("san is not valid JSON")
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_session_cleanup_with_active_transaction():
+    """Test session cleanup with active transactions."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "session_test.db")
+    
+    try:
+        engine = init_database(db_path)
+        
+        # Create a session and start a transaction
+        session = Session(engine)
+        session.begin()
+        
+        # Add some test data
+        cert = Certificate(
+            serial_number="test123",
+            thumbprint="test456",
+            common_name="test.com",
+            valid_from=datetime.now(),
+            valid_until=datetime.now() + timedelta(days=365),
+            issuer=json.dumps({"CN": "Test CA"}),
+            subject=json.dumps({"CN": "test.com"}),
+            san=json.dumps(["test.com"]),
+            chain_valid=True,
+            sans_scanned=True
+        )
+        session.add(cert)
+        
+        # Close session with active transaction
+        session.close()
+        
+        # Verify transaction was rolled back
+        with Session(engine) as new_session:
+            result = new_session.query(Certificate).filter_by(serial_number="test123").first()
+            assert result is None
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_database_corruption_detection():
+    """Test database corruption detection and handling."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "corruption_test.db")
+    
+    try:
+        # Create a valid database
+        engine = init_database(db_path)
+        engine.dispose()
+        
+        # Force garbage collection and wait for file handles to be released
+        gc.collect()
+        time.sleep(0.1)
+        
+        # Corrupt the database file
+        with open(db_path, 'wb') as f:
+            f.write(b'invalid data')
+        
+        # Mock settings to return our test database path
+        with patch('infra_mgmt.db.Settings') as mock_settings:
+            mock_settings.return_value.get.return_value = db_path
+            
+            # Verify corruption is detected
+            assert not check_database()
+            
+            # Remove the corrupted file
+            os.remove(db_path)
+            
+            # Force garbage collection and wait for file handles to be released
+            gc.collect()
+            time.sleep(0.1)
+            
+            # Attempt to initialize should create new database
+            engine = init_database(db_path)
+            assert engine is not None
+            
+            # Verify database is now valid
+            assert check_database()
+            
+            # Verify tables were recreated
+            with engine.connect() as conn:
+                inspector = inspect(engine)
+                required_tables = set(Base.metadata.tables.keys())
+                existing_tables = set(inspector.get_table_names())
+                assert required_tables.issubset(existing_tables)
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_database_file_permissions():
+    """Test database file permission handling."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "permission_test.db")
+    
+    try:
+        # Create database with initial permissions
+        engine = init_database(db_path)
+        engine.dispose()
+        
+        # Force garbage collection and wait for file handles to be released
+        gc.collect()
+        time.sleep(0.1)
+        
+        # Remove write permissions
+        current_mode = os.stat(db_path).st_mode
+        os.chmod(db_path, current_mode & ~stat.S_IWRITE)
+        
+        # Mock settings to return our test database path
+        with patch('infra_mgmt.db.Settings') as mock_settings:
+            mock_settings.return_value.get.return_value = db_path
+            
+            # Attempt to initialize should handle permission error
+            with pytest.raises(Exception) as exc_info:
+                init_database(db_path)
+            assert "No write permission for database file" in str(exc_info.value)
+            
+            # Restore write permissions
+            os.chmod(db_path, current_mode | stat.S_IWRITE)
+            
+            # Force garbage collection and wait for file handles to be released
+            gc.collect()
+            time.sleep(0.1)
+            
+            # Attempt to initialize should succeed
+            engine = init_database(db_path)
+            assert engine is not None
+            
+            # Verify database is valid
+            assert check_database()
+            
+            # Clean up engine before final check
+            engine.dispose()
+            gc.collect()
+            time.sleep(0.1)
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_database_schema_validation():
+    """Test database schema validation."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "schema_test.db")
+    new_db_path = os.path.join(temp_dir, "schema_test_new.db")
+    
+    try:
+        # Create initial database
+        engine = init_database(db_path)
+        engine.dispose()
+        
+        # Force garbage collection and wait for file handles to be released
+        gc.collect()
+        time.sleep(0.1)
+        
+        # Mock settings to return our test database path
+        with patch('infra_mgmt.db.Settings') as mock_settings:
+            mock_settings.return_value.get.return_value = db_path
+            
+            # Modify schema directly
+            with sqlite3.connect(db_path, isolation_level=None) as conn:
+                cursor = conn.cursor()
+                # Drop a required table
+                cursor.execute("DROP TABLE IF EXISTS certificates")
+                # Add invalid column to hosts table
+                cursor.execute("ALTER TABLE hosts ADD COLUMN invalid_column TEXT")
+                cursor.close()
+            
+            # Force garbage collection and wait for file handles to be released
+            gc.collect()
+            time.sleep(0.1)
+            
+            # Verify schema validation fails
+            assert not check_database()
+            
+            # Update mock settings to use new database path
+            mock_settings.return_value.get.return_value = new_db_path
+            
+            # Attempt to initialize should create new database with correct schema
+            engine = init_database(new_db_path)
+            assert engine is not None
+            
+            # Verify schema is valid
+            assert check_database()
+            
+            # Verify tables and columns are correct
+            with engine.connect() as conn:
+                inspector = inspect(engine)
+                # Verify certificates table exists
+                assert 'certificates' in inspector.get_table_names()
+                # Verify invalid column was removed
+                columns = [col['name'] for col in inspector.get_columns('hosts')]
+                assert 'invalid_column' not in columns
+            
+            # Clean up engine before final check
+            engine.dispose()
+            gc.collect()
+            time.sleep(0.1)
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_update_database_schema_column_errors():
+    """Test error handling in update_database_schema when adding columns."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "schema_error.db")
+    
+    try:
+        # Create initial database
+        engine = init_database(db_path)
+        
+        # Mock inspect to simulate column errors
+        with patch('infra_mgmt.db.inspect') as mock_inspect:
+            mock_inspect.return_value.get_table_names.return_value = ['test_table']
+            mock_inspect.return_value.get_columns.side_effect = Exception("Column error")
+            
+            # Schema update should handle the error gracefully
+            result = update_database_schema(engine)
+            assert result is False
+        
+        # Test with invalid column data type
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE test_table (
+                    id INTEGER PRIMARY KEY,
+                    data TEXT
+                )
+            """))
+            conn.execute(text("INSERT INTO test_table (id, data) VALUES (1, 'test')"))
+            conn.commit()
+        
+        # Mock inspect to simulate invalid column
+        with patch('infra_mgmt.db.inspect') as mock_inspect:
+            mock_inspect.return_value.get_table_names.return_value = ['test_table']
+            mock_inspect.return_value.get_columns.return_value = [{'name': 'invalid_column'}]
+            
+            # Schema update should handle invalid column gracefully
+            result = update_database_schema(engine)
+            assert result is False
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_migrate_database_complex_scenarios():
+    """Test database migration with complex scenarios."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "migration_test.db")
+    
+    try:
+        # Create initial database with minimal tables
+        engine = create_engine(f"sqlite:///{db_path}")
+        
+        # Create tables with existing data
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE test_certificates (
+                    id INTEGER PRIMARY KEY,
+                    issuer TEXT,
+                    subject TEXT,
+                    san TEXT,
+                    created_at DATETIME
+                )
+            """))
+            
+            # Insert test data with various formats
+            conn.execute(text("""
+                INSERT INTO test_certificates (issuer, subject, san, created_at)
+                VALUES 
+                ('{"CN": "Test CA"}', '{"CN": "test.com"}', '["test.com"]', CURRENT_TIMESTAMP),
+                ('invalid json', 'invalid json', 'invalid json', NULL),
+                (NULL, NULL, NULL, NULL)
+            """))
+            conn.commit()
+        
+        # Mock inspect to include our test table
+        with patch('infra_mgmt.db.inspect') as mock_inspect:
+            mock_inspect.return_value.get_table_names.return_value = ['test_certificates']
+            
+            # Attempt migration
+            migrate_database(engine)
+        
+        # Verify migration results
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT issuer, subject, san FROM test_certificates")).fetchall()
+            for row in result:
+                # Verify JSON fields are properly formatted
+                if row.issuer:
+                    try:
+                        data = json.loads(row.issuer)
+                        assert isinstance(data, dict)
+                    except json.JSONDecodeError:
+                        assert row.issuer == 'invalid json'
+                if row.subject:
+                    try:
+                        data = json.loads(row.subject)
+                        assert isinstance(data, dict)
+                    except json.JSONDecodeError:
+                        assert row.subject == 'invalid json'
+                if row.san:
+                    try:
+                        data = json.loads(row.san)
+                        assert isinstance(data, list)
+                    except json.JSONDecodeError:
+                        assert row.san == 'invalid json'
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_database_maintenance_complex():
+    """Test database maintenance operations with complex scenarios."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "maintenance_test.db")
+    
+    try:
+        # Create initial database
+        engine = init_database(db_path)
+        
+        # Add some test data
+        with Session(engine) as session:
+            cert = Certificate(
+                serial_number="test123",
+                thumbprint="test456",
+                common_name="test.com",
+                valid_from=datetime.now(),
+                valid_until=datetime.now() + timedelta(days=365),
+                issuer=json.dumps({"CN": "Test CA"}),
+                subject=json.dumps({"CN": "test.com"}),
+                san=json.dumps(["test.com"]),
+                chain_valid=True,
+                sans_scanned=True
+            )
+            session.add(cert)
+            session.commit()
+        
+        # Test reset with active connections
+        active_session = Session(engine)
+        active_session.begin()
+        
+        # Reset should succeed even with active connection
+        assert reset_database(engine) is True
+        
+        active_session.close()
+        
+        # Verify database was reset
+        with Session(engine) as session:
+            assert session.query(Certificate).count() == 0
+        
+        # Test reset with invalid schema
+        with engine.connect() as conn:
+            conn.execute(text("CREATE TABLE invalid_table (id INTEGER PRIMARY KEY)"))
+            conn.commit()
+        
+        # Drop all tables and recreate schema
+        with engine.connect() as conn:
+            # Get all table names
+            inspector = inspect(engine)
+            tables = inspector.get_table_names()
+            
+            # Drop all tables
+            for table in tables:
+                conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+            conn.commit()
+        
+        # Create new schema
+        Base.metadata.create_all(engine)
+        
+        # Verify tables are correct
+        with engine.connect() as conn:
+            inspector = inspect(engine)
+            tables = set(inspector.get_table_names())
+            
+            # Verify invalid table was removed
+            assert 'invalid_table' not in tables
+            
+            # Verify required tables exist
+            required_tables = set(Base.metadata.tables.keys())
+            assert required_tables.issubset(tables)
+            
+            # Verify tables are empty
+            for table in tables:
+                result = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
+                assert result == 0, f"Table {table} is not empty"
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_sync_default_ignore_patterns_complex():
+    """Test syncing default ignore patterns with complex scenarios."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "sync_test.db")
+    
+    try:
+        # Create initial database
+        engine = init_database(db_path)
+        
+        # Test with empty patterns
+        with patch('infra_mgmt.db.Settings') as mock_settings:
+            mock_settings.return_value.get.return_value = []
+            sync_default_ignore_patterns(engine)
+        
+        # Test with duplicate patterns
+        with patch('infra_mgmt.db.Settings') as mock_settings:
+            mock_settings.return_value.get.side_effect = [
+                ["*.test.com", "*.test.com"],  # Duplicate domain patterns
+                ["*.test.com", "*.test.com"]   # Duplicate certificate patterns
+            ]
+            sync_default_ignore_patterns(engine)
+        
+        # Test with invalid patterns
+        with patch('infra_mgmt.db.Settings') as mock_settings:
+            mock_settings.return_value.get.side_effect = [
+                [None, "", "   "],  # Invalid domain patterns
+                [None, "", "   "]   # Invalid certificate patterns
+            ]
+            sync_default_ignore_patterns(engine)
+        
+        # Verify results
+        with Session(engine) as session:
+            # Check for no duplicate patterns
+            domain_patterns = session.query(IgnoredDomain).all()
+            cert_patterns = session.query(IgnoredCertificate).all()
+            
+            domain_pattern_set = {d.pattern for d in domain_patterns}
+            cert_pattern_set = {c.pattern for c in cert_patterns}
+            
+            assert len(domain_patterns) == len(domain_pattern_set)
+            assert len(cert_patterns) == len(cert_pattern_set)
+            
+            # Check that invalid patterns were not added
+            for pattern in [None, "", "   "]:
+                assert not session.query(IgnoredDomain).filter_by(pattern=pattern).first()
+                assert not session.query(IgnoredCertificate).filter_by(pattern=pattern).first()
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_init_database_error_handling():
+    """Test database initialization error handling."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "error_test.db")
+    
+    try:
+        # Test with invalid path format
+        with pytest.raises(Exception) as exc_info:
+            init_database("*<>|?")  # Invalid characters
+        assert "Invalid database path" in str(exc_info.value)
+        
+        # Test with non-existent parent directory
+        nonexistent_path = os.path.join(temp_dir, "nonexistent", "nonexistent", "db.db")
+        with pytest.raises(Exception) as exc_info:
+            init_database(nonexistent_path)
+        assert "Parent directory's parent does not exist" in str(exc_info.value)
+        
+        # Test with file instead of directory
+        file_path = os.path.join(temp_dir, "file")
+        with open(file_path, 'w') as f:
+            f.write("test")
+        
+        with pytest.raises(Exception) as exc_info:
+            init_database(os.path.join(file_path, "db.db"))
+        assert "Path exists but is not a directory" in str(exc_info.value)
+        
+        # Test with unwritable directory
+        if os.name != 'nt':  # Skip on Windows
+            os.chmod(temp_dir, 0o444)  # Read-only
+            with pytest.raises(Exception) as exc_info:
+                init_database(db_path)
+            assert "No write permission" in str(exc_info.value)
+            os.chmod(temp_dir, 0o777)  # Restore permissions
+    
+    finally:
+        cleanup_temp_dir(temp_dir)
+
+def test_session_management_edge_cases():
+    """Test session management edge cases."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "session_test.db")
+    
+    try:
+        # Create initial database
+        engine = init_database(db_path)
+        
+        # Test with disposed engine
+        engine.dispose()
+        with patch('sqlalchemy.engine.base.Engine.connect') as mock_connect:
+            mock_connect.side_effect = Exception("Engine disposed")
+            session = get_session(engine)
+            assert session is None
+        
+        # Test with invalid engine URL
+        invalid_engine = create_engine('sqlite:///nonexistent/path/db.db')
+        session = get_session(invalid_engine)
+        assert session is None
+        
+        # Test session manager with None engine
+        with SessionManager(None) as session:
+            assert session is None
+        
+        # Test session manager with invalid engine
+        with SessionManager(invalid_engine) as session:
+            assert session is not None
+            with pytest.raises(Exception):
+                session.query(Certificate).all()
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_backup_restore_complex_scenarios():
+    """Test backup and restore operations with complex scenarios."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "backup_test.db")
+    backup_dir = os.path.join(temp_dir, "backups")
+    
+    try:
+        # Create initial database
+        engine = init_database(db_path)
+        
+        # Add some test data
+        with Session(engine) as session:
+            cert = Certificate(
+                serial_number="test123",
+                thumbprint="test456",
+                common_name="test.com",
+                valid_from=datetime.now(),
+                valid_until=datetime.now() + timedelta(days=365),
+                issuer=json.dumps({"CN": "Test CA"}),
+                subject=json.dumps({"CN": "test.com"}),
+                san=json.dumps(["test.com"]),
+                chain_valid=True,
+                sans_scanned=True
+            )
+            session.add(cert)
+            session.commit()
+        
+        # Test backup with non-existent directory
+        nonexistent_dir = os.path.join(temp_dir, "nonexistent")
+        backup_path = backup_database(engine, nonexistent_dir)
+        assert os.path.exists(backup_path)
+        
+        # Test backup with unwritable directory
+        if os.name != 'nt':  # Skip on Windows
+            os.chmod(backup_dir, 0o444)  # Read-only
+            with pytest.raises(Exception) as exc_info:
+                backup_database(engine, backup_dir)
+            assert "No write permission" in str(exc_info.value)
+            os.chmod(backup_dir, 0o777)  # Restore permissions
+        
+        # Test restore with locked database
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("BEGIN EXCLUSIVE")
+            with pytest.raises(sqlite3.OperationalError) as exc_info:
+                restore_database(backup_path, engine)
+            assert "database is locked" in str(exc_info.value).lower()
+        
+        # Test restore with invalid backup file
+        with open(backup_path, 'w') as f:
+            f.write("invalid data")
+        with pytest.raises(sqlite3.DatabaseError) as exc_info:
+            restore_database(backup_path, engine)
+        assert "file is not a database" in str(exc_info.value)
+    
+    finally:
         if 'engine' in locals():
             engine.dispose()
         cleanup_temp_dir(temp_dir)

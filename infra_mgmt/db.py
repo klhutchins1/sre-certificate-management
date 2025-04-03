@@ -490,17 +490,24 @@ def init_database(db_path=None):
             
             # Validate existing database
             try:
+                # First try to open with sqlite3 to check if it's a valid database
+                with sqlite3.connect(str(db_path)) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("PRAGMA page_count")
+                    cursor.execute("PRAGMA page_size")
+                
+                # If we get here, it's a valid SQLite database
                 test_engine = create_engine(f"sqlite:///{db_path}")
                 with test_engine.connect() as conn:
                     conn.execute(text("SELECT 1"))
                 test_engine.dispose()
+            except sqlite3.DatabaseError as e:
+                logger.warning(f"Invalid or corrupted database: {str(e)}")
+                # Instead of removing the file and continuing, raise the exception
+                raise sqlite3.DatabaseError("file is not a database")
             except Exception as e:
-                logger.warning(f"Removing invalid or corrupted database: {str(e)}")
-                try:
-                    db_path.unlink()
-                except Exception as e:
-                    logger.error(f"Failed to remove corrupted database: {str(e)}")
-                    raise Exception(f"Failed to remove corrupted database: {str(e)}")
+                logger.error(f"Failed to validate database: {str(e)}")
+                raise sqlite3.DatabaseError("file is not a database")
         else:
             logger.info(f"Database file does not exist at: {db_path}")
         
@@ -723,25 +730,19 @@ def backup_database(engine, backup_dir):
         random_suffix = ''.join(random.choices('0123456789abcdef', k=8))
         backup_file = backup_path / f"database_backup_{timestamp}_{random_suffix}.db"
         
-        # Verify we can write to the backup file location
-        try:
-            # Create a test file to verify write permissions
-            test_file = backup_file.with_suffix('.test')
-            with open(str(test_file), 'w') as f:
-                f.write('test')
-            test_file.unlink()
-        except PermissionError:
-            raise Exception(f"No write permission for backup file: {backup_file}")
-        except Exception as e:
-            raise Exception(f"Failed to verify write permission for backup file: {str(e)}")
-        
         # Create backup using shutil
         try:
+            # Try to create the backup file first
+            with open(str(backup_file), 'wb') as f:
+                pass
+            os.remove(str(backup_file))
+            
+            # Now copy the actual database file
             shutil.copy2(source_path, str(backup_file))
         except PermissionError:
-            raise Exception(f"No write permission for backup file: {backup_file}")
+            raise Exception(f"Failed to create backup file")
         except Exception as e:
-            raise Exception(f"Failed to create backup file: {str(e)}")
+            raise Exception(f"Failed to create backup file")
         
         # Verify backup is valid
         try:

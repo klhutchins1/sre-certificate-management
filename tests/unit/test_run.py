@@ -24,7 +24,7 @@ def test_wide_space_default(mock_set_page_config):
         
         # Verify page config was called with correct parameters
         mock_set_page_config.assert_called_once_with(
-            page_title="Certificate Manager",
+            page_title="Infra Manager",
             page_icon="🔐",
             layout="wide",  # Force wide mode
             initial_sidebar_state="expanded",

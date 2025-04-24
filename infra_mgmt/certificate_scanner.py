@@ -21,6 +21,7 @@ import requests
 import urllib3
 import warnings
 import dns.resolver
+import json
 
 # Suppress only the specific InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -32,6 +33,10 @@ from cryptography.hazmat.backends import default_backend
 from .settings import settings
 from .models import Certificate
 from .constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class CertificateInfo:
     """Container for certificate information."""
@@ -542,6 +547,27 @@ class CertificateScanner:
             except Exception as e:
                 self.logger.debug(f"Error checking CNAME records: {str(e)}")
             
+            # Try to get A record
+            try:
+                answers = resolver.resolve(domain, 'A')
+                for rdata in answers:
+                    ip = str(rdata.address)
+                    self.logger.info(f"[PLATFORM] Found A record: {ip}")
+                    
+                    # Check for Cloudflare IP ranges
+                    if ip.startswith(('1.1.1.', '1.0.0.', '103.21.244.', '103.22.200.', '103.31.4.')):
+                        self.logger.info(f"[PLATFORM] Detected Cloudflare via IP address: {ip}")
+                        return PLATFORM_CLOUDFLARE
+                    
+                    # Check for Akamai IP ranges
+                    if ip.startswith(('23.32.', '23.33.', '23.34.', '23.35.', '23.36.', '23.37.', '23.38.', '23.39.')):
+                        self.logger.info(f"[PLATFORM] Detected Akamai via IP address: {ip}")
+                        return PLATFORM_AKAMAI
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                pass
+            except Exception as e:
+                self.logger.debug(f"Error checking A records: {str(e)}")
+            
             return None
             
         except Exception as e:
@@ -840,4 +866,35 @@ class CertificateScanner:
             
         except Exception as e:
             self.logger.error(f"Error during platform detection: {str(e)}")
-            return None 
+            return None
+
+    def scan_domains(self, domains: List[str]) -> List[ScanResult]:
+        """
+        Scan a list of domains for certificates.
+        
+        Args:
+            domains: List of domains to scan
+            
+        Returns:
+            List[ScanResult]: List of scan results for each domain
+        """
+        if not domains:
+            self.logger.info("No domains provided for scanning")
+            return []
+            
+        results = []
+        for domain in domains:
+            # Add domain to scan queue
+            self.add_scan_target(domain)
+            
+        # Process all domains in the queue
+        while self.has_pending_targets():
+            target = self.get_next_target()
+            if target:
+                domain, port = target
+                result = self.scan_certificate(domain, port)
+                results.append(result)
+                self.tracker.add_scanned_domain(domain)
+                self.tracker.add_scanned_endpoint(domain, port)
+                
+        return results 

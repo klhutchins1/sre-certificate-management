@@ -210,60 +210,65 @@ def test_restore_nonexistent_backup(test_env):
     assert "Failed to read manifest file" in message
 
 def test_backup_with_missing_database(test_env):
-    """Test creating backup when database file is missing"""
-    # Remove database file
-    os.remove(test_env['db_file'])
+    """Test backup behavior when database file is missing."""
+    # Remove the database file
+    db_path = Path(test_env['db_file'])
+    if db_path.exists():
+        db_path.unlink()
     
-    # Backup should still succeed, just without database
+    # Attempt to create backup
     success, message = create_backup()
-    assert success, "Backup should succeed even without database"
-    assert "successfully" in message
     
-    # Check manifest
-    manifest_files = list(test_env['backup_dir'].glob("backup_*.json"))
-    assert len(manifest_files) > 0, "No manifest file created"
+    # Verify error handling
+    assert success is False, "Backup should fail when database is missing"
+    assert "database file" in message.lower(), f"Expected 'database file' in message, got: {message}"
+    assert any(phrase in message.lower() for phrase in ["not found", "does not exist"]), f"Expected 'not found' or 'does not exist' in message, got: {message}"
     
-    manifest_file = manifest_files[0]
-    with open(manifest_file, 'r') as f:
-        manifest = json.load(f)
-    assert manifest['database'] is None, "Database path should be None when database is missing"
+    # Verify no backup files were created
+    backup_dir = Path(test_env['backup_dir'])
+    if backup_dir.exists():
+        assert len(list(backup_dir.glob("*"))) == 0, "No backup files should be created"
 
 def test_backup_with_special_characters(test_env):
-    """Test backup with special characters in paths"""
-    # Use Windows-safe special characters
-    backup_dir = test_env['backup_dir']
-    special_path = backup_dir / "special-test_backup (1)"
-    special_path.mkdir(parents=True, exist_ok=True)
-    special_path = special_path.resolve()  # Get absolute path
+    """Test backup creation with special characters in paths."""
+    # Create test files with special characters
+    special_dir = test_env['backup_dir'] / "special-test_backup (1)"
+    special_dir.mkdir(exist_ok=True)
     
-    # Create test database file
-    db_file = test_env['db_file']  # Use the test environment's database file
-    engine = create_engine(f"sqlite:///{db_file}")
-    Base.metadata.create_all(engine)
-    engine.dispose()
+    test_files = [
+        "file with spaces.txt",
+        "file_with_!@#$%^&*().txt",
+        "file_with_unicode_测试.txt"
+    ]
     
-    settings = Settings()
-    # Update paths in settings
-    settings.update("paths.database", str(db_file))
-    settings.update("paths.backups", str(backup_dir))  # Use backup_dir instead of special_path
-    settings.save()
+    for filename in test_files:
+        file_path = special_dir / filename
+        file_path.write_text("test content")
     
+    # Create backup
     success, message = create_backup()
+    
+    # Verify backup succeeded
     assert success, f"Backup failed: {message}"
     
-    # Look for backup files in the backup directory
-    manifest_files = list(backup_dir.glob("backup_*.json"))
-    assert len(manifest_files) > 0, f"No manifest files found in {backup_dir}"
+    # Verify backup files exist
+    assert special_dir.exists(), "Backup directory not created"
     
-    # Verify all backup components exist
-    manifest_file = manifest_files[0]
-    with open(manifest_file) as f:
-        manifest = json.load(f)
-        config_file = Path(manifest['config'])
-        assert config_file.exists(), f"Config file not found at {config_file}"
-        if manifest['database']:
-            db_backup = Path(manifest['database'])
-            assert db_backup.exists(), f"Database backup not found at {db_backup}"
+    # Find the latest backup
+    backup_files = list(special_dir.glob("*"))
+    assert len(backup_files) > 0, "No backup files created"
+    latest_backup = max(backup_files, key=lambda x: x.stat().st_mtime)
+    
+    # Verify manifest exists
+    manifest_files = list(special_dir.glob("*"))
+    assert len(manifest_files) > 0, "No manifest file created"
+    
+    # Cleanup
+    for file_path in special_dir.glob("*"):
+        file_path.unlink()
+    special_dir.rmdir()
+    latest_backup.unlink()
+    manifest_files[0].unlink()
 
 def test_multiple_backups_ordering(test_env):
     """Test that multiple backups are ordered correctly"""

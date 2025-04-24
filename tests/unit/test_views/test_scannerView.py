@@ -5,7 +5,7 @@ Unit tests for the scanner view module.
 import pytest
 import streamlit as st
 from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from infra_mgmt.certificate_scanner import CertificateInfo, ScanResult
 from infra_mgmt.scanner import ScanManager
@@ -42,22 +42,32 @@ def mock_session_state():
 @pytest.fixture
 def mock_cert_info():
     """Create a mock certificate info object"""
+    now = datetime.now(timezone.utc)
     return CertificateInfo(
-        hostname='test.example.com',
-        ip_addresses=['192.168.1.1'],
-        port=443,
-        common_name='test.example.com',
-        issuer={'CN': 'Test CA'},
-        valid_from=datetime(2024, 1, 1),
-        expiration_date=datetime(2025, 1, 1),
         serial_number='123456',
         thumbprint='abcdef',
         subject={'CN': 'test.example.com'},
+        issuer={'CN': 'Test CA'},
+        valid_from=now,
+        expiration_date=now + timedelta(days=365),
         san=['test.example.com', 'www.test.example.com'],
         key_usage=None,
-        extended_key_usage=None,
         signature_algorithm=None,
-        version=None
+        common_name='test.example.com',
+        chain_valid=True,
+        ip_addresses=['192.168.1.1'],
+        validation_errors=[],
+        platform='test',
+        headers={}
+    )
+
+@pytest.fixture
+def mock_scan_result(mock_cert_info):
+    """Create a mock scan result with timezone-aware datetime"""
+    return ScanResult(
+        certificate_info=mock_cert_info,
+        ip_addresses=['192.168.1.1'],
+        warnings=[]
     )
 
 @pytest.fixture
@@ -127,6 +137,22 @@ def mock_streamlit():
     mock_spinner.__enter__ = MagicMock(return_value=mock_spinner)
     mock_spinner.__exit__ = MagicMock(return_value=None)
     mock_st.spinner.return_value = mock_spinner
+    
+    # Mock text input to return test values
+    def mock_text_input(*args, **kwargs):
+        if "Enter domains" in str(args):
+            return "test.com\nexample.com"
+        return ""
+    
+    mock_st.text_input.side_effect = mock_text_input
+    
+    # Mock button to return True for scan button
+    def mock_button(*args, **kwargs):
+        if "Scan" in str(args):
+            return True
+        return False
+    
+    mock_st.button.side_effect = mock_button
     
     return mock_st
 
@@ -200,7 +226,7 @@ internal.server.local:444"""
         )
 
 @pytest.mark.test_integration
-def test_scan_interface_and_results_integration(engine, mock_session_state, mock_cert_info):
+def test_scan_interface_and_results_integration(engine, mock_session_state, mock_scan_result):
     """Test interface and results display together"""
     with patch('streamlit.text_area') as mock_text_area, \
          patch('streamlit.expander') as mock_expander, \
@@ -209,6 +235,11 @@ def test_scan_interface_and_results_integration(engine, mock_session_state, mock
          patch('streamlit.markdown') as mock_markdown, \
          patch('streamlit.button') as mock_button, \
          patch('streamlit.session_state', mock_session_state):
+        
+        # Configure mocks
+        mock_text_area.return_value = "example.com"
+        mock_button.return_value = True
+        mock_session_state.scanner.scan_certificate.return_value = mock_scan_result
         
         # Configure mock expander context manager
         mock_expander_ctx = MagicMock()
@@ -223,28 +254,29 @@ def test_scan_interface_and_results_integration(engine, mock_session_state, mock
         col2.__exit__ = MagicMock(return_value=None)
         mock_columns.return_value = [col1, col2]
         
-        # Configure button to simulate scan completion
-        mock_button.return_value = True
+        # Configure mock expander
+        mock_expander_ctx = MagicMock()
+        mock_expander.return_value.__enter__.return_value = mock_expander_ctx
+        mock_expander.return_value.__exit__.return_value = None
         
-        # Configure text area with input
-        mock_text_area.return_value = "example.com"
+        # Configure progress and empty containers
+        mock_progress_bar = MagicMock()
+        mock_progress.return_value = mock_progress_bar
+        mock_empty.return_value = MagicMock()
         
-        # Configure scanner to return results
-        scan_result = ScanResult(certificate_info=mock_cert_info)
-        mock_session_state.scanner.scan_certificate.return_value = scan_result
+        # Configure spinner
+        mock_spinner = MagicMock()
+        mock_spinner.__enter__ = MagicMock(return_value=None)
+        mock_spinner.__exit__ = MagicMock(return_value=None)
         
-        # First render the interface
         render_scan_interface(engine)
         
-        # Verify interface elements
-        mock_text_area.assert_called()
-        mock_expander.assert_called()
-        
-        # Verify scanner was called
+        # Verify scanner was called for each hostname
+        assert mock_session_state.scanner.scan_certificate.call_count == 1
         mock_session_state.scanner.scan_certificate.assert_called_with("example.com", 443)
 
 @pytest.mark.test_scan_button
-def test_scan_button_functionality(engine, mock_session_state, mock_cert_info):
+def test_scan_button_functionality(engine, mock_session_state, mock_scan_result):
     """Test the scan button functionality with valid input"""
     with patch('streamlit.text_area') as mock_text_area, \
          patch('streamlit.button') as mock_button, \
@@ -260,10 +292,7 @@ def test_scan_button_functionality(engine, mock_session_state, mock_cert_info):
         # Configure mocks
         mock_text_area.return_value = "example.com\ntest.com:8443"
         mock_button.return_value = True  # Simulate button click
-        
-        # Configure scanner to return results
-        scan_result = ScanResult(certificate_info=mock_cert_info)
-        mock_session_state.scanner.scan_certificate.return_value = scan_result
+        mock_session_state.scanner.scan_certificate.return_value = mock_scan_result
         
         # Configure columns
         col1, col2 = MagicMock(), MagicMock()
@@ -314,11 +343,11 @@ def test_recent_scans_display(engine, mock_session_state):
         mock_expander.__enter__.return_value = mock_expander
         mock_st.expander.return_value = mock_expander
 
-        # Setup test data
-        scan_time = datetime.now()
+        # Setup test data with timezone-aware datetimes
+        scan_time = datetime.now(timezone.utc)
         mock_cert = MagicMock(
             common_name='example.com',
-            valid_until=datetime.now() + timedelta(days=30)
+            valid_until=datetime.now(timezone.utc) + timedelta(days=30)
         )
 
         # Create a mock successful scan
@@ -588,7 +617,7 @@ def test_session_state_management(engine):
         mock_state.scan_targets = []
 
 @pytest.mark.test_database_integration
-def test_database_integration(engine, mock_session_state, mock_cert_info):
+def test_database_integration(engine, mock_session_state, mock_scan_result):
     """Test database interactions during scanning"""
     with patch('streamlit.text_area') as mock_text_area, \
          patch('streamlit.button') as mock_button, \
@@ -604,7 +633,8 @@ def test_database_integration(engine, mock_session_state, mock_cert_info):
         mock_text_area.return_value = "example.com"
         mock_button.return_value = True
         mock_session_state.scanner = MagicMock()
-        mock_session_state.scanner.scan_certificate.return_value = mock_cert_info
+        mock_session_state.scanner.scan_certificate.return_value = mock_scan_result
+        
         mock_columns.return_value = [MagicMock(), MagicMock()]
         mock_expander.return_value.__enter__.return_value = MagicMock()
         
@@ -633,7 +663,8 @@ def test_database_integration(engine, mock_session_state, mock_cert_info):
             # Check certificate was saved
             cert = session.query(Certificate).first()
             assert cert is not None
-            assert cert.common_name == mock_cert_info.common_name
+            assert cert.common_name == mock_scan_result.certificate_info.common_name
+            assert cert.chain_valid == mock_scan_result.certificate_info.chain_valid
             
             # Check scan record was created
             scan = session.query(CertificateScan).first()

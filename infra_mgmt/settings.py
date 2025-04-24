@@ -463,6 +463,103 @@ class Settings:
                 
         # Unknown key
         return False
+    
+    def _validate_related_settings(self, key: str, config: Dict[str, Any]) -> bool:
+        """
+        Validate related settings that depend on each other.
+        
+        Args:
+            key: The key being updated
+            config: The complete configuration to validate
+            
+        Returns:
+            bool: True if all related settings are valid, False otherwise
+        """
+        try:
+            # Validate scanning settings
+            if key.startswith("scanning."):
+                # Check default rate limit
+                default_rate = config.get("scanning.default_rate_limit", 0)
+                if default_rate <= 0:
+                    return False
+                
+                # Check internal rate limit
+                internal_rate = config.get("scanning.internal.rate_limit", 0)
+                if internal_rate <= 0:
+                    return False
+                
+                # Check external rate limit
+                external_rate = config.get("scanning.external.rate_limit", 0)
+                if external_rate <= 0:
+                    return False
+                
+                # Check internal domains
+                internal_domains = config.get("scanning.internal.domains", [])
+                if not isinstance(internal_domains, list) or not all(isinstance(d, str) for d in internal_domains):
+                    return False
+                
+                # Check external domains
+                external_domains = config.get("scanning.external.domains", [])
+                if not isinstance(external_domains, list) or not all(isinstance(d, str) for d in external_domains):
+                    return False
+                
+                # Check WHOIS rate limit
+                whois_rate = config.get("scanning.whois.rate_limit", 0)
+                if whois_rate <= 0:
+                    return False
+                
+                # Check DNS rate limit
+                dns_rate = config.get("scanning.dns.rate_limit", 0)
+                if dns_rate <= 0:
+                    return False
+                
+                # Check CT rate limit
+                ct_rate = config.get("scanning.ct.rate_limit", 0)
+                if ct_rate <= 0:
+                    return False
+                
+                # Check timeouts
+                socket_timeout = config.get("scanning.timeouts.socket", 0)
+                request_timeout = config.get("scanning.timeouts.request", 0)
+                dns_timeout = config.get("scanning.timeouts.dns", 0)
+                if socket_timeout <= 0 or request_timeout <= 0 or dns_timeout <= 0:
+                    return False
+            
+            # Validate alert settings
+            elif key.startswith("alerts."):
+                warnings = config.get("alerts.expiry_warnings", [])
+                if not isinstance(warnings, list):
+                    return False
+                    
+                # Ensure warnings are properly ordered by days
+                days = [w.get("days", 0) for w in warnings]
+                if days != sorted(days, reverse=True):
+                    return False
+                    
+                # Validate consecutive failures
+                failures = config.get("alerts.failed_scans.consecutive_failures", 0)
+                if not isinstance(failures, int) or failures <= 0:
+                    return False
+            
+            # Validate export settings
+            elif key.startswith("exports."):
+                default_format = config.get("exports.default_format", "")
+                if default_format not in ["CSV", "JSON", "YAML"]:
+                    return False
+                    
+                # Validate CSV settings if CSV is the default format
+                if default_format == "CSV":
+                    delimiter = config.get("exports.csv.delimiter", "")
+                    encoding = config.get("exports.csv.encoding", "")
+                    if not isinstance(delimiter, str) or len(delimiter) != 1:
+                        return False
+                    if not isinstance(encoding, str) or not encoding.strip():
+                        return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error validating related settings for {key}: {str(e)}")
+            return False
 
 def _is_network_path(path):
     """Check if a path is a valid network path format"""

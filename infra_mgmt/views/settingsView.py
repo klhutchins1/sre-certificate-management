@@ -487,23 +487,35 @@ def render_settings_view(engine) -> None:
         
         # Save scanning settings
         if st.button("Save Scanning Settings"):
+            # Validate rate limits
+            if default_rate_limit < 1:
+                notify("Invalid rate limit: Default rate limit must be at least 1", "error")
+                return
+            if internal_rate_limit < 1:
+                notify("Invalid rate limit: Internal rate limit must be at least 1", "error")
+                return
+            if external_rate_limit < 1:
+                notify("Invalid rate limit: External rate limit must be at least 1", "error")
+                return
+            if whois_rate_limit < 1:
+                notify("Invalid rate limit: WHOIS rate limit must be at least 1", "error")
+                return
+            if dns_rate_limit < 1:
+                notify("Invalid rate limit: DNS rate limit must be at least 1", "error")
+                return
+            if ct_rate_limit < 1:
+                notify("Invalid rate limit: CT rate limit must be at least 1", "error")
+                return
+            
             # Update rate limits
             settings.update("scanning.default_rate_limit", default_rate_limit)
-            
-            # Update internal scanning settings
             settings.update("scanning.internal.rate_limit", internal_rate_limit)
             settings.update("scanning.internal.domains", [d.strip() for d in internal_domains.split("\n") if d.strip()])
-            
-            # Update external scanning settings
             settings.update("scanning.external.rate_limit", external_rate_limit)
             settings.update("scanning.external.domains", [d.strip() for d in external_domains.split("\n") if d.strip()])
-            
-            # Update additional rate limits
             settings.update("scanning.whois.rate_limit", whois_rate_limit)
             settings.update("scanning.dns.rate_limit", dns_rate_limit)
             settings.update("scanning.ct.rate_limit", ct_rate_limit)
-            
-            # Update timeout settings
             settings.update("scanning.timeouts.socket", socket_timeout)
             settings.update("scanning.timeouts.request", request_timeout)
             settings.update("scanning.timeouts.dns", dns_timeout)

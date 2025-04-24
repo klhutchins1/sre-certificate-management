@@ -25,18 +25,48 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 import logging
-from ..models import Application, CertificateBinding, Certificate
-from ..constants import APP_TYPES, app_types
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
+from ..models import Application, CertificateBinding, Certificate, Host, HostIP
+from ..constants import APP_TYPES, app_types, HOST_TYPE_VIRTUAL, ENV_PRODUCTION
 from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 from infra_mgmt.notifications import initialize_notifications, show_notifications, notify, clear_notifications
+import altair as alt
 
 # Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Configure Altair to use the correct version
+alt.data_transformers.disable_max_rows()
+
+# Add custom CSS for consistent heading styles
+CUSTOM_CSS = """
+<style>
+h1 {
+    font-size: 2rem !important;
+    margin: 1rem 0 !important;
+}
+h2 {
+    font-size: 1.5rem !important;
+    margin: 0.75rem 0 !important;
+}
+h3 {
+    font-size: 1.17rem !important;
+    margin: 0.5rem 0 !important;
+}
+</style>
+"""
+
+# Add at the top of the file with other constants
+BINDING_TYPE_DISPLAY = {
+    "IP": "IP-Based Certificate",
+    "JWT": "JWT Signing Certificate",
+    "CLIENT": "Client Authentication Certificate",
+    None: "Unknown Type"
+}
 
 def handle_add_form():
     """Handle the add application form submission."""
@@ -71,6 +101,7 @@ def handle_add_form():
             session.commit()
             st.session_state.show_add_app_form = False
             notify("✅ Application added successfully!", "success")
+            st.rerun()
     except Exception as e:
         if "UNIQUE constraint failed" in str(e):
             notify(f"An application with the name '{st.session_state.app_name}' already exists", "error")
@@ -108,7 +139,6 @@ def handle_update_form():
             application.owner = st.session_state.new_owner
             session.commit()
             notify("Application updated successfully!", "success")
-            # Force a page refresh to show updated data
             st.rerun()
         else:
             notify("Unable to update application: Session not available", "error")
@@ -125,6 +155,7 @@ def handle_delete_app():
             session.commit()
             notify("Application deleted successfully!", "success")
             st.session_state.current_app = None
+            st.rerun()
     except Exception as e:
         notify(f"Error deleting application: {str(e)}", "error")
 
@@ -135,10 +166,12 @@ def render_applications_view(engine) -> None:
         load_warning_suppression()
         load_css()
         
+        # Add custom CSS
+        st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+        
         # Initialize notifications
         initialize_notifications()
-        clear_notifications()  # Clear any existing notifications
-        show_notifications()
+        clear_notifications()
         
         # Store engine in session state
         st.session_state.engine = engine
@@ -146,6 +179,9 @@ def render_applications_view(engine) -> None:
         # Initialize session state
         if 'show_add_app_form' not in st.session_state:
             st.session_state.show_add_app_form = False
+        
+        # Show notifications at the top
+        show_notifications()
         
         # Header section with title and add button
         st.markdown('<div class="title-row">', unsafe_allow_html=True)
@@ -246,7 +282,7 @@ def render_applications_view(engine) -> None:
             # View type selector
             view_type = st.radio(
                 "View By",
-                ["Application Type", "All Applications"],
+                ["Group by Type", "All Applications"],
                 horizontal=True,
                 help="Group applications by their type or view all applications"
             )
@@ -284,27 +320,25 @@ def render_applications_view(engine) -> None:
                     editable=False
                 )
                 
-                # Enable row selection first
+                # Configure selection
                 gb.configure_selection(
                     selection_mode='single',
-                    use_checkbox=False,
-                    pre_selected_rows=[]
+                    use_checkbox=False
                 )
                 
-                # View-specific column configuration
-                if view_type == "Application Type":
-                    gb.configure_column(
-                        "Type",
-                        minWidth=150,
-                        flex=1,
-                        rowGroup=True
-                    )
-                
-                # Individual column configurations
+                # Configure specific columns
                 gb.configure_column(
                     "Application",
                     minWidth=200,
                     flex=2
+                )
+                
+                gb.configure_column(
+                    "Type",
+                    minWidth=150,
+                    flex=1,
+                    rowGroup=True if view_type == "Group by Type" else False,
+                    hide=True if view_type == "Group by Type" else False
                 )
                 
                 gb.configure_column(
@@ -319,7 +353,6 @@ def render_applications_view(engine) -> None:
                     flex=1
                 )
                 
-                # Certificate-related column configurations
                 gb.configure_column(
                     "Certificates",
                     type=["numericColumn"],
@@ -329,45 +362,40 @@ def render_applications_view(engine) -> None:
                 gb.configure_column(
                     "Valid Certificates",
                     type=["numericColumn"],
-                    minWidth=120,
-                    cellClass=JsCode("""
-                    function(params) {
-                        if (!params.data) return ['ag-numeric-cell'];
-                        return ['ag-numeric-cell', 'ag-numeric-cell-positive'];
-                    }
-                    """)
+                    minWidth=120
                 )
                 
                 gb.configure_column(
                     "Expired Certificates",
                     type=["numericColumn"],
-                    minWidth=120,
-                    cellClass=JsCode("""
-                    function(params) {
-                        if (!params.data) return ['ag-numeric-cell'];
-                        return params.value > 0 ? ['ag-numeric-cell', 'ag-numeric-cell-negative'] : ['ag-numeric-cell'];
-                    }
-                    """)
-                )
-                
-                # Configure column for Created date
-                gb.configure_column(
-                    "Created",
-                    type=["dateColumn"],
                     minWidth=120
                 )
                 
-                # Configure hidden ID column
+                gb.configure_column(
+                    "Created",
+                    type=["dateTimeColumn"],
+                    minWidth=120,
+                    valueFormatter="value ? new Date(value).toLocaleDateString() : ''"
+                )
+                
                 gb.configure_column(
                     "_id",
                     hide=True
                 )
                 
-                # Build grid options once with all configurations
-                grid_options = gb.build()
+                # Configure grid options
+                gb.configure_grid_options(
+                    domLayout='normal',
+                    enableRangeSelection=True,
+                    pagination=True,
+                    paginationPageSize=10,
+                    paginationAutoPageSize=False,
+                    suppressRowClickSelection=False,
+                    rowSelection='single'
+                )
                 
-                # Add additional grid options
-                grid_options['enableBrowserTooltips'] = True
+                # Build grid options
+                grid_options = gb.build()
                 
                 # Render the grid
                 grid_response = AgGrid(
@@ -377,7 +405,9 @@ def render_applications_view(engine) -> None:
                     data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                     update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.VALUE_CHANGED,
                     fit_columns_on_grid_load=True,
-                    allow_unsafe_jscode=True
+                    allow_unsafe_jscode=False,
+                    theme='streamlit',
+                    key=f"applications_grid_{view_type}"
                 )
                 
                 # Handle grid selection for application details
@@ -410,7 +440,8 @@ def render_applications_view(engine) -> None:
                                                 joinedload(Application.certificate_bindings)
                                                 .joinedload(CertificateBinding.host_ip, innerjoin=False)
                                             )
-                                            .get(selected_app_id)
+                                            .filter(Application.id == selected_app_id)
+                                            .first()
                                         )
                                         if selected_app:
                                             st.divider()
@@ -419,6 +450,7 @@ def render_applications_view(engine) -> None:
                                             render_application_details(selected_app)
                                         else:
                                             logger.warning(f"No application found for ID: {selected_app_id}")
+                                            notify("Application not found", "error")
                                     except Exception as e:
                                         logger.error(f"Error loading application details: {str(e)}")
                                         notify("Error loading application details. Please try again.", "error")
@@ -467,171 +499,66 @@ def render_application_details(application: Application) -> None:
         
         with tab1:
             # Display application information and metrics
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"""
-                    **Type:** {app_types.get(application.app_type, application.app_type)}  
-                    **Description:** {application.description or 'No description'}  
-                    **Owner:** {application.owner or 'Not specified'}  
-                    **Created:** {application.created_at.strftime('%Y-%m-%d')}
-                """)
-                
-                # Application editing interface
-                with st.expander("Edit Application"):
-                    with st.form("edit_application"):
-                        st.text_input("Name", value=application.name, key="new_name")
-                        st.selectbox("Type", 
-                            options=APP_TYPES,
-                            index=APP_TYPES.index(application.app_type),
-                            key="new_type")
-                        st.text_input("Description", 
-                            value=application.description or '',
-                            key="new_description")
-                        st.text_input("Owner",
-                            value=application.owner or '',
-                            key="new_owner")
-                        
-                        if st.form_submit_button("Update Application", type="primary", on_click=handle_update_form):
-                            pass  # Handling is done in the callback
+            st.markdown(f"""
+                **Type:** {app_types.get(application.app_type, application.app_type)}  
+                **Description:** {application.description or 'No description'}  
+                **Owner:** {application.owner or 'Not specified'}  
+                **Created:** {application.created_at.strftime('%Y-%m-%d')}
+            """)
             
-            with col2:
-                # Certificate metrics and visualization
-                valid_certs = sum(1 for binding in application.certificate_bindings 
-                                if binding.certificate.valid_until > datetime.now())
-                total_certs = len(application.certificate_bindings)
-                
-                st.markdown("### Certificate Status")
-                col3, col4 = st.columns(2)
-                col3.metric("Valid Certificates", valid_certs)
-                col4.metric("Total Certificates", total_certs)
-                
-                if total_certs > 0:
-                    # Certificate expiration visualization
-                    st.markdown("### Certificate Expiration")
-                    expiration_data = []
-                    for binding in application.certificate_bindings:
-                        days_until = (binding.certificate.valid_until - datetime.now()).days
-                        status = "Valid" if days_until > 0 else "Expired"
-                        expiration_data.append({
-                            "Certificate": binding.certificate.common_name,
-                            "Days Until Expiration": max(days_until, 0),
-                            "Status": status
-                        })
+            # Application editing interface
+            with st.expander("Edit Application"):
+                with st.form("edit_application"):
+                    st.text_input("Name", value=application.name, key="new_name")
+                    st.selectbox("Type", 
+                        options=APP_TYPES,
+                        index=APP_TYPES.index(application.app_type),
+                        key="new_type")
+                    st.text_input("Description", 
+                        value=application.description or '',
+                        key="new_description")
+                    st.text_input("Owner",
+                        value=application.owner or '',
+                        key="new_owner")
                     
-                    df_exp = pd.DataFrame(expiration_data)
-                    if not df_exp.empty:
-                        st.bar_chart(
-                            df_exp.set_index("Certificate")["Days Until Expiration"],
-                            use_container_width=True
-                        )
-        
+                    if st.form_submit_button("Update Application", type="primary", on_click=handle_update_form):
+                        pass  # Handling is done in the callback
+
         with tab2:
             # Certificate bindings management interface
             st.markdown("### Current Certificate Bindings")
             
             if application.certificate_bindings:
-                # Create a table for certificate bindings
-                bindings_data = []
+                # Create a clean table-like display for bindings
                 for binding in application.certificate_bindings:
-                    is_valid = binding.certificate.valid_until > datetime.now()
-                    days_until = (binding.certificate.valid_until - datetime.now()).days
-                    
-                    # Handle missing relationships gracefully
-                    host_name = binding.host.name if binding.host else "Not Set"
-                    ip_address = binding.host_ip.ip_address if binding.host_ip else "Not Set"
-                    
-                    bindings_data.append({
-                        "Certificate": binding.certificate.common_name,
-                        "Host": host_name,
-                        "IP Address": ip_address,
-                        "Port": binding.port or "Not Set",
-                        "Platform": binding.platform or "Not Set",
-                        "Status": "Valid" if is_valid else "Expired",
-                        "Days Until Expiration": max(days_until, 0),
-                        "Last Seen": binding.last_seen.strftime('%Y-%m-%d %H:%M'),
-                        "_binding_id": binding.id
-                    })
-                
-                if bindings_data:
-                    df_bindings = pd.DataFrame(bindings_data)
-                    
-                    # Configure grid for bindings
-                    gb_bindings = GridOptionsBuilder.from_dataframe(df_bindings)
-                    gb_bindings.configure_default_column(
-                        resizable=True,
-                        sortable=True,
-                        filter=True
-                    )
-                    
-                    # Enable row selection
-                    gb_bindings.configure_selection(
-                        selection_mode='multiple',
-                        use_checkbox=True
-                    )
-                    
-                    # Configure specific columns
-                    gb_bindings.configure_column("Status", 
-                        cellStyle=JsCode("""
-                        function(params) {
-                            if (params.value === 'Valid') {
-                                return {'color': 'green'};
-                            }
-                            return {'color': 'red'};
-                        }
-                        """)
-                    )
-                    
-                    gb_bindings.configure_column("Days Until Expiration",
-                        type=["numericColumn"],
-                        cellStyle=JsCode("""
-                        function(params) {
-                            if (params.value > 30) {
-                                return {'color': 'green'};
-                            } else if (params.value > 7) {
-                                return {'color': 'orange'};
-                            }
-                            return {'color': 'red'};
-                        }
-                        """)
-                    )
-                    
-                    # Hide binding ID column
-                    gb_bindings.configure_column("_binding_id", hide=True)
-                    
-                    # Build and render bindings grid
-                    grid_options_bindings = gb_bindings.build()
-                    
-                    bindings_grid = AgGrid(
-                        df_bindings,
-                        gridOptions=grid_options_bindings,
-                        height=300,
-                        fit_columns_on_grid_load=True,
-                        allow_unsafe_jscode=True
-                    )
-                    
-                    # Add remove binding button
-                    if st.button("Remove Selected Bindings", type="secondary"):
-                        selected_rows = bindings_grid.get('selected_rows', [])
-                        if isinstance(selected_rows, pd.DataFrame) and not selected_rows.empty:
-                            try:
+                    with st.container():
+                        cols = st.columns([4, 1])
+                        
+                        # Column 1: Certificate Info
+                        with cols[0]:
+                            st.write(f"**Certificate:** {binding.certificate.common_name}")
+                            st.write(f"**Valid Until:** {binding.certificate.valid_until.strftime('%Y-%m-%d')}")
+                            if binding.host and binding.host.name:
+                                st.write(f"**Host:** {binding.host.name}")
+                            if binding.host_ip and binding.host_ip.ip_address:
+                                st.write(f"**IP:** {binding.host_ip.ip_address}")
+                            if binding.port:
+                                st.write(f"**Port:** {binding.port}")
+                            if binding.platform:
+                                st.write(f"**Platform:** {binding.platform}")
+                            st.write(f"**Usage:** {BINDING_TYPE_DISPLAY.get(binding.binding_type, 'Unknown Type')}")
+                        
+                        # Column 2: Remove button
+                        with cols[1]:
+                            if st.button("🗑️", key=f"delete_{binding.id}", help="Remove this binding"):
                                 session = st.session_state.get('selection_session')
                                 if session:
-                                    success_count = 0
-                                    for _, row in selected_rows.iterrows():
-                                        binding_id = row.get('_binding_id')
-                                        if binding_id:
-                                            binding = session.query(CertificateBinding).get(binding_id)
-                                            if binding:
-                                                binding.application_id = None
-                                                success_count += 1
-                                    
-                                    if success_count > 0:
-                                        session.commit()
-                                        notify(f"{success_count} binding(s) removed successfully!", "success")
-                                        # Use new rerun API
-                                        st.rerun()
-                            except Exception as e:
-                                notify(f"Error removing bindings: {str(e)}", "error")
+                                    binding.application_id = None
+                                    session.commit()
+                                    notify("Certificate binding removed", "success")
+                                    st.rerun()
+                        
+                        st.divider()  # Add visual separation between bindings
             else:
                 notify("No certificate bindings found for this application.", "info")
             
@@ -659,6 +586,20 @@ def render_application_details(application: Application) -> None:
                             for cert in available_certs
                         }
                         
+                        # Select binding type first
+                        binding_type = st.selectbox(
+                            "Binding Type",
+                            options=["IP-Based", "JWT-Based", "Client Certificate"],
+                            help="How will this certificate be used?"
+                        )
+                        
+                        # Map friendly names to actual binding types
+                        binding_type_map = {
+                            "IP-Based": "IP",
+                            "JWT-Based": "JWT",
+                            "Client Certificate": "CLIENT"
+                        }
+                        
                         selected_certs = st.multiselect(
                             "Select Certificates to Bind",
                             options=list(cert_options.keys()),
@@ -671,13 +612,12 @@ def render_application_details(application: Application) -> None:
                                     success_count = 0
                                     for cert_name in selected_certs:
                                         cert_id = cert_options[cert_name]
-                                        # Create new binding with default values
+                                        # Create new binding with binding type
                                         new_binding = CertificateBinding(
                                             certificate_id=cert_id,
                                             application_id=application.id,
-                                            last_seen=datetime.now(),
-                                            port=None,
-                                            platform=None
+                                            binding_type=binding_type_map[binding_type],
+                                            last_seen=datetime.now()
                                         )
                                         session.add(new_binding)
                                         success_count += 1
@@ -685,9 +625,6 @@ def render_application_details(application: Application) -> None:
                                     if success_count > 0:
                                         session.commit()
                                         notify(f"{success_count} certificate(s) bound successfully!", "success")
-                                        # Ensure session is committed before rerun
-                                        session.flush()
-                                        # Use new rerun API
                                         st.rerun()
                                 except Exception as e:
                                     notify(f"Error binding certificates: {str(e)}", "error")

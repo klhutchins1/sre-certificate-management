@@ -19,7 +19,7 @@ from ..models import Domain, Certificate, DomainDNSRecord, Host, HostIP, Certifi
 from ..static.styles import load_warning_suppression, load_css
 from ..scanner import ScanManager, ScanProcessor
 from ..domain_scanner import DomainScanner
-from ..certificate_scanner import CertificateScanner
+from ..certificate_scanner import CertificateScanner, CertificateInfo, ScanResult
 from ..subdomain_scanner import SubdomainScanner
 import pandas as pd
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
@@ -28,6 +28,7 @@ import json
 
 # Configure logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Only add console handler if no handlers exist
 if not logger.handlers:
@@ -274,21 +275,6 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 if cert not in domain_obj.certificates:
                     domain_obj.certificates.append(cert)
                 
-                # Process SANs if enabled
-                if check_sans:
-                    if status_container:
-                        status_container.text(f'Processing SANs for {domain}...')
-                    
-                    processed_sans = process_sans_from_certificate(session, cert, port)
-                    if processed_sans and scan_queue is not None:
-                        for san in processed_sans:
-                            if not infra_mgmt.tracker.is_endpoint_scanned(san, port):
-                                scan_queue.add((san, port))
-                                logger.info(f"[SCAN] Added SAN to queue: {san}:{port}")
-                    
-                    current_sub_step += 1
-                    update_progress(current_sub_step)
-                
                 # Create or update host record
                 host = session.query(Host).filter_by(name=domain).first()
                 if not host:
@@ -509,7 +495,8 @@ def render_scan_interface(engine) -> None:
         st.session_state.scan_results = {
             "success": [],
             "error": [],
-            "warning": []
+            "warning": [],
+            "no_cert": []  # New category for targets without certificates
         }
     if 'scan_input' not in st.session_state:
         st.session_state.scan_input = ""
@@ -621,7 +608,8 @@ internal.server.local:444"""
             st.session_state.scan_results = {
                 "success": [],
                 "error": [],
-                "warning": []
+                "warning": [],
+                "no_cert": []  # New category for targets without certificates
             }
             
             # Validate input
@@ -764,8 +752,14 @@ internal.server.local:444"""
                 if stats['success_count'] > 0:
                     notify(f"Scan completed! Successfully processed {stats['success_count']} targets.", "success")
                 
+                if len(st.session_state.scan_results["no_cert"]) > 0:
+                    no_cert_count = len(st.session_state.scan_results["no_cert"])
+                    no_cert_targets = ", ".join(st.session_state.scan_results["no_cert"])
+                    notify(f"No certificates found for {no_cert_count} target(s): {no_cert_targets}", "warning")
+                
                 if stats['error_count'] > 0:
-                    notify(f"Warning: {stats['error_count']} scans had errors. Check the results for details.", "warning")
+                    error_count = stats['error_count']
+                    notify(f"Warning: {error_count} scans had errors. Check the results for details.", "warning")
                 
                 # Show notifications
                 with notification_placeholder:
@@ -775,18 +769,16 @@ internal.server.local:444"""
                 st.divider()
                 st.subheader("Scan Results")
                 
-                # Force a rerun to clear the input field in the UI
-                st.rerun()
-                
                 # Create a container for the tabs
                 results_container = st.container()
                 
                 # Display results in tabs within the container
                 with results_container:
-                    tab_domains, tab_certs, tab_dns = st.tabs([
+                    tab_domains, tab_certs, tab_dns, tab_errors = st.tabs([
                         "🌐 Domains",
                         "🔐 Certificates",
-                        "📝 DNS Records"
+                        "📝 DNS Records",
+                        "⚠️ Issues"  # New tab for errors and warnings
                     ])
                     
                     # Domains tab
@@ -850,6 +842,8 @@ internal.server.local:444"""
                                                         if st.button(f"Scan SANs ({len(sans)} found)", key=button_key):
                                                             st.session_state.scan_targets = sans
                                                             st.rerun()
+                                    elif domain_obj:
+                                        st.info(f"No certificates found for {domain_obj.domain_name}")
                     
                     # DNS Records tab
                     with tab_dns:
@@ -909,6 +903,30 @@ internal.server.local:444"""
                                 logger.error(f"Error displaying DNS records: {str(e)}")
                                 notify(f"Error displaying DNS records: {str(e)}", "error")
                                 show_notifications()
+                    
+                    # Issues tab
+                    with tab_errors:
+                        if not (st.session_state.scan_results["error"] or 
+                               st.session_state.scan_results["warning"] or 
+                               st.session_state.scan_results["no_cert"]):
+                            st.success("No issues found during scanning!")
+                        else:
+                            if st.session_state.scan_results["no_cert"]:
+                                st.warning("#### No Certificates Found")
+                                for target in st.session_state.scan_results["no_cert"]:
+                                    st.markdown(f"- {target}")
+                                st.divider()
+                            
+                            if st.session_state.scan_results["error"]:
+                                st.error("#### Errors")
+                                for error in st.session_state.scan_results["error"]:
+                                    st.markdown(f"- {error}")
+                                st.divider()
+                            
+                            if st.session_state.scan_results["warning"]:
+                                st.warning("#### Warnings")
+                                for warning in st.session_state.scan_results["warning"]:
+                                    st.markdown(f"- {warning}")
 
 def calculate_progress(sub_step: int, total_sub_steps: int, current_step: int, total_steps: int) -> float:
     """

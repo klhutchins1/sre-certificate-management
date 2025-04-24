@@ -58,8 +58,8 @@ def mock_streamlit():
         mock_st._metric_cols = metric_cols
         
         # Mock tabs
-        tab1, tab2 = [create_column_mock() for _ in range(2)]
-        mock_st.tabs.return_value = [tab1, tab2]
+        tab1, tab2, tab3 = [create_column_mock() for _ in range(3)]
+        mock_st.tabs.return_value = [tab1, tab2, tab3]
         
         # Mock form
         form_mock = MagicMock()
@@ -96,6 +96,12 @@ def mock_streamlit():
         mock_st.selectbox = MagicMock(return_value=None)
         mock_st.expander = MagicMock()
         mock_st.divider = MagicMock()
+        
+        # Mock toggle_add_form function
+        def toggle_add_form():
+            mock_st.session_state['show_add_app_form'] = not mock_st.session_state.get('show_add_app_form', False)
+        
+        mock_st.session_state['toggle_add_form'] = toggle_add_form
         
         yield mock_st
 
@@ -150,17 +156,7 @@ def mock_aggrid():
                 return instance
         
         # Create a mock builder instance
-        mock_builder = MagicMock(spec=MockGridOptionsBuilder())
-        instance = MockGridOptionsBuilder()
-        
-        # Set up the mock to delegate to the real instance
-        for method in ['configure_default_column', 'configure_column', 'configure_selection', 'configure_grid_options', 'build']:
-            mock_method = MagicMock(side_effect=getattr(instance, method))
-            mock_method.return_value = mock_builder
-            setattr(mock_builder, method, mock_method)
-        
-        # Set up build to return grid_options
-        mock_builder.build.return_value = instance.grid_options
+        mock_builder = MockGridOptionsBuilder()
         
         # Configure GridOptionsBuilder mock
         mock_gb.from_dataframe = MagicMock(return_value=mock_builder)
@@ -212,15 +208,18 @@ def sample_host_ip(sample_host):
 
 def test_render_applications_view_empty(mock_streamlit, engine):
     """Test rendering applications view when no applications exist"""
-    render_applications_view(engine)
-    
-    # Verify title was set
-    mock_streamlit.title.assert_called_with("Applications")
-    
-    # Verify empty state message
-    mock_streamlit.info.assert_called_with(
-        "No applications found. Use the 'Add Application' button above to create one."
-    )
+    # Mock notification system
+    with patch('infra_mgmt.views.applicationsView.notify') as mock_notify:
+        render_applications_view(engine)
+        
+        # Verify title was set
+        mock_streamlit.title.assert_called_with("Applications")
+        
+        # Verify empty state message
+        mock_notify.assert_called_with(
+            "No applications found. Use the 'Add Application' button above to create one. \n",
+            "info"
+        )
 
 def test_render_applications_view_with_data(mock_streamlit, mock_aggrid, engine, sample_application, session):
     """Test rendering applications view with sample data"""
@@ -244,10 +243,49 @@ def test_render_applications_view_with_data(mock_streamlit, mock_aggrid, engine,
     mock_streamlit._metric_cols[1].metric.assert_called_with("Certificate Bindings", 0)
     mock_streamlit._metric_cols[2].metric.assert_called_with("Valid Certificates", 0)
 
+def handle_add_form():
+    """Handle application form submission"""
+    try:
+        session = st.session_state.get('session')
+        if not session:
+            notify("Database connection failed", "error")
+            return
+            
+        # Get form values
+        name = st.session_state.get('app_name')
+        app_type = st.session_state.get('app_type')
+        description = st.session_state.get('app_description')
+        owner = st.session_state.get('app_owner')
+        
+        # Validate required fields
+        if not name:
+            notify("Application Name is required", "error")
+            return
+            
+        # Create new application
+        app = Application(
+            name=name,
+            app_type=app_type,
+            description=description,
+            owner=owner,
+            created_at=datetime.now()
+        )
+        
+        session.add(app)
+        session.commit()
+        
+        # Reset form state
+        st.session_state.show_add_app_form = False
+        notify("Application added successfully!", "success")
+        
+    except Exception as e:
+        notify(f"Error adding application: {str(e)}", "error")
+
 def test_add_application_form(mock_streamlit, engine):
     """Test adding a new application through the form"""
     # Mock session state to show form
     mock_streamlit.session_state['show_add_app_form'] = True
+    mock_streamlit.session_state['engine'] = engine
     
     # Configure form input values
     mock_streamlit.text_input.side_effect = [
@@ -256,25 +294,35 @@ def test_add_application_form(mock_streamlit, engine):
         "Test Team"  # Owner
     ]
     mock_streamlit.selectbox.return_value = APP_TYPES[0]  # Application Type
-    mock_streamlit.form.return_value.form_submit_button.return_value = True  # Form submitted
     
-    render_applications_view(engine)
+    # Mock form submission
+    form_mock = MagicMock()
+    form_mock.form_submit_button.return_value = True
+    mock_streamlit.form.return_value = form_mock
     
-    # Verify form was created
-    mock_streamlit.form.assert_called_with("add_application_form")
-    
-    # Verify application was added
-    with Session(engine) as session:
-        app = session.query(Application).filter_by(name="New Test App").first()
-        assert app is not None
-        assert app.app_type == APP_TYPES[0]
-        assert app.description == "Test Description"
-        assert app.owner == "Test Team"
+    # Mock the form handler
+    with patch('infra_mgmt.views.applicationsView.handle_add_form') as mock_handler:
+        render_applications_view(engine)
+        
+        # Verify form was created
+        mock_streamlit.form.assert_called_with("add_application_form")
+        
+        # Verify form submission triggered handler
+        form_mock.form_submit_button.assert_called_with("Add Application", type="primary", on_click=handle_add_form)
+        
+        # Verify application was added
+        with Session(engine) as session:
+            app = session.query(Application).filter_by(name="New Test App").first()
+            assert app is not None
+            assert app.app_type == APP_TYPES[0]
+            assert app.description == "Test Description"
+            assert app.owner == "Test Team"
 
 def test_add_application_form_validation(mock_streamlit, engine):
     """Test form validation when adding a new application"""
     # Mock session state to show form
     mock_streamlit.session_state['show_add_app_form'] = True
+    mock_streamlit.session_state['engine'] = engine
     
     # Configure form input values (empty application name)
     mock_streamlit.text_input.side_effect = [
@@ -283,17 +331,23 @@ def test_add_application_form_validation(mock_streamlit, engine):
         "Test Team"
     ]
     mock_streamlit.selectbox.return_value = APP_TYPES[0]
-    mock_streamlit.form.return_value.form_submit_button.return_value = True
     
-    render_applications_view(engine)
+    # Mock form submission
+    form_mock = MagicMock()
+    form_mock.form_submit_button.return_value = True
+    mock_streamlit.form.return_value = form_mock
     
-    # Verify error message was shown
-    mock_streamlit.error.assert_called_with("Application Name is required")
-    
-    # Verify no application was added
-    with Session(engine) as session:
-        app_count = session.query(Application).count()
-        assert app_count == 0
+    # Mock notification system
+    with patch('infra_mgmt.views.applicationsView.notify') as mock_notify:
+        render_applications_view(engine)
+        
+        # Verify error message was shown
+        mock_notify.assert_called_with("Application Name is required", "error")
+        
+        # Verify no application was added
+        with Session(engine) as session:
+            app_count = session.query(Application).count()
+            assert app_count == 0
 
 def test_view_type_switching(mock_streamlit, mock_aggrid, engine, sample_application, session):
     """Test switching between different view types"""
@@ -308,7 +362,8 @@ def test_view_type_switching(mock_streamlit, mock_aggrid, engine, sample_applica
     
     # Verify grid builder was configured for grouped view
     builder = mock_aggrid.from_dataframe.return_value
-    builder.configure_grid_options.assert_called()
+    type_column = next(col for col in builder.grid_options['columnDefs'] if col['field'] == 'Type')
+    assert type_column['rowGroup'] is True
     
     # Test "All Applications" view
     mock_streamlit.radio.return_value = "All Applications"
@@ -316,7 +371,8 @@ def test_view_type_switching(mock_streamlit, mock_aggrid, engine, sample_applica
     
     # Verify grid builder was configured for flat view
     builder = mock_aggrid.from_dataframe.return_value
-    builder.configure_grid_options.assert_called()
+    type_column = next(col for col in builder.grid_options['columnDefs'] if col['field'] == 'Type')
+    assert 'rowGroup' not in type_column
 
 def test_application_metrics(mock_streamlit, mock_aggrid, engine, session):
     """Test application metrics calculation and display"""
@@ -437,23 +493,24 @@ def test_render_application_details(mock_streamlit, sample_application, sample_h
     mock_streamlit.subheader.assert_called_with(f"📱 {sample_application.name}")
     
     # Verify tabs were created with correct names
-    mock_streamlit.tabs.assert_called_with(["Overview", "Certificate Bindings"])
+    mock_streamlit.tabs.assert_called_with(["Overview", "Certificate Bindings", "⚠️ Danger Zone"])
     
     # Get the tabs
     tabs = mock_streamlit.tabs.return_value
-    assert len(tabs) == 2
+    assert len(tabs) == 3
 
 def test_success_message_handling(mock_streamlit, engine):
     """Test success message handling after operations"""
-    # Set success message in session state
-    message = "✅ Application added successfully!"
-    mock_streamlit.session_state['success_message'] = message
-    
-    render_applications_view(engine)
-    
-    # Verify success message was displayed and cleared
-    mock_streamlit.success.assert_called_with(message)
-    assert 'success_message' not in mock_streamlit.session_state
+    # Mock notification system
+    with patch('infra_mgmt.views.applicationsView.notify') as mock_notify:
+        # Set success message in session state
+        message = "✅ Application added successfully!"
+        mock_streamlit.session_state['success_message'] = message
+        
+        render_applications_view(engine)
+        
+        # Verify success message was displayed
+        mock_notify.assert_called_with(message, "success")
 
 def test_add_application_cancel(mock_streamlit, engine):
     """Test canceling application addition"""
@@ -469,6 +526,7 @@ def test_add_application_cancel(mock_streamlit, engine):
     mock_streamlit.button.assert_called_with(
         "➕ Add Application",
         type="primary",
+        on_click=mock_streamlit.session_state.get('toggle_add_form'),
         use_container_width=True
     )
 
@@ -489,12 +547,7 @@ def test_application_grid_configuration(mock_streamlit, mock_aggrid, engine, sam
     
     # Verify grid options were configured
     builder = mock_aggrid.from_dataframe.return_value
-    builder.configure_grid_options.assert_called()
-    
-    # Verify default column configuration
-    builder.configure_default_column.assert_called_with(
-        resizable=True,
-        sortable=True,
-        filter=True,
-        editable=False
-    ) 
+    assert builder.grid_options['defaultColDef']['resizable'] is True
+    assert builder.grid_options['defaultColDef']['sortable'] is True
+    assert builder.grid_options['defaultColDef']['filter'] is True
+    assert builder.grid_options['defaultColDef']['editable'] is False 

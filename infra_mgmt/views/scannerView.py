@@ -49,11 +49,21 @@ class StreamlitProgressContainer:
     
     def progress(self, value: float):
         """Update progress bar."""
-        self.progress_bar.progress(value)
+        try:
+            # Clamp value between 0.0 and 1.0
+            clamped_value = max(0.0, min(1.0, value))
+            self.progress_bar.progress(clamped_value)
+        except Exception:
+            # Silently handle any errors
+            pass
     
     def text(self, message: str):
         """Update status text."""
-        self.status_text.text(message)
+        try:
+            self.status_text.text(message)
+        except Exception:
+            # Silently handle any errors
+            pass
 
 def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
     """
@@ -218,6 +228,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 logger.error(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
                 has_errors = True
                 error_messages.append(f"Error gathering domain info: {str(e)}")
+                st.session_state.scan_results["error"].append(f"{domain}:{port} - Error gathering domain info: {str(e)}")
         
         # Scan for certificates
         if status_container:
@@ -371,13 +382,16 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 logger.error(f"[SCAN] Error processing certificate for {domain}:{port}: {str(cert_error)}")
                 has_errors = True
                 error_messages.append(f"Error processing certificate: {str(cert_error)}")
+                st.session_state.scan_results["error"].append(f"{domain}:{port} - Error processing certificate: {str(cert_error)}")
         else:
             logger.error(f"[SCAN] No certificate found or error for {domain}:{port}")
             has_errors = True
             if scan_result and scan_result.error:
                 error_messages.append(scan_result.error)
+                st.session_state.scan_results["error"].append(f"{domain}:{port} - {scan_result.error}")
             else:
                 error_messages.append("No certificate found")
+                st.session_state.scan_results["no_cert"].append(f"{domain}:{port}")
         
         # Process subdomains if requested
         if check_subdomains:
@@ -413,6 +427,7 @@ def process_scan_target(session, domain: str, port: int, check_whois: bool, chec
                 logger.error(f"[SCAN] Error in subdomain scanning for {domain}: {str(subdomain_error)}")
                 has_errors = True
                 error_messages.append(f"Error in subdomain scanning: {str(subdomain_error)}")
+                st.session_state.scan_results["error"].append(f"{domain}:{port} - Error in subdomain scanning: {str(subdomain_error)}")
                 subdomain_scanner.set_status_container(None)
         
         # Update final status
@@ -496,7 +511,7 @@ def render_scan_interface(engine) -> None:
             "success": [],
             "error": [],
             "warning": [],
-            "no_cert": []  # New category for targets without certificates
+            "no_cert": []
         }
     if 'scan_input' not in st.session_state:
         st.session_state.scan_input = ""
@@ -504,42 +519,17 @@ def render_scan_interface(engine) -> None:
         st.session_state.scanned_domains = set()
     if 'selected_sans' not in st.session_state:
         st.session_state.selected_sans = set()
+    if 'scan_queue' not in st.session_state:
+        st.session_state.scan_queue = set()
     
     # Initialize scan manager if not exists
     if 'scan_manager' not in st.session_state:
         st.session_state.scan_manager = ScanManager()
     
     st.title("Domain & Certificate Scanner")
-
     
     # Create main layout columns
     col1, col2 = st.columns([3, 1])
-    
-    # Recent scans section in the right column
-    with col2:
-        st.markdown("### Recent Scans")
-        with Session(engine) as session:
-            recent_domains = session.query(Domain)\
-                .order_by(Domain.updated_at.desc())\
-                .limit(5)\
-                .all()
-            
-            if recent_domains:
-                st.markdown("<div class='text-small'>", unsafe_allow_html=True)
-                for domain in recent_domains:
-                    scan_time = domain.updated_at.strftime("%Y-%m-%d %H:%M")
-                    cert_count = len(domain.certificates)
-                    cert_status = "✅" if any(c.chain_valid for c in domain.certificates) else "❌"
-                    st.markdown(
-                        f"**{domain.domain_name}** "
-                        f"<span class='text-muted'>"
-                        f"(🕒 {scan_time} • {cert_status} {cert_count} certs)</span>",
-                        unsafe_allow_html=True
-                    )
-                st.markdown("</div>", unsafe_allow_html=True)
-            else:
-                notify("No recent scans", "info")
-                show_notifications()
     
     with col1:
         # Create two columns for input and options
@@ -563,9 +553,8 @@ https://example.com
 internal.server.local:444"""
             )
             
-            # Only update session state if not in progress
-            if not st.session_state.scan_in_progress:
-                st.session_state.scan_input = scan_input
+            # Update session state with current input
+            st.session_state.scan_input = scan_input
         
         with options_col:
             st.markdown("### Scan Options")
@@ -603,13 +592,14 @@ internal.server.local:444"""
             # Reset scan state
             st.session_state.scan_manager.reset_scan_state()
             st.session_state.scanned_domains.clear()  # Clear scanned domains for new session
+            st.session_state.scan_queue.clear()  # Clear scan queue for new session
             
             # Reset scan results for new scan
             st.session_state.scan_results = {
                 "success": [],
                 "error": [],
                 "warning": [],
-                "no_cert": []  # New category for targets without certificates
+                "no_cert": []
             }
             
             # Validate input
@@ -621,23 +611,26 @@ internal.server.local:444"""
             
             # Process each target
             validation_errors = False
-            entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
+            entries = [h.strip() for h in st.session_state.scan_input.split('\n') if h.strip()]
             
-            for entry in entries:
-                try:
-                    is_valid, hostname, port, error = st.session_state.scan_manager.process_scan_target(entry)
-                    if not is_valid:
-                        notify(f"Invalid entry '{entry}': {error}", "error")
+            # Create a session for validation
+            with Session(engine) as session:
+                for entry in entries:
+                    try:
+                        is_valid, hostname, port, error = st.session_state.scan_manager.process_scan_target(entry, session)
+                        if not is_valid:
+                            notify(f"Invalid entry '{entry}': {error}", "error")
+                            validation_errors = True
+                            continue
+                        
+                        # Add validated target to queue
+                        st.session_state.scan_queue.add((hostname, port))
+                        st.session_state.scan_manager.add_to_queue(hostname, port)
+                    except Exception as e:
+                        logger.error(f"Error validating entry '{entry}': {str(e)}")
+                        notify(f"Error validating '{entry}': {str(e)}", "error")
                         validation_errors = True
                         continue
-                    
-                    # Add validated target to queue
-                    st.session_state.scan_manager.add_to_queue(hostname, port)
-                except Exception as e:
-                    logger.error(f"Error validating entry '{entry}': {str(e)}")
-                    notify(f"Error validating '{entry}': {str(e)}", "error")
-                    validation_errors = True
-                    continue
             
             # Show notifications
             with notification_placeholder:
@@ -651,7 +644,7 @@ internal.server.local:444"""
                 return
             
             # Execute scans if we have targets
-            if st.session_state.scan_manager.has_pending_targets():
+            if st.session_state.scan_queue:
                 progress_bar = st.empty()
                 status_container = st.empty()
                 queue_status = st.empty()
@@ -671,15 +664,15 @@ internal.server.local:444"""
                 
                 # Process targets in a single session
                 with Session(engine) as session:
-                    total_steps = st.session_state.scan_manager.infra_mgmt.get_queue_size()
+                    total_steps = len(st.session_state.scan_queue)
                     current_step = 0
                     
                     # Initialize progress
                     update_progress(0, 1, progress_container, current_step, total_steps)
                     
-                    while st.session_state.scan_manager.has_pending_targets():
+                    while st.session_state.scan_queue:
                         # Get next target from queue
-                        target = st.session_state.scan_manager.get_next_target()
+                        target = st.session_state.scan_queue.pop()
                         if not target:
                             break
                         
@@ -723,6 +716,7 @@ internal.server.local:444"""
                         except Exception as e:
                             logger.error(f"[SCAN] Error processing {target_key}: {str(e)}")
                             notify(f"Error scanning {target_key}: {str(e)}", "error")
+                            st.session_state.scan_results["error"].append(f"{target_key} - {str(e)}")
                             session.rollback()
                         finally:
                             # Clear current operation
@@ -742,28 +736,20 @@ internal.server.local:444"""
                 
                 # Reset scan state
                 st.session_state.scan_in_progress = False
-                st.session_state.scan_input = ""  # Clear the input
                 st.session_state.current_operation = None
                 
                 # Get final scan stats
                 stats = st.session_state.scan_manager.get_scan_stats()
                 
-                # Show success message and results
+                # Clear any existing notifications before showing new ones
+                clear_notifications()
+                
+                # Show consolidated scan completion message
                 if stats['success_count'] > 0:
-                    notify(f"Scan completed! Successfully processed {stats['success_count']} targets.", "success")
-                
-                if len(st.session_state.scan_results["no_cert"]) > 0:
-                    no_cert_count = len(st.session_state.scan_results["no_cert"])
-                    no_cert_targets = ", ".join(st.session_state.scan_results["no_cert"])
-                    notify(f"No certificates found for {no_cert_count} target(s): {no_cert_targets}", "warning")
-                
-                if stats['error_count'] > 0:
-                    error_count = stats['error_count']
-                    notify(f"Warning: {error_count} scans had errors. Check the results for details.", "warning")
-                
-                # Show notifications
-                with notification_placeholder:
-                    show_notifications()
+                    if len(st.session_state.scan_results["no_cert"]) > 0 or stats['error_count'] > 0:
+                        notify(f"Scan completed with {stats['success_count']} successful targets, but some issues were found. Check the results for details.", "warning")
+                    else:
+                        notify(f"Scan completed! Successfully processed {stats['success_count']} targets.", "success")
                 
                 # Show results summary
                 st.divider()
@@ -778,7 +764,7 @@ internal.server.local:444"""
                         "🌐 Domains",
                         "🔐 Certificates",
                         "📝 DNS Records",
-                        "⚠️ Issues"  # New tab for errors and warnings
+                        "⚠️ Issues"
                     ])
                     
                     # Domains tab
@@ -787,7 +773,7 @@ internal.server.local:444"""
                             # Get all scanned domains from session state
                             scanned_domains = list(st.session_state.scanned_domains)
                             if not scanned_domains:
-                                st.info("No domains scanned yet.")
+                                st.markdown("No domains scanned yet.")
                             else:
                                 for domain in sorted(scanned_domains):
                                     domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
@@ -809,7 +795,7 @@ internal.server.local:444"""
                             # Get all scanned domains from session state
                             scanned_domains = list(st.session_state.scanned_domains)
                             if not scanned_domains:
-                                st.info("No certificates found yet.")
+                                st.markdown("No certificates found yet.")
                             else:
                                 for domain in sorted(scanned_domains):
                                     domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
@@ -843,7 +829,8 @@ internal.server.local:444"""
                                                             st.session_state.scan_targets = sans
                                                             st.rerun()
                                     elif domain_obj:
-                                        st.info(f"No certificates found for {domain_obj.domain_name}")
+                                        st.markdown(f"No certificates found for {domain_obj.domain_name}")
+                                        st.session_state.scan_results["no_cert"].append(f"{domain_obj.domain_name}")
                     
                     # DNS Records tab
                     with tab_dns:
@@ -852,7 +839,7 @@ internal.server.local:444"""
                                 # Get all scanned domains from session state
                                 scanned_domains = list(st.session_state.scanned_domains)
                                 if not scanned_domains:
-                                    st.info("No DNS records found yet.")
+                                    st.markdown("No DNS records found yet.")
                                 else:
                                     for domain in sorted(scanned_domains):
                                         domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
@@ -875,7 +862,7 @@ internal.server.local:444"""
                                                         records_df.append(record_data)
                                                     except Exception as e:
                                                         logger.error(f"Error processing DNS record: {str(e)}")
-                                                        notify(f"Error processing DNS record for {domain}: {str(e)}", "error")
+                                                        st.session_state.scan_results["error"].append(f"Error processing DNS record for {domain}: {str(e)}")
                                                         continue
                                                 
                                                 if records_df:
@@ -893,40 +880,56 @@ internal.server.local:444"""
                                                         use_container_width=True
                                                     )
                                                 else:
-                                                    st.info(f"No DNS records found for {domain}")
+                                                    st.markdown(f"No DNS records found for {domain}")
                                             else:
-                                                st.info(f"No DNS records found for {domain}")
+                                                st.markdown(f"No DNS records found for {domain}")
                                         else:
                                             logger.warning(f"[DNS] Domain object not found for {domain}")
-                                            notify(f"Domain object not found for {domain}", "warning")
+                                            st.session_state.scan_results["warning"].append(f"Domain object not found for {domain}")
                             except Exception as e:
                                 logger.error(f"Error displaying DNS records: {str(e)}")
-                                notify(f"Error displaying DNS records: {str(e)}", "error")
-                                show_notifications()
+                                st.session_state.scan_results["error"].append(f"Error displaying DNS records: {str(e)}")
                     
                     # Issues tab
                     with tab_errors:
-                        if not (st.session_state.scan_results["error"] or 
-                               st.session_state.scan_results["warning"] or 
-                               st.session_state.scan_results["no_cert"]):
-                            st.success("No issues found during scanning!")
-                        else:
+                        # Create a container for issues
+                        issues_container = st.container()
+                        
+                        with issues_container:
+                            # Debug output to verify scan results
+                            st.markdown("### Debug Information")
+                            st.json(st.session_state.scan_results)
+                            
+                            # Check for no certificates
                             if st.session_state.scan_results["no_cert"]:
-                                st.warning("#### No Certificates Found")
+                                st.markdown("### No Certificates Found")
                                 for target in st.session_state.scan_results["no_cert"]:
                                     st.markdown(f"- {target}")
                                 st.divider()
                             
+                            # Check for errors
                             if st.session_state.scan_results["error"]:
-                                st.error("#### Errors")
+                                st.markdown("### Errors")
                                 for error in st.session_state.scan_results["error"]:
                                     st.markdown(f"- {error}")
                                 st.divider()
                             
+                            # Check for warnings
                             if st.session_state.scan_results["warning"]:
-                                st.warning("#### Warnings")
+                                st.markdown("### Warnings")
                                 for warning in st.session_state.scan_results["warning"]:
                                     st.markdown(f"- {warning}")
+                            
+                            # If no issues found
+                            if not (st.session_state.scan_results["error"] or 
+                                  st.session_state.scan_results["warning"] or 
+                                  st.session_state.scan_results["no_cert"]):
+                                st.markdown("### No Issues Found")
+                                st.markdown("All scans completed successfully with no issues detected.")
+                
+                # Show notifications after all content is rendered
+                with notification_placeholder:
+                    show_notifications()
 
 def calculate_progress(sub_step: int, total_sub_steps: int, current_step: int, total_steps: int) -> float:
     """

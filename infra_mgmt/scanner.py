@@ -213,7 +213,8 @@ class ScanManager:
         self.scan_results = {
             "success": [],
             "error": [],
-            "warning": []
+            "warning": [],
+            "no_cert": []  # Add no_cert category
         }
         
         self.logger = logging.getLogger(__name__)
@@ -228,15 +229,17 @@ class ScanManager:
         self.scan_results = {
             "success": [],
             "error": [],
-            "warning": []
+            "warning": [],
+            "no_cert": []  # Add no_cert category
         }
     
-    def process_scan_target(self, target: str) -> tuple:
+    def process_scan_target(self, target: str, session: Session = None) -> tuple:
         """
         Process and validate a scan target.
         
         Args:
             target: Raw target string (domain, URL, or domain:port)
+            session: Optional database session for domain ignore list checks
             
         Returns:
             tuple: (is_valid, hostname, port, error_message)
@@ -246,50 +249,87 @@ class ScanManager:
             if not target.strip():
                 return False, None, None, "Empty target"
             
-            # Parse target
-            has_scheme = target.startswith(('http://', 'https://'))
+            # Initialize result tracking
+            result = {
+                "target": target,
+                "status": "success",
+                "details": {},
+                "errors": [],
+                "warnings": []
+            }
             
-            if has_scheme:
+            # Parse the target
+            if '://' in target:
+                # URL format
                 parsed = urlparse(target)
-                hostname = parsed.netloc
-                if ':' in hostname:
-                    hostname, port_str = hostname.rsplit(':', 1)
-                    try:
-                        port = int(port_str)
-                        if port < 1 or port > 65535:
-                            return False, None, None, f"Invalid port number: {port}"
-                    except ValueError:
-                        return False, None, None, f"Invalid port format: {port_str}"
-                elif parsed.port:
-                    port = parsed.port
-                else:
-                    port = 443
+                hostname = parsed.hostname
+                port = parsed.port or 443
             else:
-                if ':' in target:
-                    hostname, port_str = target.rsplit(':', 1)
-                    try:
-                        port = int(port_str)
-                        if port < 1 or port > 65535:
-                            return False, None, None, f"Invalid port number: {port}"
-                    except ValueError:
-                        return False, None, None, f"Invalid port format: {port_str}"
-                else:
-                    hostname = target
-                    port = 443
+                # domain:port or just domain format
+                parts = target.split(':')
+                hostname = parts[0]
+                port = int(parts[1]) if len(parts) > 1 else 443
             
-            # Clean up hostname
-            hostname = hostname.strip('/')
+            # Validate hostname - allow both domains and IP addresses
             if not hostname:
-                return False, None, None, "Empty hostname"
+                result["status"] = "error"
+                result["errors"].append("Invalid hostname")
+                self.scan_results["error"].append(result)
+                self.scan_history.append(result)
+                return False, None, None, "Invalid hostname"
             
-            # Basic domain validation
-            if not self.domain_scanner._validate_domain(hostname):
-                return False, None, None, f"Invalid domain format: {hostname}"
+            # Check if it's an IP address
+            import ipaddress
+            try:
+                # Try to parse as IP address
+                ipaddress.ip_address(hostname)
+                # If we get here, it's a valid IP address
+                is_ip = True
+            except ValueError:
+                # Not an IP address, treat as domain
+                is_ip = False
+            
+            # Validate port
+            if not (1 <= port <= 65535):
+                result["status"] = "error"
+                result["errors"].append(f"Invalid port number: {port}")
+                self.scan_results["error"].append(result)
+                self.scan_history.append(result)
+                return False, None, None, f"Invalid port number: {port}"
+            
+            # Add to scan history
+            result["details"]["hostname"] = hostname
+            result["details"]["port"] = port
+            result["details"]["is_ip"] = is_ip
+            
+            # Check if domain is in ignore list if session is provided and it's not an IP
+            if session and not is_ip:
+                is_ignored, reason = self._is_domain_ignored(session, hostname)
+                if is_ignored:
+                    result["status"] = "warning"
+                    result["warnings"].append(f"Domain is in ignore list: {reason}")
+                    self.scan_results["warning"].append(result)
+                    self.scan_history.append(result)
+                    return False, None, None, f"Domain is in ignore list: {reason}"
+            
+            # Add to scan history and results
+            self.scan_history.append(result)
+            self.scan_results["success"].append(result)
             
             return True, hostname, port, None
             
         except Exception as e:
-            return False, None, None, str(e)
+            error_msg = f"Error processing scan target {target}: {str(e)}"
+            self.logger.error(error_msg)
+            result = {
+                "target": target,
+                "status": "error",
+                "errors": [error_msg],
+                "details": {}
+            }
+            self.scan_results["error"].append(result)
+            self.scan_history.append(result)
+            return False, None, None, error_msg
     
     def _is_domain_ignored(self, session: Session, domain: str) -> Tuple[bool, Optional[str]]:
         """
@@ -303,32 +343,39 @@ class ScanManager:
             Tuple[bool, Optional[str]]: (is_ignored, reason)
         """
         try:
-            # First check exact matches
-            ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
-            if ignored:
-                return True, ignored.reason
+            # Get ignore patterns from database
+            ignore_patterns = session.query(IgnoredDomain).all()
             
-            # Then check all patterns
-            patterns = session.query(IgnoredDomain).all()
-            for pattern in patterns:
-                # Handle wildcard prefix (*.example.com)
-                if pattern.pattern.startswith('*.'):
-                    suffix = pattern.pattern[2:]  # Remove *. from pattern
-                    if domain.endswith(suffix):
+            # Check each pattern
+            for pattern in ignore_patterns:
+                pattern_str = pattern.pattern
+                
+                # Handle wildcard prefix (e.g., *.example.com)
+                if pattern_str.startswith('*.'):
+                    base_domain = pattern_str[2:]  # Remove '*.'
+                    if domain.endswith(base_domain):
                         return True, pattern.reason
-                # Handle suffix match (example.com)
-                elif domain.endswith(pattern.pattern):
+                        
+                # Handle suffix match (e.g., example.com)
+                elif pattern_str.startswith('.'):
+                    if domain.endswith(pattern_str):
+                        return True, pattern.reason
+                        
+                # Handle exact match
+                elif pattern_str == domain:
                     return True, pattern.reason
-                # Handle contains pattern (*test*)
-                elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
-                    search_term = pattern.pattern.strip('*')
-                    if search_term in domain:
-                        return True, pattern.reason
+                    
+                # Handle contains pattern (e.g., *test*)
+                elif '*' in pattern_str:
+                    parts = pattern_str.split('*')
+                    if len(parts) == 2:  # Only handle single wildcard patterns
+                        if parts[0] in domain and parts[1] in domain:
+                            return True, pattern.reason
             
             return False, None
             
         except Exception as e:
-            self.logger.error(f"Error checking ignore list for {domain}: {str(e)}")
+            self.logger.error(f"Error checking ignore list for domain {domain}: {str(e)}")
             return False, None
 
     def _is_certificate_ignored(self, session: Session, common_name: str) -> Tuple[bool, Optional[str]]:
@@ -467,16 +514,23 @@ class ScanManager:
             total_steps: Total number of steps for progress tracking
         """
         try:
+            # Initialize result tracking
+            result = {
+                "target": f"{domain}:{port}",
+                "status": "success",
+                "details": {},
+                "errors": [],
+                "warnings": [],
+                "no_cert": False
+            }
+            
             # Check if domain is in ignore list BEFORE any scanning
             is_ignored, reason = self._is_domain_ignored(session, domain)
             if is_ignored:
-                self.logger.info(f"[SCAN] Skipping {domain} - Domain is in ignore list" + 
-                               (f" ({reason})" if reason else ""))
-                if status_container:
-                    status_container.text(f'Skipping {domain} (in ignore list)')
-                # Mark as scanned to prevent re-scanning
-                self.infra_mgmt.tracker.add_scanned_domain(domain)
-                self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
+                result["status"] = "warning"
+                result["warnings"].append(f"Domain is in ignore list: {reason}")
+                self.scan_results["warning"].append(result)
+                self.scan_history.append(result)
                 return True
 
             def calculate_progress(sub_step: int, total_sub_steps: int) -> float:
@@ -524,9 +578,10 @@ class ScanManager:
             
             # Skip if already scanned in this scan session
             if self.infra_mgmt.tracker.is_endpoint_scanned(domain, port):
-                self.logger.info(f"[SCAN] Skipping {domain}:{port} - Already scanned in this scan")
-                if status_container:
-                    status_container.text(f'Skipping {domain}:{port} (already scanned in this scan)')
+                result["status"] = "warning"
+                result["warnings"].append(f"Already scanned in this scan session")
+                self.scan_results["warning"].append(result)
+                self.scan_history.append(result)
                 update_progress(total_sub_steps, total_sub_steps)  # Complete progress for skipped domain
                 return True
             
@@ -558,8 +613,8 @@ class ScanManager:
                 
                 except Exception as e:
                     self.logger.error(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
-                    self.scan_results["error"].append(f"{domain}:{port} - Error gathering domain info: {str(e)}")
-                    return False
+                    result["errors"].append(f"Error gathering domain info: {str(e)}")
+                    result["status"] = "error"
             
             # Process domain information
             try:
@@ -588,8 +643,8 @@ class ScanManager:
             except Exception as e:
                 self.logger.error(f"[SCAN] Error processing domain info for {domain}: {str(e)}")
                 session.rollback()
-                self.scan_results["error"].append(f"{domain}:{port} - Error processing domain info: {str(e)}")
-                return False
+                result["errors"].append(f"Error processing domain info: {str(e)}")
+                result["status"] = "error"
             
             # Now scan for certificates
             if status_container:
@@ -599,7 +654,7 @@ class ScanManager:
             if scan_result and scan_result.certificate_info:
                 cert_info = scan_result.certificate_info
                 try:
-                    # Get or create certificate
+                    # Process certificate
                     cert = session.query(Certificate).filter_by(
                         serial_number=cert_info.serial_number
                     ).first()
@@ -738,20 +793,22 @@ class ScanManager:
                     self.logger.info(f"[SCAN] Successfully processed certificate for {domain}:{port}")
                     
                     # Update success state
-                    self.scan_results["success"].append(f"{domain}:{port}")
+                    self.scan_results["success"].append(result)
                     
                 except Exception as cert_error:
                     self.logger.error(f"[SCAN] Error processing certificate for {domain}:{port}: {str(cert_error)}")
                     session.rollback()
-                    self.scan_results["error"].append(f"{domain}:{port} - Error processing certificate: {str(cert_error)}")
-                    return False
+                    result["errors"].append(f"Error processing certificate: {str(cert_error)}")
+                    result["status"] = "error"
             else:
                 self.logger.error(f"[SCAN] No certificate found or error for {domain}:{port}")
                 if scan_result and scan_result.error:
-                    self.scan_results["error"].append(scan_result.error)
+                    result["errors"].append(scan_result.error)
+                    result["status"] = "error"
                 else:
-                    self.scan_results["error"].append("No certificate found")
-                return False
+                    result["no_cert"] = True
+                    result["status"] = "warning"
+                    result["warnings"].append("No certificate found")
             
             # Process subdomains if requested
             if check_subdomains:
@@ -785,15 +842,35 @@ class ScanManager:
                     
                 except Exception as subdomain_error:
                     self.logger.error(f"[SCAN] Error in subdomain scanning for {domain}: {str(subdomain_error)}")
-                    self.scan_results["error"].append(f"{domain}:{port} - Error in subdomain scanning: {str(subdomain_error)}")
+                    result["errors"].append(f"Error in subdomain scanning: {str(subdomain_error)}")
+                    result["status"] = "error"
                     self.subdomain_scanner.set_status_container(None)
-                    return False
+            
+            # Update final status and add to appropriate result category
+            if result["status"] == "error":
+                self.scan_results["error"].append(result)
+            elif result["status"] == "warning":
+                self.scan_results["warning"].append(result)
+            elif result["no_cert"]:
+                self.scan_results["no_cert"].append(result)
+            else:
+                self.scan_results["success"].append(result)
+            
+            # Add to scan history
+            self.scan_history.append(result)
             
             return True
             
         except Exception as e:
             self.logger.error(f"[SCAN] Error processing {domain}:{port}: {str(e)}")
-            self.scan_results["error"].append(f"{domain}:{port} - {str(e)}")
+            result = {
+                "target": f"{domain}:{port}",
+                "status": "error",
+                "errors": [str(e)],
+                "details": {}
+            }
+            self.scan_results["error"].append(result)
+            self.scan_history.append(result)
             return False
     
     def get_scan_stats(self) -> dict:
@@ -803,7 +880,8 @@ class ScanManager:
             "scan_history_size": len(self.scan_history),
             "success_count": len(self.scan_results["success"]),
             "error_count": len(self.scan_results["error"]),
-            "warning_count": len(self.scan_results["warning"])
+            "warning_count": len(self.scan_results["warning"]),
+            "no_cert_count": len(self.scan_results["no_cert"])
         })
         return stats
     

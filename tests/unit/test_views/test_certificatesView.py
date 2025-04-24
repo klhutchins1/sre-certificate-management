@@ -154,9 +154,12 @@ def sample_binding(sample_certificate):
 def test_render_certificate_list_empty(mock_streamlit, engine):
     """Test rendering certificate list when no certificates exist"""
     # Mock session state
-    mock_state = {}
+    mock_state = {'notifications': []}  # Initialize notifications array
     def mock_setitem(key, value):
-        mock_state[key] = value
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
     def mock_getitem(key):
         return mock_state.get(key)
     def mock_get(key, default=None):
@@ -178,8 +181,10 @@ def test_render_certificate_list_empty(mock_streamlit, engine):
         use_container_width=True
     )
     
-    # Verify empty state warning
-    mock_streamlit.warning.assert_called_with("No certificates found in database")
+    # Verify notification was added
+    assert len(mock_state['notifications']) == 1, "Notification not added"
+    assert mock_state['notifications'][0]['message'] == "No certificates found in database", "Incorrect notification message"
+    assert mock_state['notifications'][0]['level'] == 'info', "Incorrect notification level"
 
 def test_render_certificate_list_with_data(mock_streamlit, mock_aggrid, engine, sample_certificate, session):
     """Test rendering certificate list with sample data"""
@@ -253,10 +258,16 @@ def test_render_certificate_overview(mock_streamlit, sample_certificate, sample_
     assert "<span class='cert-status cert-valid'>Valid</span>" in markdown_text, "Status with styling not found"
     assert "**Total Bindings:** 1" in markdown_text, "Total bindings not found"
     assert "**Platforms:** F5" in markdown_text, "Platforms not found"
-    assert "**SANs Scanned:** No" in markdown_text, "SANs scanned status not found"
     
     # Verify SAN expander was created
     mock_streamlit.expander.assert_called_with("Subject Alternative Names", expanded=True)
+    
+    # Verify scan button was created
+    mock_streamlit.button.assert_called_with(
+        "🔍 Scan SANs",
+        type="primary",
+        key=f"scan_sans_{sample_certificate.id}"
+    )
 
 def test_render_certificate_details(mock_streamlit, sample_certificate):
     """Test rendering certificate details"""
@@ -274,79 +285,141 @@ def test_render_certificate_details(mock_streamlit, sample_certificate):
 
 def test_render_certificate_bindings(mock_streamlit, sample_certificate, sample_binding, session):
     """Test rendering certificate bindings"""
-    # Add binding to certificate
-    sample_binding.binding_type = "IP"  # Ensure binding type is IP
-    sample_binding.port = 443
-    sample_binding.host.name = "test.example.com"
-    sample_binding.host_ip.ip_address = "192.168.1.1"
-    sample_binding.platform = "F5"
-    sample_binding.last_seen = datetime(2024, 1, 1, 12, 0)
+    # Create and attach host to binding
+    host = Host(name="test.example.com")
+    sample_binding.host = host
+    session.add(host)
+    
+    # Add binding to certificate and ensure it's properly attached to the session
     sample_certificate.certificate_bindings = [sample_binding]
+    sample_binding.certificate = sample_certificate
     session.add(sample_certificate)
+    session.add(sample_binding)
     session.commit()
     
-    # Configure form
-    mock_form = MagicMock()
-    mock_form.__enter__ = MagicMock(return_value=mock_form)
-    mock_form.__exit__ = MagicMock(return_value=None)
-    mock_streamlit.form.return_value = mock_form
-    
-    # Mock selectbox to return string value
+    # Mock selectbox to return a string instead of MagicMock
     mock_streamlit.selectbox.return_value = "F5"
+    
+    # Mock columns
+    mock_cols = [MagicMock(), MagicMock(), MagicMock()]
+    mock_streamlit.columns.return_value = mock_cols
     
     render_certificate_bindings(sample_certificate, session)
     
-    # Verify expander was created for adding new binding
-    mock_streamlit.expander.assert_called_with("➕ Add New Binding", expanded=False)
+    # Get all markdown calls
+    markdown_calls = [args[0] for args, _ in mock_streamlit.markdown.call_args_list if not isinstance(args[0], dict)]
+    markdown_text = '\n'.join(markdown_calls)
     
-    # Verify binding details were displayed
-    markdown_calls = [args[0] for args, _ in mock_streamlit.markdown.call_args_list]
-    binding_details = '\n'.join(markdown_calls)
+    # Check for required information in the markdown text
+    assert "### Certificate Usage Tracking" in markdown_text, "Section header not found"
     
-    # Check for binding information in the formatted HTML/markdown
-    assert "### Current Bindings" in binding_details, "Bindings header not found"
-    assert '<div class="binding-title">🔗 test.example.com</div>' in binding_details, "Binding hostname not found"
-    assert '<span class="binding-info-label">IP:</span>' in binding_details, "IP label not found"
-    assert '<span class="binding-info-value">192.168.1.1</span>' in binding_details, "IP value not found"
-    assert '<span class="binding-info-label">Port:</span>' in binding_details, "Port label not found"
-    assert '<span class="binding-info-value">443</span>' in binding_details, "Port value not found"
-    assert '<span class="binding-info-label">Type:</span>' in binding_details, "Type label not found"
-    assert '<span class="binding-info-value">IP</span>' in binding_details, "Type value not found"
-    assert '<span class="binding-info-label">Seen:</span>' in binding_details, "Last seen label not found"
-    assert '<span class="binding-info-value">2024-01-01 12:00</span>' in binding_details, "Last seen value not found"
+    # Verify expander was created with new usage record form
+    mock_streamlit.expander.assert_called_with("➕ Add New Usage Record")
+    
+    # Verify platform selection
+    mock_streamlit.selectbox.assert_any_call(
+        "Platform",
+        options=["IIS", "F5", "Akamai", "Cloudflare", "Connection"],
+        help="Select the platform where this certificate is used"
+    )
+    
+    # Verify binding type selection
+    mock_streamlit.selectbox.assert_any_call(
+        "Usage Type",
+        ["IP-Based Usage", "Application Usage", "Client Certificate Usage"],
+        help="Select how this certificate is being used"
+    )
+    
+    # Verify existing binding display
+    mock_cols[0].write.assert_called_with(f"**Hostname/IP:** {host.name}:{sample_binding.port} (IP-Based)")
+    
+    # Verify platform dropdown for existing binding
+    mock_streamlit.selectbox.assert_any_call(
+        "Platform",
+        ["F5", "IIS", "Akamai", "Cloudflare", "Connection"],
+        key=f"platform_{sample_binding.id}",
+        index=0
+    )
+    
+    # Verify delete button for existing binding
+    mock_streamlit.button.assert_any_call(
+        "🗑️",
+        key=f"delete_{sample_binding.id}",
+        help="Remove this usage record"
+    )
 
 def test_render_certificate_tracking(mock_streamlit, sample_certificate, session):
     """Test rendering certificate tracking"""
-    # Configure columns
-    col1, col2 = MagicMock(), MagicMock()
-    mock_streamlit.columns.return_value = [col1, col2]
+    # Set up tracking data
+    sample_certificate.last_scan_date = datetime(2024, 1, 1, 12, 0)
+    sample_certificate.scan_status = "Completed"
+    sample_certificate.scan_error = None
+    session.add(sample_certificate)
+    session.commit()
     
-    # Configure form
-    mock_form = MagicMock()
-    mock_form.__enter__ = MagicMock(return_value=None)
-    mock_form.__exit__ = MagicMock(return_value=None)
-    mock_streamlit.form.return_value = mock_form
+    # Mock session state for notifications
+    mock_state = {'notifications': []}  # Initialize notifications array
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
+    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
+    mock_streamlit.session_state.get.side_effect = mock_get
+    
+    # Mock columns
+    mock_col1, mock_col2 = MagicMock(), MagicMock()
+    mock_streamlit.columns.return_value = [mock_col1, mock_col2]
     
     render_certificate_tracking(sample_certificate, session)
     
-    # Verify subheader was created
-    mock_streamlit.subheader.assert_called_with("Change History")
+    # Verify columns were created
+    mock_streamlit.columns.assert_called_with([0.7, 0.3])
     
-    # Verify add button was created
-    mock_streamlit.button.assert_called_with(
-        "➕ Add Change Entry",
-        type="primary",
-        use_container_width=True
-    )
+    # Verify subheader and button in first column
+    with mock_col1:
+        mock_streamlit.subheader.assert_called_with("Change History")
     
-    # Verify empty state message
-    mock_streamlit.info.assert_called_with("No change entries found for this certificate")
+    # Verify add button in second column
+    with mock_col2:
+        mock_streamlit.button.assert_called_with(
+            "➕ Add Change Entry",
+            type="primary",
+            use_container_width=True
+        )
+    
+    # Verify notification was added for no entries
+    assert len(mock_state['notifications']) == 1, "Notification not added"
+    assert mock_state['notifications'][0]['message'] == "No change entries found for this certificate", "Incorrect notification message"
+    assert mock_state['notifications'][0]['level'] == 'info', "Incorrect notification level"
 
 def test_render_certificate_card(mock_streamlit, sample_certificate, session):
     """Test rendering certificate details card"""
     # Add certificate to session
     session.add(sample_certificate)
     session.commit()
+    
+    # Mock session state for notifications
+    mock_state = {'notifications': []}  # Initialize notifications array
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
+    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
+    mock_streamlit.session_state.get.side_effect = mock_get
     
     # Mock current time to ensure certificate is valid
     with patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime:
@@ -361,6 +434,16 @@ def test_render_certificate_card(mock_streamlit, sample_certificate, session):
                 tab.__exit__ = MagicMock(return_value=None)
             return tabs
         mock_streamlit.tabs.side_effect = mock_tabs
+        
+        # Mock columns for danger zone
+        mock_col1, mock_col2 = MagicMock(), MagicMock()
+        mock_streamlit.columns.return_value = [mock_col1, mock_col2]
+        
+        # Mock expander for danger zone
+        mock_expander = MagicMock()
+        mock_expander.__enter__ = MagicMock(return_value=mock_expander)
+        mock_expander.__exit__ = MagicMock(return_value=None)
+        mock_streamlit.expander.return_value = mock_expander
         
         render_certificate_card(sample_certificate, session)
         
@@ -384,6 +467,10 @@ def test_render_certificate_card(mock_streamlit, sample_certificate, session):
 
 def test_render_certificate_overview_with_sans(mock_streamlit, sample_certificate, session):
     """Test rendering certificate overview with SANs"""
+    # Add certificate to session and commit
+    session.add(sample_certificate)
+    session.commit()
+    
     # Configure mock columns
     mock_streamlit.columns.side_effect = lambda *args: [MagicMock() for _ in range(len(args[0]) if isinstance(args[0], (list, tuple)) else args[0])]
     
@@ -410,30 +497,53 @@ def test_render_certificate_bindings_add_new(mock_streamlit, sample_certificate,
     mock_streamlit.form.return_value = mock_form
     
     # Configure form inputs
-    mock_streamlit.text_input.side_effect = ["test.example.com", "192.168.1.1"]
+    mock_streamlit.text_input.side_effect = ["test.example.com"]
     mock_streamlit.number_input.return_value = 443
-    mock_streamlit.selectbox.side_effect = ["IP", "F5"]
+    mock_streamlit.selectbox.side_effect = ["IP-Based Usage", "F5"]
     mock_streamlit.form_submit_button.return_value = True
+    
+    # Mock session state for notifications
+    mock_state = {'notifications': []}  # Initialize notifications array
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
+    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
+    mock_streamlit.session_state.get.side_effect = mock_get
     
     render_certificate_bindings(sample_certificate, session)
     
     # Verify form inputs were created with correct parameters
     mock_streamlit.text_input.assert_any_call(
-        "Hostname",
-        key=f"hostname_{sample_certificate.id}",
-        placeholder="Enter hostname"
+        "Service/Application Name",
+        help="Name of the service or application using this certificate"
     )
-    mock_streamlit.text_input.assert_any_call(
-        "IP Address",
-        key=f"ip_{sample_certificate.id}",
-        placeholder="Optional"
-    )
+    
     mock_streamlit.number_input.assert_called_with(
         "Port",
         min_value=1,
         max_value=65535,
         value=443,
-        key=f"port_{sample_certificate.id}"
+        help="Port number for the service"
+    )
+    
+    mock_streamlit.selectbox.assert_any_call(
+        "Platform",
+        options=["IIS", "F5", "Akamai", "Cloudflare", "Connection"],
+        help="Select the platform where this certificate is used"
+    )
+    
+    mock_streamlit.selectbox.assert_any_call(
+        "Usage Type",
+        ["IP-Based Usage", "Application Usage", "Client Certificate Usage"],
+        help="Select how this certificate is being used"
     )
 
 def test_add_certificate_button(mock_streamlit, engine):

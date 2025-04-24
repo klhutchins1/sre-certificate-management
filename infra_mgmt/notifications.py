@@ -56,24 +56,26 @@ def show_notifications() -> None:
             level = 'info'
         grouped[level].append(notif['message'])
     
-    # Display notifications in order: error, warning, info, success
-    for level in ['error', 'warning', 'info', 'success']:
-        messages = grouped[level]
-        if not messages:
-            continue
-        
-        # Join multiple messages of the same level
-        message = "\n".join(messages)
-        
-        # Display the notification using the appropriate Streamlit method
-        if level == 'error':
-            st.error(message)
-        elif level == 'warning':
-            st.warning(message)
-        elif level == 'success':
-            st.success(message)
-        else:  # info
-            st.info(message)
+    # Create a container for all notifications
+    with st.container():
+        # Display notifications in order: error, warning, info, success
+        for level in ['error', 'warning', 'info', 'success']:
+            messages = grouped[level]
+            if not messages:
+                continue
+            
+            # Join multiple messages of the same level
+            message = "\n".join(messages)
+            
+            # Display the notification using the appropriate Streamlit method
+            if level == 'error':
+                st.error(message)
+            elif level == 'warning':
+                st.warning(message)
+            elif level == 'success':
+                st.success(message)
+            else:  # info
+                st.info(message)
 
 def clear_notifications() -> None:
     """Clear all notifications."""

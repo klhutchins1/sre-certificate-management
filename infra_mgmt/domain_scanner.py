@@ -17,7 +17,7 @@ import re
 import socket
 import time
 from sqlalchemy.orm import Session
-from .models import IgnoredDomain
+from .models import IgnoredDomain, Domain, DomainDNSRecord
 from .db import get_session
 import ipaddress
 from .constants import INTERNAL_TLDS, EXTERNAL_TLDS
@@ -601,7 +601,7 @@ class DomainScanner:
             from sqlalchemy import create_engine
             from sqlalchemy.orm import Session
             from .settings import settings
-            from .models import IgnoredDomain
+            from .models import IgnoredDomain, Domain, DomainDNSRecord
             
             db_path = settings.get("paths.database", "data/certificates.db")
             engine = create_engine(f"sqlite:///{db_path}")
@@ -649,43 +649,93 @@ class DomainScanner:
                         is_valid=True,
                         error=f"Domain is in ignore list" + (f" ({ignore_reason})" if ignore_reason else "")
                     )
-            
+
+                whois_info = {}
+                dns_records = []
+                related_domains = set()
+                
+                # Get WHOIS information if requested
+                if get_whois:
+                    whois_info = self._get_whois_info(domain)
+                    # Find related domains based on WHOIS info
+                    if whois_info:  # Only try to find related domains if we got WHOIS info
+                        related_domains = self._find_related_domains(whois_info)
+                
+                # Get or create domain object
+                domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
+                if not domain_obj:
+                    domain_obj = Domain(
+                        domain_name=domain,
+                        created_at=datetime.now(),
+                        updated_at=datetime.now()
+                    )
+                    session.add(domain_obj)
+                    session.flush()  # Get the ID
+                
+                # Update domain information from WHOIS
+                if whois_info:
+                    domain_obj.registrar = whois_info.get('registrar')
+                    domain_obj.registration_date = whois_info.get('creation_date')
+                    domain_obj.expiration_date = whois_info.get('expiration_date')
+                    domain_obj.owner = whois_info.get('registrant')
+                    domain_obj.updated_at = datetime.now()
+                
+                # Get DNS records if requested
+                if get_dns:
+                    try:
+                        dns_records = self._get_dns_records(domain)
+                        if dns_records:
+                            # Get existing DNS records
+                            existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
+                            existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
+                            
+                            # Process each DNS record
+                            for record in dns_records:
+                                record_key = (record['type'], record['name'], record['value'])
+                                
+                                if record_key in existing_map:
+                                    # Update existing record
+                                    existing_record = existing_map[record_key]
+                                    existing_record.ttl = record['ttl']
+                                    existing_record.priority = record.get('priority')
+                                    existing_record.updated_at = datetime.now()
+                                else:
+                                    # Create new record
+                                    dns_record = DomainDNSRecord(
+                                        domain_id=domain_obj.id,
+                                        record_type=record['type'],
+                                        name=record['name'],
+                                        value=record['value'],
+                                        ttl=record['ttl'],
+                                        priority=record.get('priority'),
+                                        created_at=datetime.now(),
+                                        updated_at=datetime.now()
+                                    )
+                                    session.add(dns_record)
+                    except Exception as e:
+                        self.logger.warning(f"Error getting DNS records for {domain}: {str(e)}")
+                
+                # Commit all changes
+                session.commit()
+                
+                # Create and return domain info object
+                return DomainInfo(
+                    domain_name=domain,
+                    is_valid=True,
+                    registrar=whois_info.get('registrar'),
+                    registrant=whois_info.get('registrant'),
+                    registration_date=whois_info.get('creation_date'),
+                    expiration_date=whois_info.get('expiration_date'),
+                    status=whois_info.get('status', []),
+                    nameservers=whois_info.get('nameservers', []),
+                    dns_records=dns_records,
+                    domain_type=self._get_domain_type(domain),
+                    related_domains=related_domains
+                )
+                
             finally:
                 session.close()
                 engine.dispose()
-
-            whois_info = {}
-            dns_records = []
-            related_domains = set()
-            
-            # Get WHOIS information if requested
-            if get_whois:
-                whois_info = self._get_whois_info(domain)
-                # Find related domains based on WHOIS info
-                if whois_info:  # Only try to find related domains if we got WHOIS info
-                    related_domains = self._find_related_domains(whois_info)
-            
-            # Get DNS records if requested
-            if get_dns:
-                try:
-                    dns_records = self._get_dns_records(domain)
-                except Exception as e:
-                    self.logger.warning(f"Error getting DNS records for {domain}: {str(e)}")
-            
-            # Create and return domain info object
-            return DomainInfo(
-                domain_name=domain,
-                is_valid=True,
-                registrar=whois_info.get('registrar'),
-                registrant=whois_info.get('registrant'),
-                registration_date=whois_info.get('creation_date'),
-                expiration_date=whois_info.get('expiration_date'),
-                status=whois_info.get('status', []),
-                nameservers=whois_info.get('nameservers', []),
-                dns_records=dns_records,
-                domain_type=self._get_domain_type(domain),
-                related_domains=related_domains
-            )
             
         except Exception as e:
             self.logger.error(f"Error scanning domain {domain}: {str(e)}")
@@ -693,4 +743,106 @@ class DomainScanner:
                 domain_name=domain,
                 is_valid=True,
                 error=str(e)
-            ) 
+            )
+
+    def _process_dns_records(self, domain_obj: Domain, dns_records: List[Dict[str, Any]], scan_queue: Optional[Set[Tuple[str, int]]] = None, port: int = 443) -> None:
+        """Process DNS records and update database."""
+        # Create a new session if needed
+        session = None
+        try:
+            if not dns_records:
+                return
+                
+            self.logger.info(f"[DNS] Processing {len(dns_records)} DNS records for {domain_obj.domain_name}")
+            
+            # Create database session
+            from sqlalchemy import create_engine
+            from .settings import settings
+            
+            db_path = settings.get("paths.database", "data/certificates.db")
+            engine = create_engine(f"sqlite:///{db_path}")
+            session = Session(engine)
+            
+            with session.begin():
+                # Get existing DNS records
+                existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
+                existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
+                
+                # Track which records are updated
+                updated_records = set()
+                
+                # Process new records
+                for record in dns_records:
+                    record_key = (record['type'], record['name'], record['value'])
+                    updated_records.add(record_key)
+                    
+                    # Check for CNAME records that might point to new domains
+                    if record['type'] == 'CNAME' and scan_queue is not None:
+                        cname_target = record['value'].rstrip('.')
+                        
+                        # Check if CNAME target should be ignored
+                        is_ignored = False
+                        patterns = session.query(IgnoredDomain).all()
+                        for pattern in patterns:
+                            if pattern.pattern.startswith('*.'):
+                                suffix = pattern.pattern[2:]  # Remove *. from pattern
+                                if cname_target.endswith(suffix):
+                                    self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Matches ignore pattern {pattern.pattern}")
+                                    is_ignored = True
+                                    break
+                            elif pattern.pattern in cname_target:
+                                self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Contains ignored pattern {pattern.pattern}")
+                                is_ignored = True
+                                break
+                            elif cname_target.endswith(pattern.pattern):
+                                self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Matches ignore pattern {pattern.pattern}")
+                                is_ignored = True
+                                break
+                        
+                        if not is_ignored:
+                            scan_queue.add((cname_target, port))
+                            self.logger.info(f"[SCAN] Added CNAME target to queue: {cname_target}:{port}")
+                    
+                    if record_key in existing_map:
+                        # Update existing record
+                        existing_record = existing_map[record_key]
+                        existing_record.ttl = record['ttl']
+                        existing_record.priority = record.get('priority')
+                        existing_record.updated_at = datetime.now()
+                        self.logger.debug(f"[DNS] Updated record: {record_key}")
+                    else:
+                        try:
+                            # Add new record
+                            dns_record = DomainDNSRecord(
+                                domain_id=domain_obj.id,
+                                record_type=record['type'],
+                                name=record['name'],
+                                value=record['value'],
+                                ttl=record['ttl'],
+                                priority=record.get('priority'),
+                                created_at=datetime.now(),
+                                updated_at=datetime.now()
+                            )
+                            session.add(dns_record)
+                            self.logger.debug(f"[DNS] Added new record: {record_key}")
+                        except Exception as e:
+                            # Log error but continue processing other records
+                            self.logger.warning(f"[DNS] Error adding record {record_key}: {str(e)}")
+                            continue
+                
+                # Remove old records that no longer exist
+                for key, record in existing_map.items():
+                    if key not in updated_records:
+                        session.delete(record)
+                        self.logger.debug(f"[DNS] Removed old record: {key}")
+                
+                self.logger.info(f"[DNS] Successfully processed {len(dns_records)} records for {domain_obj.domain_name}")
+                
+        except Exception as e:
+            self.logger.error(f"Error processing DNS records for {domain_obj.domain_name}: {str(e)}")
+            if session:
+                session.rollback()
+            raise
+        finally:
+            if session:
+                session.close() 

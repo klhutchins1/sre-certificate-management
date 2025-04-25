@@ -22,6 +22,12 @@ import urllib3
 import warnings
 import dns.resolver
 import json
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from .settings import settings
+from .models import Certificate, Domain
+from .notifications import notify
 
 # Suppress only the specific InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -30,9 +36,14 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 
-from .settings import settings
-from .models import Certificate
 from .constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
+
+def get_db_session():
+    """Get a new database session."""
+    db_path = settings.get("paths.database", "data/certificates.db")
+    engine = create_engine(f"sqlite:///{db_path}")
+    Session = sessionmaker(bind=engine)
+    return Session()
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -898,3 +909,45 @@ class CertificateScanner:
                 self.tracker.add_scanned_endpoint(domain, port)
                 
         return results 
+
+    def process_sans_from_certificate(self, session: Session, cert: Certificate, port: int = 443) -> Set[str]:
+        """
+        Process Subject Alternative Names from a certificate and add them to scan queue.
+        
+        Args:
+            session: Database session
+            cert: Certificate object to process
+            port: Port to use for scanning
+            
+        Returns:
+            Set[str]: Set of processed SANs
+        """
+        processed_sans = set()
+        try:
+            if cert.san:  # san is stored as JSON string
+                sans = json.loads(cert.san)
+                for san in sans:
+                    # Clean up SAN
+                    san = san.strip('*. ')
+                    if san and not session.query(Domain).filter_by(domain_name=san).first():
+                        processed_sans.add(san)
+                        self.logger.info(f"[SANS] Found new domain from certificate: {san}")
+        except Exception as e:
+            self.logger.error(f"Error processing SANs: {str(e)}")
+        
+        return processed_sans 
+
+    def get_certificate_sans(self, session: Session) -> List[str]:
+        """Get all unique SANs from existing certificates."""
+        all_sans = set()
+        try:
+            certificates = session.query(Certificate).all()
+            for cert in certificates:
+                # Use the hybrid property which handles JSON deserialization
+                sans = cert.san  # This is already a list thanks to the hybrid property
+                all_sans.update(sans)
+            return sorted(list(all_sans))
+        except Exception as e:
+            self.logger.error(f"Error getting certificate SANs: {str(e)}")
+            notify(f"Error retrieving SANs from certificates: {str(e)}", "error")
+            return [] 

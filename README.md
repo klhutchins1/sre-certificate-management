@@ -358,21 +358,18 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 
 - [ ] Full-text search across all fields
 - [ ] Advanced filtering and sorting
-- [ ] Saved search profiles
+
 - [ ] Bulk actions on search results
-- [ ] Export search results
+
 
 #### Settings Management Interface
 
 - [ ] Web-based configuration editor
-- [ ] Profile management system
 - [ ] Rate limit configuration
-- [ ] Custom scanning profiles
 - [ ] Configuration validation
 
 #### Automated Backup System
 
-- [ ] Scheduled automatic backups
 - [ ] Backup verification
 - [ ] Restore testing
 
@@ -399,18 +396,17 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 ### Phase 4: Enhancement
 
 1. Performance optimization
-2. Additional integrations
-3. Advanced certificate validation
-4. History page does not need Scan Trends
-5. Scan button color should be green
-6. Scan button should be disabled when scanning is in progress
-7. Scan results should be organized better
-8. When scanning is in progress, the site should show a loading spinner sooner and stay present longer
-9. History page should show correct host instead of unknown host.
-10. Hosts page should be using ag-grid
-11. Hosts page should use color for valid and invalid certificates
-12. Dashboard data graph should be sized correctly when there are a lot of certificates.
-13. Need a Change planning page, to help build change tickets.
+2. Advanced certificate validation
+3. History page does not need Scan Trends
+4. Scan button color should be green
+5. Scan button should be disabled when scanning is in progress
+6. Scan results should be organized better
+7. When scanning is in progress, the site should show a loading spinner sooner and stay present longer
+8. History page should show correct host instead of unknown host.
+9.  Hosts page should be using ag-grid
+10. Hosts page should use color for valid and invalid certificates
+11. Dashboard data graph should be sized correctly when there are a lot of certificates.
+12. Need a Change planning page, to help build change tickets.
 
 ## Planned Features
 
@@ -482,17 +478,15 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 
 - [ ] Track domain registration expiration
 - [ ] Monitor domain ownership
-- [ ] Integrate with domain registrars
-- [ ] Alert on approaching domain expiration
+- [ ] Alertand warning on approaching domain expiration
 - [ ] Track domain-certificate relationships
-- [ ] Support for wildcard domain management
+- [ ] Support for wildcard domain tracking
 
 ### Data Resilience
 
 - [ ] Implement robust database locking
 - [ ] Add transaction rollback support
 - [ ] Maintain audit trail of changes
-- [ ] Support data recovery from failed scans
 - [ ] Implement data versioning
 - [ ] Add conflict resolution mechanisms
 

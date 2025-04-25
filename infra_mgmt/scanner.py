@@ -15,13 +15,28 @@ from urllib.parse import urlparse
 from datetime import datetime
 import json
 from sqlalchemy.orm import Session
-
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from .settings import settings
 from .domain_scanner import DomainScanner, DomainInfo
 from .subdomain_scanner import SubdomainScanner
-from .models import IgnoredDomain, Domain, DomainDNSRecord, Certificate, Host, HostIP, CertificateBinding, CertificateScan, HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION, IgnoredCertificate
+from .models import (
+    IgnoredDomain, Domain, DomainDNSRecord, Certificate, 
+    Host, HostIP, CertificateBinding, CertificateScan, 
+    HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, 
+    ENV_PRODUCTION, IgnoredCertificate
+)
 from .constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 from .certificate_scanner import CertificateInfo
+from .notifications import notify
+import socket
+import ipaddress
+import dns.resolver
+import dns.reversename
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Import CertificateScanner and CertificateInfo lazily to avoid circular imports
 CertificateScanner = None
@@ -233,103 +248,60 @@ class ScanManager:
             "no_cert": []  # Add no_cert category
         }
     
-    def process_scan_target(self, target: str, session: Session = None) -> tuple:
-        """
-        Process and validate a scan target.
-        
-        Args:
-            target: Raw target string (domain, URL, or domain:port)
-            session: Optional database session for domain ignore list checks
-            
-        Returns:
-            tuple: (is_valid, hostname, port, error_message)
-        """
+    def process_scan_target(self, entry: str, session: Session = None) -> tuple:
+        """Process and validate a scan target."""
         try:
             # Check if target is empty
-            if not target.strip():
+            if not entry.strip():
                 return False, None, None, "Empty target"
             
-            # Initialize result tracking
-            result = {
-                "target": target,
-                "status": "success",
-                "details": {},
-                "errors": [],
-                "warnings": []
-            }
-            
             # Parse the target
-            if '://' in target:
+            if '://' in entry:
                 # URL format
-                parsed = urlparse(target)
+                parsed = urlparse(entry)
                 hostname = parsed.hostname
                 port = parsed.port or 443
             else:
                 # domain:port or just domain format
-                parts = target.split(':')
+                parts = entry.split(':')
                 hostname = parts[0]
                 port = int(parts[1]) if len(parts) > 1 else 443
             
-            # Validate hostname - allow both domains and IP addresses
-            if not hostname:
-                result["status"] = "error"
-                result["errors"].append("Invalid hostname")
-                self.scan_results["error"].append(result)
-                self.scan_history.append(result)
-                return False, None, None, "Invalid hostname"
-            
             # Check if it's an IP address
-            import ipaddress
-            try:
-                # Try to parse as IP address
-                ipaddress.ip_address(hostname)
-                # If we get here, it's a valid IP address
-                is_ip = True
-            except ValueError:
-                # Not an IP address, treat as domain
-                is_ip = False
+            is_ip = is_ip_address(hostname)
             
-            # Validate port
-            if not (1 <= port <= 65535):
-                result["status"] = "error"
-                result["errors"].append(f"Invalid port number: {port}")
-                self.scan_results["error"].append(result)
-                self.scan_history.append(result)
-                return False, None, None, f"Invalid port number: {port}"
-            
-            # Add to scan history
-            result["details"]["hostname"] = hostname
-            result["details"]["port"] = port
-            result["details"]["is_ip"] = is_ip
-            
-            # Check if domain is in ignore list if session is provided and it's not an IP
-            if session and not is_ip:
-                is_ignored, reason = self._is_domain_ignored(session, hostname)
-                if is_ignored:
-                    result["status"] = "warning"
-                    result["warnings"].append(f"Domain is in ignore list: {reason}")
-                    self.scan_results["warning"].append(result)
-                    self.scan_history.append(result)
-                    return False, None, None, f"Domain is in ignore list: {reason}"
-            
-            # Add to scan history and results
-            self.scan_history.append(result)
-            self.scan_results["success"].append(result)
+            if is_ip:
+                # Get IP information
+                ip_info = get_ip_info(hostname)
+                logger.info(f"[SCAN] IP information for {hostname}: {ip_info}")
+                
+                # Create or update host record
+                host = session.query(Host).filter_by(name=hostname).first()
+                if not host:
+                    host = Host(
+                        name=hostname,
+                        host_type=HOST_TYPE_SERVER,
+                        environment=ENV_PRODUCTION,
+                        last_seen=datetime.now()
+                    )
+                    session.add(host)
+                
+                # Add any discovered hostnames from reverse DNS
+                if ip_info['hostnames']:
+                    logger.info(f"[SCAN] Found hostnames for {hostname}: {ip_info['hostnames']}")
+                    # Add these domains to scan queue if needed
+                
+                # Add network information if available
+                if ip_info['network']:
+                    logger.info(f"[SCAN] Network for {hostname}: {ip_info['network']}")
+                
+                session.commit()
             
             return True, hostname, port, None
             
         except Exception as e:
-            error_msg = f"Error processing scan target {target}: {str(e)}"
-            self.logger.error(error_msg)
-            result = {
-                "target": target,
-                "status": "error",
-                "errors": [error_msg],
-                "details": {}
-            }
-            self.scan_results["error"].append(result)
-            self.scan_history.append(result)
-            return False, None, None, error_msg
+            logger.error(f"Error processing scan target {entry}: {str(e)}")
+            return False, None, None, str(e)
     
     def _is_domain_ignored(self, session: Session, domain: str) -> Tuple[bool, Optional[str]]:
         """
@@ -491,177 +463,132 @@ class ScanManager:
             session.close()
             engine.dispose()
     
-    def scan_target(self, session, domain: str, port: int, check_whois: bool = True, 
-                   check_dns: bool = True, check_subdomains: bool = True,
-                   check_sans: bool = False, detect_platform: bool = True, validate_chain: bool = True,
-                   status_container=None, progress_container=None, current_step=None, total_steps=None) -> bool:
+    def scan_target(self, session: Session, domain: str, port: int, **kwargs):
         """
-        Scan a single target and process results.
+        Scan a target (domain or IP).
         
         Args:
             session: Database session
-            domain: Domain to scan
+            domain: Domain or IP to scan
             port: Port to scan
-            check_whois: Whether to check WHOIS information
-            check_dns: Whether to check DNS records
-            check_subdomains: Whether to check for subdomains
-            check_sans: Whether to scan Subject Alternative Names
-            detect_platform: Whether to detect platform (F5, Akamai, etc.)
-            validate_chain: Whether to validate certificate chain
-            status_container: Optional container for status updates
-            progress_container: Optional container for progress updates
-            current_step: Current step number for progress tracking
-            total_steps: Total number of steps for progress tracking
+            **kwargs: Additional arguments including:
+                check_whois: Whether to check WHOIS information
+                check_dns: Whether to check DNS records
+                check_subdomains: Whether to check for subdomains
+                check_sans: Whether to scan Subject Alternative Names
+                detect_platform: Whether to detect platform
+                validate_chain: Whether to validate certificate chain
+                status_container: Optional container for status updates
+                progress_container: Optional container for progress updates
         """
         try:
-            # Initialize result tracking
-            result = {
-                "target": f"{domain}:{port}",
-                "status": "success",
-                "details": {},
-                "errors": [],
-                "warnings": [],
-                "no_cert": False
-            }
+            # Check if it's an IP address
+            is_ip = is_ip_address(domain)
             
-            # Check if domain is in ignore list BEFORE any scanning
-            is_ignored, reason = self._is_domain_ignored(session, domain)
-            if is_ignored:
-                result["status"] = "warning"
-                result["warnings"].append(f"Domain is in ignore list: {reason}")
-                self.scan_results["warning"].append(result)
-                self.scan_history.append(result)
-                return True
-
-            def calculate_progress(sub_step: int, total_sub_steps: int) -> float:
-                """Calculate overall progress including sub-steps."""
-                if current_step is None or total_steps is None:
-                    return 0.0
+            if is_ip:
+                # For IPs, skip DNS checks and only do certificate and WHOIS
+                kwargs['check_dns'] = False
+                kwargs['check_subdomains'] = False
                 
-                # Calculate base progress for completed steps
-                base_progress = (current_step - 1) / total_steps
+                # Get IP information
+                ip_info = get_ip_info(domain)
+                logger.info(f"[SCAN] IP information for {domain}: {ip_info}")
                 
-                # Calculate progress for current step
-                step_progress = (sub_step / total_sub_steps) / total_steps
-                
-                return min(base_progress + step_progress, 1.0)
-
-            def update_progress(sub_step: int, total_sub_steps: int):
-                """Update progress bar and queue status."""
-                if progress_container and current_step is not None and total_steps is not None:
-                    progress = calculate_progress(sub_step, total_sub_steps)
-                    progress_container.progress(progress)
-                    progress_container.text(f"Remaining targets in queue: {self.infra_mgmt.tracker.queue_size()}")
-
-            # Calculate total sub-steps
-            total_sub_steps = 1
-            if check_whois or check_dns:
-                total_sub_steps += 1  # Domain info gathering
-                if check_dns:
-                    total_sub_steps += 1  # DNS processing
-            total_sub_steps += 2  # Certificate scanning and processing
-            if check_subdomains:
-                total_sub_steps += 1  # Subdomain processing
-            if check_sans:
-                total_sub_steps += 1  # SAN processing
-            if detect_platform:
-                total_sub_steps += 1  # Platform detection
-            
-            current_sub_step = 0
-            
-            # Initialize processor if needed
-            if not self.processor:
-                self.processor = ScanProcessor(session, status_container)
-            else:
-                self.processor.session = session
-                self.processor.status_container = status_container
-            
-            # Skip if already scanned in this scan session
-            if self.infra_mgmt.tracker.is_endpoint_scanned(domain, port):
-                result["status"] = "warning"
-                result["warnings"].append(f"Already scanned in this scan session")
-                self.scan_results["warning"].append(result)
-                self.scan_history.append(result)
-                update_progress(total_sub_steps, total_sub_steps)  # Complete progress for skipped domain
-                return True
-            
-            current_sub_step += 1
-            update_progress(current_sub_step, total_sub_steps)
-            
-            # Get domain information first
-            domain_info = None
-            if check_whois or check_dns:
-                try:
-                    if status_container:
-                        status_container.text(f'Gathering domain information for {domain}...')
-                    
-                    self.logger.info(f"[SCAN] Domain info gathering for {domain} - WHOIS: {'enabled' if check_whois else 'disabled'}, DNS: {'enabled' if check_dns else 'disabled'}")
-                    domain_info = self.domain_scanner.scan_domain(
-                        domain,
-                        get_whois=check_whois,
-                        get_dns=check_dns
+                # Update host record with IP information
+                host = session.query(Host).filter_by(name=domain).first()
+                if not host:
+                    host = Host(
+                        name=domain,
+                        host_type=HOST_TYPE_SERVER,
+                        environment=ENV_PRODUCTION,
+                        last_seen=datetime.now()
                     )
-                    current_sub_step += 1
-                    update_progress(current_sub_step, total_sub_steps)
-                    
-                    # Add related domains to scan queue
-                    if domain_info and domain_info.related_domains:
-                        for related_domain in domain_info.related_domains:
-                            if not self.infra_mgmt.tracker.is_endpoint_scanned(related_domain, port):
-                                self.infra_mgmt.tracker.add_to_queue(related_domain, port)
-                                self.logger.info(f"[SCAN] Added related domain to scan queue: {related_domain}:{port}")
+                    session.add(host)
                 
-                except Exception as e:
-                    self.logger.error(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
-                    result["errors"].append(f"Error gathering domain info: {str(e)}")
-                    result["status"] = "error"
-            
-            # Process domain information
-            try:
-                if status_container:
-                    status_container.text(f'Processing domain information for {domain}...')
+                if ip_info['whois'] and ip_info['whois'].get('organization'):
+                    host.owner = ip_info['whois']['organization']
+                if ip_info['whois'] and ip_info['whois'].get('country'):
+                    host.environment = ip_info['whois']['country']
                 
-                domain_obj = self.processor.process_domain_info(domain, domain_info)
+                # Add any discovered hostnames from reverse DNS
+                if ip_info['hostnames']:
+                    logger.info(f"[SCAN] Found hostnames for {domain}: {ip_info['hostnames']}")
                 
-                # Process DNS records if available
-                if check_dns and domain_info and domain_info.dns_records:
-                    if status_container:
-                        status_container.text(f'Processing DNS records for {domain}...')
-                    
-                    self.processor.process_dns_records(
-                        domain_obj,
-                        domain_info.dns_records,
-                        self.infra_mgmt.tracker.scan_queue,
-                        port
-                    )
-                    current_sub_step += 1
-                    update_progress(current_sub_step, total_sub_steps)
+                # Add network information if available
+                if ip_info['network']:
+                    logger.info(f"[SCAN] Network for {domain}: {ip_info['network']}")
                 
                 session.commit()
-                self.logger.info(f"[SCAN] Domain information updated for {domain}")
+            else:
+                # Handle domain scanning
+                # Get domain information first
+                domain_info = None
+                if kwargs.get('check_whois') or kwargs.get('check_dns'):
+                    try:
+                        if kwargs.get('status_container'):
+                            kwargs['status_container'].text(f'Gathering domain information for {domain}...')
+                        
+                        logger.info(f"[SCAN] Domain info gathering for {domain} - WHOIS: {kwargs.get('check_whois', False)}, DNS: {kwargs.get('check_dns', False)}")
+                        domain_info = self.domain_scanner.scan_domain(
+                            domain,
+                            get_whois=kwargs.get('check_whois', False),
+                            get_dns=kwargs.get('check_dns', False)
+                        )
+                        
+                        # Process domain information
+                        if domain_info:
+                            # Get or create domain
+                            domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
+                            if not domain_obj:
+                                domain_obj = Domain(
+                                    domain_name=domain,
+                                    created_at=datetime.now(),
+                                    updated_at=datetime.now()
+                                )
+                                session.add(domain_obj)
+                            
+                            # Update domain information
+                            if kwargs.get('check_whois') and domain_info.registrar:
+                                domain_obj.registrar = domain_info.registrar
+                                domain_obj.registration_date = domain_info.registration_date
+                                domain_obj.expiration_date = domain_info.expiration_date
+                                domain_obj.owner = domain_info.registrant
+                            
+                            # Process DNS records only if we haven't already
+                            if kwargs.get('check_dns') and domain_info.dns_records:
+                                # Check if DNS records already exist
+                                existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
+                                if not existing_records:  # Only process if no records exist
+                                    for record in domain_info.dns_records:
+                                        dns_record = DomainDNSRecord(
+                                            domain=domain_obj,
+                                            record_type=record['type'],
+                                            name=record['name'],
+                                            value=record['value'],
+                                            ttl=record['ttl'],
+                                            priority=record.get('priority'),
+                                            created_at=datetime.now(),
+                                            updated_at=datetime.now()
+                                        )
+                                        session.add(dns_record)
+                            
+                            session.commit()
+                    
+                    except Exception as e:
+                        logger.error(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
+                        raise
                 
-            except Exception as e:
-                self.logger.error(f"[SCAN] Error processing domain info for {domain}: {str(e)}")
-                session.rollback()
-                result["errors"].append(f"Error processing domain info: {str(e)}")
-                result["status"] = "error"
-            
-            # Now scan for certificates
-            if status_container:
-                status_container.text(f'Scanning certificates for {domain}:{port}...')
-            scan_result = self.infra_mgmt.scan_certificate(domain, port)
-            
-            if scan_result and scan_result.certificate_info:
-                cert_info = scan_result.certificate_info
-                try:
+                # Scan for certificate (both IPs and domains)
+                scan_result = self.infra_mgmt.scan_certificate(domain, port)
+                if scan_result and scan_result.certificate_info:
+                    cert_info = scan_result.certificate_info
+                    
                     # Process certificate
                     cert = session.query(Certificate).filter_by(
                         serial_number=cert_info.serial_number
                     ).first()
                     
                     if not cert:
-                        if status_container:
-                            status_container.text(f'Found new certificate for {domain}...')
                         cert = Certificate(
                             serial_number=cert_info.serial_number,
                             thumbprint=cert_info.thumbprint,
@@ -673,102 +600,40 @@ class ScanManager:
                             _san=json.dumps(cert_info.san),
                             key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
                             signature_algorithm=cert_info.signature_algorithm,
-                            chain_valid=validate_chain and cert_info.chain_valid,
-                            sans_scanned=check_sans,
+                            chain_valid=kwargs.get('validate_chain', True) and cert_info.chain_valid,
+                            sans_scanned=kwargs.get('check_sans', False),
                             created_at=datetime.now(),
                             updated_at=datetime.now()
                         )
                         session.add(cert)
-                    else:
-                        if status_container:
-                            status_container.text(f'Updating existing certificate for {domain}...')
-                        cert.thumbprint = cert_info.thumbprint
-                        cert.common_name = cert_info.common_name
-                        cert.valid_from = cert_info.valid_from
-                        cert.valid_until = cert_info.expiration_date
-                        cert._issuer = json.dumps(cert_info.issuer)
-                        cert._subject = json.dumps(cert_info.subject)
-                        cert._san = json.dumps(cert_info.san)
-                        cert.key_usage = json.dumps(cert_info.key_usage) if cert_info.key_usage else None
-                        cert.signature_algorithm = cert_info.signature_algorithm
-                        cert.chain_valid = validate_chain and cert_info.chain_valid
-                        cert.sans_scanned = check_sans
-                        cert.updated_at = datetime.now()
                     
-                    # Associate certificate with domain
-                    if cert not in domain_obj.certificates:
-                        domain_obj.certificates.append(cert)
+                    # Get or create host record if not already created
+                    if not is_ip:  # Only create host for domains, IPs already have one
+                        host = session.query(Host).filter_by(name=domain).first()
+                        if not host:
+                            host = Host(
+                                name=domain,
+                                host_type=HOST_TYPE_SERVER,
+                                environment=ENV_PRODUCTION,
+                                last_seen=datetime.now()
+                            )
+                            session.add(host)
+                        else:
+                            host.last_seen = datetime.now()
                     
-                    # Create host record
-                    host = session.query(Host).filter_by(name=domain).first()
-                    if not host:
-                        if status_container:
-                            status_container.text(f'Creating host record for {domain}...')
-                        host = Host(
-                            name=domain,
-                            host_type=HOST_TYPE_SERVER,  # Will be updated if platform detection is enabled
-                            environment=ENV_PRODUCTION,
-                            last_seen=datetime.now()
-                        )
-                        session.add(host)
-                    else:
-                        host.last_seen = datetime.now()
-                    
-                    # Update host type based on platform if enabled
-                    if detect_platform and cert_info.platform:
-                        if cert_info.platform in [PLATFORM_CLOUDFLARE, PLATFORM_AKAMAI]:
-                            host.host_type = HOST_TYPE_CDN
-                        elif cert_info.platform == PLATFORM_F5:
-                            host.host_type = HOST_TYPE_LOAD_BALANCER
-                        current_sub_step += 1
-                        update_progress(current_sub_step, total_sub_steps)
-                    
-                    # Create or update IP addresses
-                    if cert_info.ip_addresses:
-                        if status_container:
-                            status_container.text(f'Updating IP addresses for {domain}...')
-                        self.infra_mgmt.tracker.add_discovered_ips(domain, cert_info.ip_addresses)
-                        existing_ips = {ip.ip_address for ip in host.ip_addresses}
-                        for ip_addr in cert_info.ip_addresses:
-                            if ip_addr not in existing_ips:
-                                host_ip = HostIP(
-                                    host=host,
-                                    ip_address=ip_addr,
-                                    is_active=True,
-                                    last_seen=datetime.now()
-                                )
-                                session.add(host_ip)
-                            else:
-                                # Update last_seen for existing IP
-                                for ip in host.ip_addresses:
-                                    if ip.ip_address == ip_addr:
-                                        ip.last_seen = datetime.now()
-                                        ip.is_active = True
-                    
-                    # Create certificate binding
-                    host_ip = None
-                    if cert_info.ip_addresses:
-                        for ip in host.ip_addresses:
-                            if ip.ip_address in cert_info.ip_addresses:
-                                host_ip = ip
-                                break
-                    
+                    # Create or update certificate binding
                     binding = session.query(CertificateBinding).filter_by(
                         host=host,
-                        host_ip=host_ip,
                         port=port
                     ).first()
                     
                     if not binding:
-                        if status_container:
-                            status_container.text(f'Creating certificate binding for {domain}:{port}...')
                         binding = CertificateBinding(
                             host=host,
-                            host_ip=host_ip,
                             certificate=cert,
                             port=port,
                             binding_type='IP',
-                            platform=cert_info.platform if detect_platform else None,
+                            platform=cert_info.platform if kwargs.get('detect_platform', True) else None,
                             last_seen=datetime.now(),
                             manually_added=False
                         )
@@ -776,102 +641,50 @@ class ScanManager:
                     else:
                         binding.certificate = cert
                         binding.last_seen = datetime.now()
-                        if detect_platform:
+                        if kwargs.get('detect_platform', True):
                             binding.platform = cert_info.platform
                     
-                    # Create scan history record
-                    scan_record = CertificateScan(
-                        certificate=cert,
-                        host=host,
-                        scan_date=datetime.now(),
-                        status="Success",
-                        port=port
-                    )
-                    session.add(scan_record)
+                    # Process subdomains if requested and this is a domain
+                    if not is_ip and kwargs.get('check_subdomains'):
+                        try:
+                            if kwargs.get('status_container'):
+                                kwargs['status_container'].text(f'Discovering subdomains for {domain}...')
+                            
+                            self.subdomain_scanner.set_status_container(kwargs.get('status_container'))
+                            
+                            subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(
+                                domain=domain,
+                                port=port,
+                                check_whois=kwargs.get('check_whois', False),
+                                check_dns=kwargs.get('check_dns', False),
+                                scanned_domains=self.infra_mgmt.tracker.scanned_domains
+                            )
+                            
+                            if subdomain_results:
+                                logger.info(f"[SCAN] Found {len(subdomain_results)} subdomains for {domain}")
+                                
+                                for result in subdomain_results:
+                                    subdomain = result['domain']
+                                    if not self.infra_mgmt.tracker.is_endpoint_scanned(subdomain, port):
+                                        self.infra_mgmt.tracker.add_to_queue(subdomain, port)
+                                        logger.info(f"[SCAN] Added subdomain to queue: {subdomain}:{port}")
+                        
+                            self.subdomain_scanner.set_status_container(None)
+                            
+                        except Exception as subdomain_error:
+                            logger.error(f"[SCAN] Error in subdomain scanning for {domain}: {str(subdomain_error)}")
+                            raise
                     
                     session.commit()
-                    self.logger.info(f"[SCAN] Successfully processed certificate for {domain}:{port}")
-                    
-                    # Update success state
-                    self.scan_results["success"].append(result)
-                    
-                except Exception as cert_error:
-                    self.logger.error(f"[SCAN] Error processing certificate for {domain}:{port}: {str(cert_error)}")
-                    session.rollback()
-                    result["errors"].append(f"Error processing certificate: {str(cert_error)}")
-                    result["status"] = "error"
-            else:
-                self.logger.error(f"[SCAN] No certificate found or error for {domain}:{port}")
-                if scan_result and scan_result.error:
-                    result["errors"].append(scan_result.error)
-                    result["status"] = "error"
+                    logger.info(f"[SCAN] Successfully processed certificate for {'IP' if is_ip else 'domain'} {domain}:{port}")
+                    return True
                 else:
-                    result["no_cert"] = True
-                    result["status"] = "warning"
-                    result["warnings"].append("No certificate found")
-            
-            # Process subdomains if requested
-            if check_subdomains:
-                try:
-                    if status_container:
-                        status_container.text(f'Discovering subdomains for {domain}...')
-                    
-                    self.subdomain_scanner.set_status_container(status_container)
-                    
-                    subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(
-                        domain=domain,
-                        port=port,
-                        check_whois=check_whois,
-                        check_dns=check_dns,
-                        scanned_domains=self.infra_mgmt.tracker.scanned_domains
-                    )
-                    
-                    if subdomain_results:
-                        self.logger.info(f"[SCAN] Found {len(subdomain_results)} subdomains for {domain}")
-                        
-                        for result in subdomain_results:
-                            subdomain = result['domain']
-                            if not self.infra_mgmt.tracker.is_endpoint_scanned(subdomain, port):
-                                self.infra_mgmt.tracker.add_to_queue(subdomain, port)
-                                self.logger.info(f"[SCAN] Added subdomain to queue: {subdomain}:{port}")
-                    
-                    current_sub_step += 1
-                    update_progress(current_sub_step, total_sub_steps)
-                    
-                    self.subdomain_scanner.set_status_container(None)
-                    
-                except Exception as subdomain_error:
-                    self.logger.error(f"[SCAN] Error in subdomain scanning for {domain}: {str(subdomain_error)}")
-                    result["errors"].append(f"Error in subdomain scanning: {str(subdomain_error)}")
-                    result["status"] = "error"
-                    self.subdomain_scanner.set_status_container(None)
-            
-            # Update final status and add to appropriate result category
-            if result["status"] == "error":
-                self.scan_results["error"].append(result)
-            elif result["status"] == "warning":
-                self.scan_results["warning"].append(result)
-            elif result["no_cert"]:
-                self.scan_results["no_cert"].append(result)
-            else:
-                self.scan_results["success"].append(result)
-            
-            # Add to scan history
-            self.scan_history.append(result)
-            
-            return True
+                    logger.warning(f"[SCAN] No certificate found for {'IP' if is_ip else 'domain'} {domain}:{port}")
+                    return False
             
         except Exception as e:
-            self.logger.error(f"[SCAN] Error processing {domain}:{port}: {str(e)}")
-            result = {
-                "target": f"{domain}:{port}",
-                "status": "error",
-                "errors": [str(e)],
-                "details": {}
-            }
-            self.scan_results["error"].append(result)
-            self.scan_history.append(result)
-            return False
+            logger.error(f"Error in scan_target for {domain}:{port}: {str(e)}")
+            raise
     
     def get_scan_stats(self) -> dict:
         """Get current scanning statistics."""
@@ -892,6 +705,10 @@ class ScanManager:
     def get_next_target(self) -> Optional[Tuple[str, int]]:
         """Get the next target from the queue."""
         return self.infra_mgmt.get_next_target()
+
+    def get_scanners(self):
+        """Get scanner instances with shared tracking."""
+        return self.domain_scanner, self.infra_mgmt, self.subdomain_scanner
 
 class ScanProcessor:
     """
@@ -1175,4 +992,104 @@ class ScanProcessor:
             
         except Exception as e:
             self.logger.error(f"Error processing certificate for {domain}: {str(e)}")
-            raise 
+            raise
+
+def get_db_session():
+    """Get a new database session."""
+    db_path = settings.get("paths.database", "data/certificates.db")
+    engine = create_engine(f"sqlite:///{db_path}")
+    Session = sessionmaker(bind=engine)
+    return Session()
+
+def validate_port(port_str: str, entry: str) -> Tuple[bool, int]:
+    """
+    Validate a port number string.
+    
+    Args:
+        port_str: The port number as a string
+        entry: The full entry string for error messages
+        
+    Returns:
+        Tuple[bool, int]: (is_valid, port_number)
+    """
+    try:
+        port = int(port_str)
+        if port < 0:
+            notify(f"Invalid port number in {entry}: Port cannot be negative", "error")
+            return False, 0
+        if port > 65535:
+            notify(f"Invalid port number in {entry}: Port must be between 1 and 65535", "error")
+            return False, 0
+        return True, port
+    except ValueError as e:
+        notify(f"Invalid port number in {entry}: '{port_str}' is not a valid number", "error")
+        return False, 0
+
+def is_ip_address(address: str) -> bool:
+    """Check if a string is an IP address."""
+    try:
+        ipaddress.ip_address(address)
+        return True
+    except ValueError:
+        return False
+
+def get_ip_info(ip: str) -> Dict[str, Any]:
+    """
+    Get information about an IP address.
+    
+    Args:
+        ip: IP address to look up
+        
+    Returns:
+        Dict containing IP information including:
+        - WHOIS data
+        - Reverse DNS
+        - Network range
+    """
+    info = {
+        'whois': None,
+        'hostnames': [],
+        'network': None
+    }
+    
+    try:
+        # Get reverse DNS (PTR records)
+        try:
+            addr = dns.reversename.from_address(ip)
+            resolver = dns.resolver.Resolver()
+            answers = resolver.resolve(addr, "PTR")
+            info['hostnames'] = [str(rdata).rstrip('.') for rdata in answers]
+        except Exception as e:
+            logger.debug(f"Reverse DNS lookup failed for {ip}: {str(e)}")
+        
+        # Get network information
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            if isinstance(ip_obj, ipaddress.IPv4Address):
+                network = ipaddress.ip_network(f"{ip}/24", strict=False)
+            else:
+                network = ipaddress.ip_network(f"{ip}/64", strict=False)
+            info['network'] = str(network)
+        except Exception as e:
+            logger.debug(f"Network determination failed for {ip}: {str(e)}")
+        
+        # Get WHOIS information
+        try:
+            import whois
+            whois_info = whois.whois(ip)
+            if whois_info:
+                info['whois'] = {
+                    'registrar': whois_info.registrar,
+                    'organization': whois_info.org,
+                    'country': whois_info.country,
+                    'creation_date': whois_info.creation_date,
+                    'updated_date': whois_info.updated_date
+                }
+        except Exception as e:
+            logger.debug(f"WHOIS lookup failed for {ip}: {str(e)}")
+        
+        return info
+        
+    except Exception as e:
+        logger.error(f"Error getting IP information for {ip}: {str(e)}")
+        return info 

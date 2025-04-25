@@ -9,3 +9,4 @@ exports/
 .app_running
 SRE-CertificateManagement.code-workspace
 streamlit_runner.log
+infra_mgmt/scanner_debug.log

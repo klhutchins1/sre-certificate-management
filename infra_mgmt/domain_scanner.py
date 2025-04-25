@@ -294,7 +294,15 @@ class DomainScanner:
                 'nameservers': nameservers
             }
             
-            self.logger.info(f"[WHOIS] Successfully retrieved information for {domain}")
+            # Log all WHOIS information for debugging
+            self.logger.info(f"[WHOIS] Retrieved information for {domain}:")
+            self.logger.info(f"[WHOIS] - Registrar: {registrar}")
+            self.logger.info(f"[WHOIS] - Registrant: {registrant}")
+            self.logger.info(f"[WHOIS] - Creation Date: {creation_date}")
+            self.logger.info(f"[WHOIS] - Expiration Date: {expiration_date}")
+            self.logger.info(f"[WHOIS] - Status: {status}")
+            self.logger.info(f"[WHOIS] - Nameservers: {nameservers}")
+            
             return result
             
         except Exception as e:

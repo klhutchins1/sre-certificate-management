@@ -353,40 +353,67 @@ internal.server.local:444"""
                             status_container.text(f"Scanning {target_key}...")
                             
                             # Process the scan target using ScanManager
-                            st.session_state.scan_manager.scan_target(
-                                session=session,
-                                domain=hostname,
-                                port=port,
-                                check_whois=check_whois,
-                                check_dns=check_dns,
-                                check_subdomains=check_subdomains,
-                                check_sans=check_sans,
-                                detect_platform=detect_platform,
-                                validate_chain=validate_chain,
-                                status_container=status_container,
-                                progress_container=progress_container,
-                                current_step=current_step,
-                                total_steps=total_steps
-                            )
-                            
-                            # Add domain to scanned domains set
-                            st.session_state.scanned_domains.add(hostname)
-                            
-                            # Update progress
-                            update_progress(1, 1, progress_container, current_step, total_steps)
-                            
-                            # Commit changes after each successful scan
-                            session.commit()
+                            try:
+                                st.session_state.scan_manager.scan_target(
+                                    session=session,
+                                    domain=hostname,
+                                    port=port,
+                                    check_whois=check_whois,
+                                    check_dns=check_dns,
+                                    check_subdomains=check_subdomains,
+                                    check_sans=check_sans,
+                                    detect_platform=detect_platform,
+                                    validate_chain=validate_chain,
+                                    status_container=status_container,
+                                    progress_container=progress_container,
+                                    current_step=current_step,
+                                    total_steps=total_steps
+                                )
+                                
+                                # Add domain to scanned domains set
+                                st.session_state.scanned_domains.add(hostname)
+                                
+                                # Update progress
+                                update_progress(1, 1, progress_container, current_step, total_steps)
+                                
+                                # Commit changes after each successful scan
+                                session.commit()
+                                
+                                # Add to success results
+                                st.session_state.scan_results["success"].append(target_key)
+                                
+                            except Exception as scan_error:
+                                error_msg = str(scan_error)
+                                logger.error(f"[SCAN] Error processing {target_key}: {error_msg}")
+                                
+                                # Check for specific error types
+                                if "database is locked" in error_msg.lower():
+                                    notify(f"Database busy while scanning {target_key}. The scan will continue but some data may need to be rescanned.", "warning")
+                                elif "connection refused" in error_msg.lower():
+                                    notify(f"Could not connect to {target_key}. The port may be closed or filtered.", "warning")
+                                elif "certificate verify failed" in error_msg.lower():
+                                    notify(f"Certificate validation failed for {target_key}. The certificate may be invalid or self-signed.", "warning")
+                                elif "dns lookup failed" in error_msg.lower():
+                                    notify(f"Could not resolve hostname for {target_key}. The domain may not exist.", "warning")
+                                else:
+                                    notify(f"Error scanning {target_key}: {error_msg}", "error")
+                                
+                                st.session_state.scan_results["error"].append(f"{target_key} - {error_msg}")
+                                session.rollback()
                             
                         except Exception as e:
-                            logger.error(f"[SCAN] Error processing {target_key}: {str(e)}")
-                            notify(f"Error scanning {target_key}: {str(e)}", "error")
+                            logger.error(f"[SCAN] Error in scan operation for {target_key}: {str(e)}")
+                            notify(f"Unexpected error during scan of {target_key}: {str(e)}", "error")
                             st.session_state.scan_results["error"].append(f"{target_key} - {str(e)}")
                             session.rollback()
                         finally:
                             # Clear current operation
                             if st.session_state.current_operation == target_key:
                                 st.session_state.current_operation = None
+                            
+                            # Show notifications after each target
+                            with notification_placeholder:
+                                show_notifications()
                         
                         # Small delay to allow UI updates
                         time.sleep(0.1)

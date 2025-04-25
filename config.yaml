@@ -65,7 +65,7 @@ paths:
 scanning:
   ct:
     rate_limit: 60
-  default_rate_limit: 120
+  default_rate_limit: 240
   dns:
     rate_limit: 60
     timeout: 5

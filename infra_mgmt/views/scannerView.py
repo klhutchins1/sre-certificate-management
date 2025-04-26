@@ -379,8 +379,10 @@ internal.server.local:444"""
                                 # Commit changes after each successful scan
                                 session.commit()
                                 
-                                # Add to success results
+                                # Add to success results and remove from no_cert if present
                                 st.session_state.scan_results["success"].append(target_key)
+                                if hostname in st.session_state.scan_results["no_cert"]:
+                                    st.session_state.scan_results["no_cert"].remove(hostname)
                                 
                             except Exception as scan_error:
                                 error_msg = str(scan_error)
@@ -538,11 +540,22 @@ internal.server.local:444"""
                                             st.markdown(f"### {obj.name if isinstance(obj, Host) else obj.domain_name}")
                                             
                                             # Get certificates based on object type
+                                            certificates = []
                                             if isinstance(obj, Domain):
-                                                certificates = obj.certificates
+                                                # Get certificates from both direct domain relationship and bindings
+                                                certificates.extend(obj.certificates)
+                                                # Also get certificates from bindings
+                                                host = session.query(Host).filter_by(name=domain).first()
+                                                if host:
+                                                    bindings = session.query(CertificateBinding).filter_by(host=host).all()
+                                                    cert_from_bindings = [b.certificate for b in bindings if b.certificate]
+                                                    certificates.extend(cert_from_bindings)
                                             else:  # Host object
                                                 bindings = session.query(CertificateBinding).filter_by(host=obj).all()
                                                 certificates = [b.certificate for b in bindings if b.certificate]
+                                            
+                                            # Remove duplicates while preserving order
+                                            certificates = list(dict.fromkeys(certificates))
                                             
                                             if certificates:
                                                 for cert in certificates:
@@ -571,9 +584,14 @@ internal.server.local:444"""
                                                                 if st.button(f"Scan SANs ({len(sans)} found)", key=button_key):
                                                                     st.session_state.scan_targets = sans
                                                                     st.rerun()
+                                                
+                                                # Remove from no_cert list since we found certificates
+                                                if domain in st.session_state.scan_results["no_cert"]:
+                                                    st.session_state.scan_results["no_cert"].remove(domain)
                                             else:
                                                 st.markdown(f"No certificates found for {domain}")
-                                                st.session_state.scan_results["no_cert"].append(f"{domain}")
+                                                if domain not in st.session_state.scan_results["no_cert"]:
+                                                    st.session_state.scan_results["no_cert"].append(domain)
                             except Exception as e:
                                 logger.error(f"Error displaying certificate data: {str(e)}")
                                 st.error(f"Error displaying certificate data: {str(e)}")

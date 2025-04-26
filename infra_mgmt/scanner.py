@@ -532,89 +532,64 @@ class ScanManager:
                                     updated_at=datetime.now()
                                 )
                                 session.add(domain_obj)
-                                session.commit()  # Commit domain creation first
+                                session.commit()  # Commit to get domain ID
                             
                             # Update domain information
                             if kwargs.get('check_whois') and domain_info.registrar:
-                                logger.info(f"[WHOIS] Updating domain information for {domain}")
-                                logger.info(f"[WHOIS] Registrar: {domain_info.registrar}")
-                                logger.info(f"[WHOIS] Registration Date: {domain_info.registration_date}")
-                                logger.info(f"[WHOIS] Expiration Date: {domain_info.expiration_date}")
-                                logger.info(f"[WHOIS] Owner: {domain_info.registrant}")
-                                
                                 domain_obj.registrar = domain_info.registrar
                                 domain_obj.registration_date = domain_info.registration_date
                                 domain_obj.expiration_date = domain_info.expiration_date
                                 domain_obj.owner = domain_info.registrant
                                 domain_obj.updated_at = datetime.now()
-                                
-                                try:
-                                    session.add(domain_obj)
-                                    session.commit()
-                                    logger.info(f"[WHOIS] Successfully updated domain information for {domain}")
-                                except Exception as e:
-                                    logger.error(f"[WHOIS] Error updating domain information for {domain}: {str(e)}")
-                                    session.rollback()
-                                    raise
+                                session.commit()  # Commit WHOIS updates
                             
                             # Process DNS records
                             if kwargs.get('check_dns') and domain_info.dns_records:
-                                # Track IP addresses found in A records
-                                ip_addresses = []
-                                
-                                for record in domain_info.dns_records:
-                                    # Collect IP addresses from A records
-                                    if record['type'] == 'A':
-                                        ip_addresses.append(record['value'])
+                                try:
+                                    # Get all existing DNS records for this domain
+                                    existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
+                                    existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
                                     
-                                    dns_record = DomainDNSRecord(
-                                        domain=domain_obj,
-                                        record_type=record['type'],
-                                        name=record['name'],
-                                        value=record['value'],
-                                        ttl=record['ttl'],
-                                        priority=record.get('priority'),
-                                        created_at=datetime.now(),
-                                        updated_at=datetime.now()
-                                    )
-                                    session.add(dns_record)
-                                
-                                # Create or update host record with IP information
-                                if ip_addresses:
-                                    host = session.query(Host).filter_by(name=domain).first()
-                                    if not host:
-                                        host = Host(
-                                            name=domain,
-                                            host_type=HOST_TYPE_SERVER,
-                                            environment=ENV_PRODUCTION,
-                                            last_seen=datetime.now()
-                                        )
-                                        session.add(host)
-                                        session.commit()  # Commit to get host ID
+                                    # Track which records we've seen
+                                    seen_records = set()
                                     
-                                    # Add IP addresses
-                                    for ip in ip_addresses:
-                                        # Check if IP already exists
-                                        existing_ip = session.query(HostIP).filter_by(
-                                            host_id=host.id,
-                                            ip_address=ip
-                                        ).first()
+                                    # Process each DNS record
+                                    for record in domain_info.dns_records:
+                                        record_key = (record['type'], record['name'], record['value'])
+                                        seen_records.add(record_key)
                                         
-                                        if not existing_ip:
-                                            host_ip = HostIP(
-                                                host=host,
-                                                ip_address=ip,
-                                                is_active=True,
-                                                last_seen=datetime.now()
-                                            )
-                                            session.add(host_ip)
-                                            logger.info(f"[IP] Added IP {ip} for {domain}")
+                                        if record_key in existing_map:
+                                            # Update existing record
+                                            existing_record = existing_map[record_key]
+                                            existing_record.ttl = record['ttl']
+                                            existing_record.priority = record.get('priority')
+                                            existing_record.updated_at = datetime.now()
                                         else:
-                                            existing_ip.last_seen = datetime.now()
-                                            existing_ip.is_active = True
-                                            logger.info(f"[IP] Updated IP {ip} for {domain}")
+                                            # Create new record
+                                            dns_record = DomainDNSRecord(
+                                                domain=domain_obj,
+                                                record_type=record['type'],
+                                                name=record['name'],
+                                                value=record['value'],
+                                                ttl=record['ttl'],
+                                                priority=record.get('priority'),
+                                                created_at=datetime.now(),
+                                                updated_at=datetime.now()
+                                            )
+                                            session.add(dns_record)
                                     
+                                    # Remove records that no longer exist
+                                    for key, record in existing_map.items():
+                                        if key not in seen_records:
+                                            session.delete(record)
+                                    
+                                    # Commit all DNS changes at once
                                     session.commit()
+                                    
+                                except Exception as dns_error:
+                                    logger.error(f"[DNS] Error processing DNS records for {domain}: {str(dns_error)}")
+                                    session.rollback()
+                                    # Continue with the scan even if DNS processing fails
                     
                     except Exception as e:
                         logger.error(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
@@ -724,9 +699,23 @@ class ScanManager:
                             raise
                     
                     logger.info(f"[SCAN] Successfully processed certificate for {'IP' if is_ip else 'domain'} {domain}:{port}")
+                    
+                    # Remove from no_cert list if present
+                    if domain in self.scan_results["no_cert"]:
+                        self.scan_results["no_cert"].remove(domain)
+                    
+                    # Add to success list if not already there
+                    target_key = f"{domain}:{port}"
+                    if target_key not in self.scan_results["success"]:
+                        self.scan_results["success"].append(target_key)
+                    
                     return True
                 else:
                     logger.warning(f"[SCAN] No certificate found for {'IP' if is_ip else 'domain'} {domain}:{port}")
+                    # Only add to no_cert if not already in success list
+                    target_key = f"{domain}:{port}"
+                    if target_key not in self.scan_results["success"] and domain not in self.scan_results["no_cert"]:
+                        self.scan_results["no_cert"].append(domain)
                     return False
             
         except Exception as e:

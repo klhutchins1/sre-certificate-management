@@ -587,14 +587,6 @@ class DomainScanner:
     def scan_domain(self, domain: str, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
         """
         Scan a domain for all available information.
-        
-        Args:
-            domain: Domain name to scan
-            get_whois: Whether to retrieve WHOIS information
-            get_dns: Whether to retrieve DNS records
-            
-        Returns:
-            DomainInfo: Domain information object
         """
         # Validate domain name format
         if not self._validate_domain(domain):
@@ -678,7 +670,7 @@ class DomainScanner:
                         updated_at=datetime.now()
                     )
                     session.add(domain_obj)
-                    session.flush()  # Get the ID
+                    session.commit()  # Commit to get domain ID
                 
                 # Update domain information from WHOIS
                 if whois_info:
@@ -687,6 +679,7 @@ class DomainScanner:
                     domain_obj.expiration_date = whois_info.get('expiration_date')
                     domain_obj.owner = whois_info.get('registrant')
                     domain_obj.updated_at = datetime.now()
+                    session.commit()  # Commit WHOIS updates
                 
                 # Get DNS records if requested
                 if get_dns:
@@ -710,7 +703,7 @@ class DomainScanner:
                                 else:
                                     # Create new record
                                     dns_record = DomainDNSRecord(
-                                        domain_id=domain_obj.id,
+                                        domain=domain_obj,
                                         record_type=record['type'],
                                         name=record['name'],
                                         value=record['value'],
@@ -720,11 +713,13 @@ class DomainScanner:
                                         updated_at=datetime.now()
                                     )
                                     session.add(dns_record)
+                            
+                            # Commit DNS changes
+                            session.commit()
+                            
                     except Exception as e:
                         self.logger.warning(f"Error getting DNS records for {domain}: {str(e)}")
-                
-                # Commit all changes
-                session.commit()
+                        session.rollback()
                 
                 # Create and return domain info object
                 return DomainInfo(

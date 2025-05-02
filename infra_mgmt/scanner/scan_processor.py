@@ -68,8 +68,14 @@ class ScanProcessor:
             
             return domain_obj
             
+        except ValueError as e:
+            self.logger.error(f"Value error processing domain info for {domain}: {str(e)}")
+            raise
+        except TypeError as e:
+            self.logger.error(f"Type error processing domain info for {domain}: {str(e)}")
+            raise
         except Exception as e:
-            self.logger.error(f"Error processing domain info for {domain}: {str(e)}")
+            self.logger.exception(f"Unexpected error processing domain info for {domain}: {str(e)}")
             raise
     
     def process_dns_records(self, domain_obj: Domain, dns_records: List[Dict[str, Any]], scan_queue: Optional[Set[Tuple[str, int]]] = None, port: int = 443) -> None:
@@ -152,8 +158,14 @@ class ScanProcessor:
                 self.session.flush()
                 self.logger.info(f"[DNS] Successfully processed {len(dns_records)} records for {domain_obj.domain_name}")
                 
+        except ValueError as e:
+            self.logger.error(f"Value error processing DNS records for {domain_obj.domain_name}: {str(e)}")
+            raise
+        except TypeError as e:
+            self.logger.error(f"Type error processing DNS records for {domain_obj.domain_name}: {str(e)}")
+            raise
         except Exception as e:
-            self.logger.error(f"Error processing DNS records for {domain_obj.domain_name}: {str(e)}")
+            self.logger.exception(f"Unexpected error processing DNS records for {domain_obj.domain_name}: {str(e)}")
             raise
     
     def process_certificate(self, domain: str, port: int, cert_info: CertificateInfo, domain_obj: Domain, **kwargs) -> None:
@@ -295,6 +307,12 @@ class ScanProcessor:
             
             self.session.flush()
             
+        except ValueError as e:
+            self.logger.error(f"Value error processing certificate for {domain}: {str(e)}")
+            raise
+        except TypeError as e:
+            self.logger.error(f"Type error processing certificate for {domain}: {str(e)}")
+            raise
         except Exception as e:
-            self.logger.error(f"Error processing certificate for {domain}: {str(e)}")
+            self.logger.exception(f"Unexpected error processing certificate for {domain}: {str(e)}")
             raise 

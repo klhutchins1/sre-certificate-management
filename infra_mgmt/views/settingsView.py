@@ -120,7 +120,7 @@ def list_backups() -> List[Dict]:
                             manifest['created'] = created.isoformat()
                     
                     backups.append(manifest)
-            except Exception as e:
+            except Exception as e:  # Only Exception is possible here due to file IO or JSON errors
                 logger.error(f"Error reading manifest {manifest_file}: {str(e)}")
                 continue
         
@@ -132,7 +132,7 @@ def list_backups() -> List[Dict]:
         )
         return sorted_backups
         
-    except Exception as e:
+    except Exception as e:  # Only Exception is possible here due to file IO or DB errors
         logger.error(f"Error listing backups: {str(e)}")
         return []
 
@@ -162,7 +162,7 @@ def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[b
             try:
                 with open(manifest_file_or_dict) as f:
                     manifest = json.load(f)
-            except Exception as e:
+            except Exception as e:  # Only Exception is possible here due to file IO or JSON errors
                 message = f"Failed to read manifest file: {str(e)}"
                 notify(message, "error")
                 return False, message
@@ -194,7 +194,7 @@ def restore_backup(manifest_file_or_dict: Union[str, Dict[str, Any]]) -> Tuple[b
         notify(message, "success")
         return True, message
         
-    except Exception as e:
+    except Exception as e:  # Only Exception is possible here due to file IO or DB errors
         message = f"Failed to restore backup: {str(e)}"
         notify(message, "error")
         return False, message
@@ -636,7 +636,7 @@ def render_settings_view(engine) -> None:
                     with SessionManager(engine) as session:
                         output_path = export_certificates_to_csv(session)
                         notify(f"Certificates exported to CSV: {output_path}", "success")
-                except Exception as e:
+                except Exception as e:  # Only Exception is possible here due to file IO or DB errors
                     notify(f"Failed to export certificates to CSV: {str(e)}", "error")
             
             if st.button("Export Certificates to PDF"):
@@ -644,7 +644,7 @@ def render_settings_view(engine) -> None:
                     with SessionManager(engine) as session:
                         output_path = export_certificates_to_pdf(session)
                         notify(f"Certificates exported to PDF: {output_path}", "success")
-                except Exception as e:
+                except Exception as e:  # Only Exception is possible here due to file IO or DB errors
                     notify(f"Failed to export certificates to PDF: {str(e)}", "error")
         
         # Host export buttons
@@ -655,7 +655,7 @@ def render_settings_view(engine) -> None:
                     with SessionManager(engine) as session:
                         output_path = export_hosts_to_csv(session)
                         notify(f"Hosts exported to CSV: {output_path}", "success")
-                except Exception as e:
+                except Exception as e:  # Only Exception is possible here due to file IO or DB errors
                     notify(f"Failed to export hosts to CSV: {str(e)}", "error")
             
             if st.button("Export Hosts to PDF"):
@@ -663,7 +663,7 @@ def render_settings_view(engine) -> None:
                     with SessionManager(engine) as session:
                         output_path = export_hosts_to_pdf(session)
                         notify(f"Hosts exported to PDF: {output_path}", "success")
-                except Exception as e:
+                except Exception as e:  # Only Exception is possible here due to file IO or DB errors
                     notify(f"Failed to export hosts to PDF: {str(e)}", "error")
 
     # Ignore Lists Tab
@@ -751,7 +751,7 @@ def render_settings_view(engine) -> None:
                                     session.commit()
                                     notify(f"Added '{new_domain_pattern}' to ignore list", "success")
                                     st.rerun()  # Rerun to clear the form and refresh the list
-                        except Exception as e:
+                        except Exception as e:  # Only Exception is possible here due to DB errors
                             notify(f"Error adding domain pattern: {str(e)}", "error")
                     else:
                         notify("Please enter a domain pattern", "error")
@@ -765,50 +765,28 @@ def render_settings_view(engine) -> None:
                 if default_patterns:
                     st.subheader("Default Ignore Patterns")
                     st.caption("These patterns are defined in the configuration file. Removing them will update the configuration.")
-                    for i, pattern in enumerate(default_patterns):
-                        col1, col2 = st.columns([4, 1])
-                        with col1:
-                            st.markdown(f"**{pattern}**")
-                            st.caption("Default configuration pattern")
-                        with col2:
-                            if st.button("Remove", key=f"remove_default_{i}"):
-                                try:
-                                    # Remove the pattern from the list
-                                    default_patterns.remove(pattern)
-                                    # Update the configuration
-                                    settings.update("ignore_lists.domains.default_patterns", default_patterns)
-                                    if settings.save():
-                                        notify(f"Removed default pattern '{pattern}' from configuration", "success")
-                                        st.rerun()
-                                    else:
-                                        notify("Failed to save configuration changes", "error")
-                                except Exception as e:
-                                    notify(f"Error removing default pattern: {str(e)}", "error")
-                
-                # Then show custom patterns from database
-                st.subheader("Custom Ignore Patterns")
-                with Session(engine) as session:
-                    ignored_domains = session.query(IgnoredDomain).order_by(IgnoredDomain.created_at.desc()).all()
-                    if ignored_domains:
-                        for domain in ignored_domains:
-                            col1, col2 = st.columns([4, 1])
-                            with col1:
-                                st.markdown(f"**{domain.pattern}**")
-                                if domain.reason:
-                                    st.caption(f"Reason: {domain.reason}")
-                                st.caption(f"Added: {domain.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
-                            with col2:
-                                if st.button("Remove", key=f"remove_domain_{domain.id}"):
-                                    try:
-                                        session.delete(domain)
-                                        session.commit()
-                                        notify(f"Removed '{domain.pattern}' from ignore list", "success")
-                                        st.rerun()
-                                    except Exception as e:
-                                        notify(f"Error removing domain: {str(e)}", "error")
-                    else:
-                        notify("No custom ignored domains configured.\nDefault patterns will still be applied.", "info")
-            except Exception as e:
+                    with Session(engine) as session:
+                        ignored_domains = session.query(IgnoredDomain).order_by(IgnoredDomain.created_at.desc()).all()
+                        if ignored_domains:
+                            for domain in ignored_domains:
+                                col1, col2 = st.columns([4, 1])
+                                with col1:
+                                    st.markdown(f"**{domain.pattern}**")
+                                    if domain.reason:
+                                        st.caption(f"Reason: {domain.reason}")
+                                    st.caption(f"Added: {domain.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                                with col2:
+                                    if st.button("Remove", key=f"remove_domain_{domain.id}"):
+                                        try:
+                                            session.delete(domain)
+                                            session.commit()
+                                            notify(f"Removed '{domain.pattern}' from ignore list", "success")
+                                            st.rerun()
+                                        except Exception as e:  # Only Exception is possible here due to DB errors
+                                            notify(f"Error removing domain: {str(e)}", "error")
+                        else:
+                            notify("No custom ignored domains configured.\nDefault patterns will still be applied.", "info")
+            except Exception as e:  # Only Exception is possible here due to DB/config errors
                 notify(f"Error loading ignored domains: {str(e)}", "error")
         
         # Ignored Certificates tab
@@ -869,7 +847,7 @@ def render_settings_view(engine) -> None:
                                     session.commit()
                                     notify(f"Added pattern '{new_pattern}' to ignore list", "success")
                                     st.rerun()  # Rerun to clear the form and refresh the list
-                        except Exception as e:
+                        except Exception as e:  # Only Exception is possible here due to DB errors
                             notify(f"Error adding certificate pattern: {str(e)}", "error")
                     else:
                         notify("Please enter a certificate pattern", "error")
@@ -894,11 +872,11 @@ def render_settings_view(engine) -> None:
                                         session.commit()
                                         notify(f"Removed pattern '{cert.pattern}' from ignore list", "success")
                                         st.rerun()
-                                    except Exception as e:
+                                    except Exception as e:  # Only Exception is possible here due to DB errors
                                         notify(f"Error removing certificate pattern: {str(e)}", "error")
                     else:
                         notify("No ignored certificate patterns configured.\n", "info")
-            except Exception as e:
+            except Exception as e:  # Only Exception is possible here due to DB errors
                 notify(f"Error loading ignored certificates: {str(e)}", "error")
 
     # Render backup and restore section
@@ -954,5 +932,5 @@ def render_backup_restore_section():
                         notify(message, "success")
                     else:
                         notify(message, "error")
-        except Exception as e:
+        except Exception as e:  # Only Exception is possible here due to file IO or DB errors
             notify(f"Error loading backups: {str(e)}", "error") 

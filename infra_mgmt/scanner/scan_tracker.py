@@ -76,6 +76,9 @@ class ScanTracker:
             return self.scan_queue.pop()
         except KeyError:
             return None
+        except Exception as e:
+            self.logger.exception(f"Unexpected error getting next target from scan queue: {str(e)}")
+            return None
     
     def has_pending_targets(self) -> bool:
         """Check if there are targets waiting to be scanned."""
@@ -114,18 +117,21 @@ class ScanTracker:
     
     def print_status(self):
         """Print current scanning status for debugging."""
-        stats = self.get_scan_stats()
-        self.logger.info("=== Scanner Status ===")
-        self.logger.info(f"Total Domains in Master List: {stats['total_discovered']}")
-        self.logger.info(f"Total Scanned: {stats['total_scanned']}")
-        self.logger.info(f"Pending Domains: {stats['pending_count']}")
-        self.logger.info(f"Scanned Domains: {stats['scanned_count']}")
-        self.logger.info(f"Scanned Endpoints: {stats['endpoints_count']}")
-        self.logger.info(f"Queue Size: {stats['queue_size']}")
-        self.logger.info("=== Pending Domains ===")
-        for domain in sorted(self.master_domain_list - self.scanned_domains):
-            self.logger.info(f"- {domain}")
-        self.logger.info("===================")
+        try:
+            stats = self.get_scan_stats()
+            self.logger.info("=== Scanner Status ===")
+            self.logger.info(f"Total Domains in Master List: {stats['total_discovered']}")
+            self.logger.info(f"Total Scanned: {stats['total_scanned']}")
+            self.logger.info(f"Pending Domains: {stats['pending_count']}")
+            self.logger.info(f"Scanned Domains: {stats['scanned_count']}")
+            self.logger.info(f"Scanned Endpoints: {stats['endpoints_count']}")
+            self.logger.info(f"Queue Size: {stats['queue_size']}")
+            self.logger.info("=== Pending Domains ===")
+            for domain in sorted(self.master_domain_list - self.scanned_domains):
+                self.logger.info(f"- {domain}")
+            self.logger.info("===================")
+        except Exception as e:
+            self.logger.exception(f"Unexpected error printing scan tracker status: {str(e)}")
     
     def is_certificate_processed(self, serial_number: str) -> bool:
         """Check if a certificate has already been processed."""

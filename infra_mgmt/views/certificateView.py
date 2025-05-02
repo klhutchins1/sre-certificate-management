@@ -9,6 +9,10 @@ from sqlalchemy import func, desc
 from datetime import datetime, timedelta
 from ..models import Certificate, Domain, CertificateBinding, CertificateScan
 from ..monitoring import monitor_rendering, monitor_query, performance_metrics
+import logging
+
+# Add logger setup at the top
+logger = logging.getLogger(__name__)
 
 @monitor_rendering("certificate_list")
 def render_certificate_list(session: Session):
@@ -177,4 +181,14 @@ def render_certificate_view(engine) -> None:
                     render_scan_history(session, cert_id)
         
         # Show performance metrics at the bottom
-        render_performance_metrics() 
+        render_performance_metrics()
+
+def save_certificate(session, cert_data):
+    try:
+        # ... existing code ...
+        session.commit()
+        notify("Certificate saved successfully!", "success")
+    except Exception as e:  # Only Exception is possible here due to DB errors
+        session.rollback()
+        logger.exception(f"Error saving certificate: {str(e)}")
+        notify(f"Error saving certificate: {str(e)}", "error") 

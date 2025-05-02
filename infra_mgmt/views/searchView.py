@@ -37,7 +37,10 @@ from sqlalchemy import or_, and_, String
 from ..models import Certificate, Host, HostIP, CertificateBinding
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
+import logging
 
+# Add logger setup at the top
+logger = logging.getLogger(__name__)
 
 def render_search_view(engine) -> None:
     """
@@ -106,84 +109,88 @@ def render_search_view(engine) -> None:
     
     # Process search and display results
     if search_query:
-        with SessionManager(engine) as session:
-            results = perform_search(session, search_query, search_type, status_filter, platform_filter)
-            
-            # Handle no results case
-            if not results or (
-                ('certificates' not in results or not results['certificates']) and 
-                ('hosts' not in results or not results['hosts'])
-            ):
-                st.info("No results found")
-                return
-            
-            # Display certificate results
-            if 'certificates' in results and (search_type in ['All', 'Certificates']):
-                st.subheader("Certificates")
-                cert_data = []
-                for cert in results['certificates']:
-                    cert_data.append({
-                        "Common Name": cert.common_name,
-                        "Serial Number": cert.serial_number,
-                        "Valid Until": cert.valid_until,
-                        "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
-                        "Bindings": len(cert.certificate_bindings)
-                    })
-                if cert_data:
-                    df = pd.DataFrame(cert_data)
-                    st.dataframe(
-                        df,
-                        column_config={
-                            "Common Name": st.column_config.TextColumn("Common Name", width="large"),
-                            "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
-                            "Valid Until": st.column_config.DatetimeColumn("Valid Until", format="DD/MM/YYYY"),
-                            "Status": st.column_config.TextColumn("Status", width="small"),
-                            "Bindings": st.column_config.NumberColumn("Bindings", width="small")
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
-            
-            # Display host and binding results
-            if 'hosts' in results and (search_type in ['All', 'Hosts', 'IP Addresses']):
-                st.subheader("Hosts")
-                host_data = []
-                for host in results['hosts']:
-                    for ip in host.ip_addresses:
-                        for binding in host.certificate_bindings:
-                            # Filter by platform if specified
-                            if binding.host_ip_id == ip.id and (
-                                platform_filter == "All" or 
-                                binding.platform == platform_filter
-                            ):
-                                # Apply certificate status filter
-                                is_valid = binding.certificate.valid_until > datetime.now()
-                                if status_filter == "All" or (
-                                    (status_filter == "Valid") == is_valid
+        try:
+            with SessionManager(engine) as session:
+                results = perform_search(session, search_query, search_type, status_filter, platform_filter)
+                
+                # Handle no results case
+                if not results or (
+                    ('certificates' not in results or not results['certificates']) and 
+                    ('hosts' not in results or not results['hosts'])
+                ):
+                    st.info("No results found")
+                    return
+                
+                # Display certificate results
+                if 'certificates' in results and (search_type in ['All', 'Certificates']):
+                    st.subheader("Certificates")
+                    cert_data = []
+                    for cert in results['certificates']:
+                        cert_data.append({
+                            "Common Name": cert.common_name,
+                            "Serial Number": cert.serial_number,
+                            "Valid Until": cert.valid_until,
+                            "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
+                            "Bindings": len(cert.certificate_bindings)
+                        })
+                    if cert_data:
+                        df = pd.DataFrame(cert_data)
+                        st.dataframe(
+                            df,
+                            column_config={
+                                "Common Name": st.column_config.TextColumn("Common Name", width="large"),
+                                "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
+                                "Valid Until": st.column_config.DatetimeColumn("Valid Until", format="DD/MM/YYYY"),
+                                "Status": st.column_config.TextColumn("Status", width="small"),
+                                "Bindings": st.column_config.NumberColumn("Bindings", width="small")
+                            },
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                
+                # Display host and binding results
+                if 'hosts' in results and (search_type in ['All', 'Hosts', 'IP Addresses']):
+                    st.subheader("Hosts")
+                    host_data = []
+                    for host in results['hosts']:
+                        for ip in host.ip_addresses:
+                            for binding in host.certificate_bindings:
+                                # Filter by platform if specified
+                                if binding.host_ip_id == ip.id and (
+                                    platform_filter == "All" or 
+                                    binding.platform == platform_filter
                                 ):
-                                    host_data.append({
-                                        "Hostname": host.name,
-                                        "IP Address": ip.ip_address,
-                                        "Port": binding.port,
-                                        "Certificate": binding.certificate.common_name,
-                                        "Platform": binding.platform or "Unknown",
-                                        "Last Seen": binding.last_seen
-                                    })
-                if host_data:
-                    df = pd.DataFrame(host_data)
-                    st.dataframe(
-                        df,
-                        column_config={
-                            "Hostname": st.column_config.TextColumn("Hostname", width="large"),
-                            "IP Address": st.column_config.TextColumn("IP Address", width="medium"),
-                            "Port": st.column_config.NumberColumn("Port", width="small"),
-                            "Certificate": st.column_config.TextColumn("Certificate", width="large"),
-                            "Platform": st.column_config.TextColumn("Platform", width="small"),
-                            "Last Seen": st.column_config.DatetimeColumn("Last Seen", format="DD/MM/YYYY HH:mm")
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
+                                    # Apply certificate status filter
+                                    is_valid = binding.certificate.valid_until > datetime.now()
+                                    if status_filter == "All" or (
+                                        (status_filter == "Valid") == is_valid
+                                    ):
+                                        host_data.append({
+                                            "Hostname": host.name,
+                                            "IP Address": ip.ip_address,
+                                            "Port": binding.port,
+                                            "Certificate": binding.certificate.common_name,
+                                            "Platform": binding.platform or "Unknown",
+                                            "Last Seen": binding.last_seen
+                                        })
+                    if host_data:
+                        df = pd.DataFrame(host_data)
+                        st.dataframe(
+                            df,
+                            column_config={
+                                "Hostname": st.column_config.TextColumn("Hostname", width="large"),
+                                "IP Address": st.column_config.TextColumn("IP Address", width="medium"),
+                                "Port": st.column_config.NumberColumn("Port", width="small"),
+                                "Certificate": st.column_config.TextColumn("Certificate", width="large"),
+                                "Platform": st.column_config.TextColumn("Platform", width="small"),
+                                "Last Seen": st.column_config.DatetimeColumn("Last Seen", format="DD/MM/YYYY HH:mm")
+                            },
+                            hide_index=True,
+                            use_container_width=True
+                        )
+        except Exception as e:  # Only Exception is possible here due to DB/UI/unknown errors
+            logger.exception(f"Error in search view: {str(e)}")
+            notify(f"Error in search view: {str(e)}", "error")
 
 def perform_search(session: Session, query: str, search_type: str, status_filter: str, platform_filter: str) -> dict:
     """

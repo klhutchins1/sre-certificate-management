@@ -14,10 +14,13 @@ from datetime import datetime, timedelta
 from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 from collections import defaultdict
+import logging
 
 from ..models import Domain, DomainDNSRecord, Certificate, IgnoredDomain
 from ..components.deletion_dialog import render_danger_zone
 from ..notifications import notify, show_notifications, initialize_notifications
+
+logger = logging.getLogger(__name__)
 
 class VirtualDomain:
     """Represents a domain that exists as a parent but is not in our database."""
@@ -372,8 +375,9 @@ def render_domain_list(engine):
                                     session.delete(domain)
                                     session.commit()
                                     return True
-                                except Exception as e:
+                                except Exception as e:  # Only Exception is possible here due to DB errors
                                     session.rollback()
+                                    logger.exception(f"Error deleting domain: {str(e)}")
                                     return False
                             
                             def add_to_ignore_list(session):
@@ -394,7 +398,9 @@ def render_domain_list(engine):
                                         notify(f"Added '{domain.domain_name}' to ignore list", "success")
                                         # Rerun to refresh the view
                                         st.rerun()
-                                except Exception as e:
+                                except Exception as e:  # Only Exception is possible here due to DB errors
+                                    session.rollback()
+                                    logger.exception(f"Error adding domain to ignore list: {str(e)}")
                                     notify(f"Error adding domain to ignore list: {str(e)}", "error")
                             
                             render_danger_zone(
@@ -413,5 +419,6 @@ def render_domain_list(engine):
                                 }]
                             )
                             
-        except Exception as e:
+        except Exception as e:  # Only Exception is possible here due to UI/DB/unknown errors
+            logger.exception(f"An error occurred: {str(e)}")
             notify(f"An error occurred: {str(e)}", "error")

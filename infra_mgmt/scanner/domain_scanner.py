@@ -305,17 +305,18 @@ class DomainScanner:
             
             return result
             
+        except whois.parser.PywhoisError as e:
+            self.logger.warning(f"[WHOIS] WHOIS lookup failed for {domain}: {str(e)}")
+            return {}
         except Exception as e:
-            self.logger.error(f"[WHOIS] Error retrieving information for {domain}: {str(e)}")
+            self.logger.exception(f"[WHOIS] Unexpected error retrieving information for {domain}: {str(e)}")
             return {}
     
     def _get_dns_records(self, domain: str) -> List[Dict[str, Any]]:
         """
         Get DNS records for a domain.
-        
         Args:
             domain: Domain name to query
-            
         Returns:
             list: List of DNS records
         """
@@ -347,109 +348,77 @@ class DomainScanner:
                 ['1.1.1.1', '1.0.0.1']   # Cloudflare
             ]
         
-        # Try each nameserver set until we get a successful resolution
-        resolved = False
         successful_nameservers = None
-        
         for nameservers in nameserver_sets:
-            if resolved:
-                break
-                
             resolver.nameservers = nameservers
             self.logger.debug(f"[DNS] Trying nameservers: {nameservers}")
-            
-            try:
-                # Try to resolve the domain first to check existence
-                resolver.resolve(domain, 'A')
-                resolved = True
+            any_success = False
+            for record_type in self.dns_record_types:
+                try:
+                    # Apply rate limiting for each DNS query
+                    self.last_dns_query_time = self._apply_rate_limit(
+                        self.last_dns_query_time,
+                        self.dns_rate_limit,
+                        "DNS"
+                    )
+                    self.logger.debug(f"[DNS] Querying {record_type} records for {domain}")
+                    try:
+                        answers = resolver.resolve(domain, record_type)
+                        for rdata in answers:
+                            record = {
+                                'type': record_type,
+                                'name': domain,
+                                'value': str(rdata).rstrip('.'),  # Remove trailing dot
+                                'ttl': answers.ttl
+                            }
+                            # Add additional fields based on record type
+                            if record_type == 'MX':
+                                record['priority'] = rdata.preference
+                            elif record_type == 'SOA':
+                                record['primary_ns'] = str(rdata.mname).rstrip('.')
+                                record['email'] = str(rdata.rname).rstrip('.')
+                                record['serial'] = rdata.serial
+                                record['refresh'] = rdata.refresh
+                                record['retry'] = rdata.retry
+                                record['expire'] = rdata.expire
+                                record['minimum'] = rdata.minimum
+                            records.append(record)
+                            self.logger.info(f"[DNS] Found {record_type} record for {domain}: {str(rdata)}")
+                        any_success = True
+                    except dns.resolver.NoAnswer:
+                        self.logger.debug(f"[DNS] No {record_type} records found for {domain}")
+                        continue
+                    except dns.resolver.NXDOMAIN:
+                        self.logger.debug(f"[DNS] Domain {domain} does not exist (trying next record type)")
+                        continue
+                    except dns.resolver.NoNameservers:
+                        self.logger.warning(f"[DNS] No nameservers could provide an answer for {record_type} records")
+                        continue
+                    except dns.resolver.Timeout:
+                        self.logger.warning(f"[DNS] Timeout querying {record_type} records for {domain}")
+                        continue
+                    except Exception as e:
+                        self.logger.exception(f"[DNS] Unexpected error querying {record_type} records for {domain}: {str(e)}")
+                        continue
+                except Exception as e:
+                    self.logger.exception(f"[DNS] Unexpected error in DNS record loop for {record_type} on {domain}: {str(e)}")
+                    continue
+            if any_success:
                 successful_nameservers = nameservers
-                self.logger.info(f"[DNS] Successfully resolved {domain} using nameservers: {nameservers}")
-                
                 # Cache successful nameservers for this TLD
                 if tld not in self.successful_nameservers:
                     self.successful_nameservers[tld] = nameservers
                     self.logger.debug(f"[DNS] Cached nameservers for .{tld}: {nameservers}")
-                
-            except dns.resolver.NXDOMAIN:
-                self.logger.warning(f"[DNS] Domain {domain} does not exist using nameservers: {nameservers}")
-                continue
-            except dns.resolver.NoNameservers:
-                self.logger.warning(f"[DNS] No response from nameservers: {nameservers}")
-                continue
-            except Exception as e:
-                self.logger.warning(f"[DNS] Error resolving {domain} with nameservers {nameservers}: {str(e)}")
-                continue
-        
-        if not resolved:
-            self.logger.error(f"[DNS] Could not resolve {domain} with any nameservers")
-            return []
-        
-        # Use the successful nameserver set for all subsequent queries
-        resolver.nameservers = successful_nameservers
-        
-        # Query each record type
-        for record_type in self.dns_record_types:
-            try:
-                # Apply rate limiting for each DNS query
-                self.last_dns_query_time = self._apply_rate_limit(
-                    self.last_dns_query_time,
-                    self.dns_rate_limit,
-                    "DNS"
-                )
-                
-                self.logger.debug(f"[DNS] Querying {record_type} records for {domain}")
-                try:
-                    answers = resolver.resolve(domain, record_type)
-                    for rdata in answers:
-                        record = {
-                            'type': record_type,
-                            'name': domain,
-                            'value': str(rdata).rstrip('.'),  # Remove trailing dot
-                            'ttl': answers.ttl
-                        }
-                        
-                        # Add additional fields based on record type
-                        if record_type == 'MX':
-                            record['priority'] = rdata.preference
-                        elif record_type == 'SOA':
-                            record['primary_ns'] = str(rdata.mname).rstrip('.')
-                            record['email'] = str(rdata.rname).rstrip('.')
-                            record['serial'] = rdata.serial
-                            record['refresh'] = rdata.refresh
-                            record['retry'] = rdata.retry
-                            record['expire'] = rdata.expire
-                            record['minimum'] = rdata.minimum
-                        
-                        records.append(record)
-                        self.logger.info(f"[DNS] Found {record_type} record for {domain}: {str(rdata)}")
-                except dns.resolver.NoAnswer:
-                    self.logger.debug(f"[DNS] No {record_type} records found for {domain}")
-                    continue
-                except dns.resolver.NXDOMAIN:
-                    self.logger.debug(f"[DNS] Domain {domain} does not exist (trying next record type)")
-                    continue
-                except dns.resolver.NoNameservers:
-                    self.logger.warning(f"[DNS] No nameservers could provide an answer for {record_type} records")
-                    continue
-                except Exception as e:
-                    self.logger.warning(f"[DNS] Error querying {record_type} records for {domain}: {str(e)}")
-                    continue
-                
-            except Exception as e:
-                self.logger.warning(f"[DNS] Unexpected error querying {record_type} records for {domain}: {str(e)}")
-                continue
-        
+                break  # Stop after first successful nameserver set
         if not records:
             self.logger.warning(f"[DNS] No DNS records found for {domain}")
         else:
             self.logger.info(f"[DNS] Found {len(records)} total records for {domain}")
-        
         return records
     
     def _get_ip_addresses(self, domain: str, port: int = 443) -> List[str]:
         """Get IP addresses for a domain."""
         try:
-            # Check if domain is already an IP
             ipaddress.ip_address(domain)
             return [domain]
         except ValueError:
@@ -467,6 +436,9 @@ class DomainScanner:
                 else:
                     error_msg = f"DNS lookup failed for '{domain}' - {str(e)}"
                 logger.error(f'DNS resolution failed for {domain}:{port}: {error_msg}')
+                return []
+            except Exception as e:
+                logger.exception(f"Unexpected error in DNS resolution for {domain}:{port}: {str(e)}")
                 return []
     
     def _get_base_domain(self, wildcard_domain: str) -> Optional[str]:
@@ -539,8 +511,11 @@ class DomainScanner:
                 session.close()
                 engine.dispose()
                 
+        except ImportError as e:
+            self.logger.error(f"Import error checking ignore list for {domain}: {str(e)}")
+            return False, None
         except Exception as e:
-            self.logger.error(f"Error checking ignore list for {domain}: {str(e)}")
+            self.logger.exception(f"Unexpected error checking ignore list for {domain}: {str(e)}")
             return False, None
 
     def _find_related_domains(self, whois_info: Dict) -> Set[str]:
@@ -579,9 +554,11 @@ class DomainScanner:
             
             return related_domains
             
+        except whois.parser.PywhoisError as e:
+            self.logger.debug(f"Could not find related domains (WHOIS error): {str(e)}")
+            return related_domains
         except Exception as e:
-            # Log at debug level since this is non-critical functionality
-            self.logger.debug(f"Could not find related domains: {str(e)}")
+            self.logger.debug(f"Unexpected error finding related domains: {str(e)}")
             return related_domains
 
     def scan_domain(self, domain: str, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
@@ -717,8 +694,11 @@ class DomainScanner:
                             # Commit DNS changes
                             session.commit()
                             
+                    except (dns.resolver.NoNameservers, dns.resolver.NXDOMAIN, dns.resolver.Timeout) as e:
+                        self.logger.warning(f"DNS error getting records for {domain}: {str(e)}")
+                        session.rollback()
                     except Exception as e:
-                        self.logger.warning(f"Error getting DNS records for {domain}: {str(e)}")
+                        self.logger.exception(f"Unexpected error getting DNS records for {domain}: {str(e)}")
                         session.rollback()
                 
                 # Create and return domain info object
@@ -740,8 +720,15 @@ class DomainScanner:
                 session.close()
                 engine.dispose()
             
+        except ImportError as e:
+            self.logger.error(f"Import error scanning domain {domain}: {str(e)}")
+            return DomainInfo(
+                domain_name=domain,
+                is_valid=True,
+                error=f"Import error: {str(e)}"
+            )
         except Exception as e:
-            self.logger.error(f"Error scanning domain {domain}: {str(e)}")
+            self.logger.exception(f"Unexpected error scanning domain {domain}: {str(e)}")
             return DomainInfo(
                 domain_name=domain,
                 is_valid=True,
@@ -750,7 +737,6 @@ class DomainScanner:
 
     def _process_dns_records(self, domain_obj: Domain, dns_records: List[Dict[str, Any]], scan_queue: Optional[Set[Tuple[str, int]]] = None, port: int = 443) -> None:
         """Process DNS records and update database."""
-        # Create a new session if needed
         session = None
         try:
             if not dns_records:
@@ -829,7 +815,6 @@ class DomainScanner:
                             session.add(dns_record)
                             self.logger.debug(f"[DNS] Added new record: {record_key}")
                         except Exception as e:
-                            # Log error but continue processing other records
                             self.logger.warning(f"[DNS] Error adding record {record_key}: {str(e)}")
                             continue
                 
@@ -841,8 +826,13 @@ class DomainScanner:
                 
                 self.logger.info(f"[DNS] Successfully processed {len(dns_records)} records for {domain_obj.domain_name}")
                 
+        except ImportError as e:
+            self.logger.error(f"Import error processing DNS records for {domain_obj.domain_name}: {str(e)}")
+            if session:
+                session.rollback()
+            raise
         except Exception as e:
-            self.logger.error(f"Error processing DNS records for {domain_obj.domain_name}: {str(e)}")
+            self.logger.exception(f"Unexpected error processing DNS records for {domain_obj.domain_name}: {str(e)}")
             if session:
                 session.rollback()
             raise

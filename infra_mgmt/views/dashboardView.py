@@ -34,6 +34,7 @@ from ..notifications import initialize_notifications, show_notifications, notify
 from ..monitoring import monitor_rendering, monitor_query, performance_metrics
 import functools
 from typing import Dict, Any, Optional
+import logging
 
 # Cache for dashboard data
 _dashboard_cache: Dict[str, Any] = {}
@@ -395,14 +396,16 @@ def render_dashboard(engine) -> None:
                 else:
                     notify("No root domain registration information found in database. \n", "info")
                     
-            except Exception as e:
+            except Exception as e:  # Only Exception is possible here due to DB/UI/unknown errors
+                logger.exception(f"Error querying database: {str(e)}")
                 notify(f"Error querying database: {str(e)} \n", "error")
                 
             # Show all notifications at the end
             with notification_placeholder:
                 show_notifications()
                 
-    except Exception as e:
+    except Exception as e:  # Only Exception is possible here due to DB/UI/unknown errors
+        logger.exception(f"Error connecting to database: {str(e)}")
         notify(f"Error connecting to database: {str(e)} \n", "error")
         with notification_placeholder:
             show_notifications()

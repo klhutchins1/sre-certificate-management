@@ -102,6 +102,10 @@ class SubdomainScanner:
                                 subdomains.add(san)
                                 self.update_status(f'Found subdomain in certificate: {san}')
             
+        except ValueError as e:
+            logger.error(f"Value error getting certificate SANs for {domain}: {str(e)}")
+        except TypeError as e:
+            logger.error(f"Type error getting certificate SANs for {domain}: {str(e)}")
         except Exception as e:
             logger.warning(f"[CERT] Error getting certificate SANs for {domain}: {str(e)}")
         
@@ -172,6 +176,15 @@ class SubdomainScanner:
                     # Add delay between queries to the same service
                     time.sleep(min_time_between_queries)
                     
+                except requests.RequestException as e:
+                    logger.warning(f"[CT] Request error querying {url}: {str(e)}")
+                    continue
+                except ValueError as e:
+                    logger.error(f"Value error parsing CT logs from {url}: {str(e)}")
+                    continue
+                except TypeError as e:
+                    logger.error(f"Type error parsing CT logs from {url}: {str(e)}")
+                    continue
                 except Exception as e:
                     logger.warning(f"[CT] Error querying {url}: {str(e)}")
                     continue
@@ -346,6 +359,14 @@ class SubdomainScanner:
             logger.info(f"[DB] Saved subdomain relationship: {subdomain} -> {parent_domain}")
             return sub
             
+        except ValueError as e:
+            logger.error(f"Value error saving subdomain {subdomain}: {str(e)}")
+            session.rollback()
+            return None
+        except TypeError as e:
+            logger.error(f"Type error saving subdomain {subdomain}: {str(e)}")
+            session.rollback()
+            return None
         except Exception as e:
             logger.error(f"[DB] Error saving subdomain {subdomain}: {str(e)}")
             session.rollback()

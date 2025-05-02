@@ -11,6 +11,9 @@ def is_ip_address(address: str) -> bool:
         return True
     except ValueError:
         return False
+    except Exception as e:
+        logging.getLogger(__name__).exception(f"Unexpected error in is_ip_address for {address}: {str(e)}")
+        return False
 
 def get_ip_info(ip: str) -> Dict[str, Any]:
     """
@@ -36,6 +39,10 @@ def get_ip_info(ip: str) -> Dict[str, Any]:
             resolver = dns.resolver.Resolver()
             answers = resolver.resolve(addr, "PTR")
             info['hostnames'] = [str(rdata).rstrip('.') for rdata in answers]
+        except dns.resolver.NXDOMAIN as e:
+            logger.debug(f"Reverse DNS lookup failed for {ip} (NXDOMAIN): {str(e)}")
+        except dns.resolver.NoNameservers as e:
+            logger.debug(f"Reverse DNS lookup failed for {ip} (NoNameservers): {str(e)}")
         except Exception as e:
             logger.debug(f"Reverse DNS lookup failed for {ip}: {str(e)}")
         # Get network information
@@ -46,6 +53,8 @@ def get_ip_info(ip: str) -> Dict[str, Any]:
             else:
                 network = ipaddress.ip_network(f"{ip}/64", strict=False)
             info['network'] = str(network)
+        except ValueError as e:
+            logger.debug(f"Network determination failed for {ip} (ValueError): {str(e)}")
         except Exception as e:
             logger.debug(f"Network determination failed for {ip}: {str(e)}")
         # Get WHOIS information
@@ -60,9 +69,11 @@ def get_ip_info(ip: str) -> Dict[str, Any]:
                     'creation_date': whois_info.creation_date,
                     'updated_date': whois_info.updated_date
                 }
+        except ImportError as e:
+            logger.error(f"WHOIS module not found for {ip}: {str(e)}")
         except Exception as e:
             logger.debug(f"WHOIS lookup failed for {ip}: {str(e)}")
         return info
     except Exception as e:
-        logger.error(f"Error getting IP information for {ip}: {str(e)}")
+        logger.exception(f"Unexpected error getting IP information for {ip}: {str(e)}")
         return info 

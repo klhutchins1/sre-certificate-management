@@ -102,7 +102,8 @@ def handle_add_form():
             st.session_state.show_add_app_form = False
             notify("✅ Application added successfully!", "success")
             st.rerun()
-    except Exception as e:
+    except Exception as e:  # Only Exception is possible here due to DB/validation errors
+        logger.exception(f"Error adding application: {str(e)}")
         if "UNIQUE constraint failed" in str(e):
             notify(f"An application with the name '{st.session_state.app_name}' already exists", "error")
         else:
@@ -120,7 +121,9 @@ def delete_application(application, session):
         notify("Application deleted successfully!", "success")
         st.session_state.deleted_app_id = application.id
         return True
-    except Exception as e:
+    except Exception as e:  # Only Exception is possible here due to DB errors
+        session.rollback()
+        logger.exception(f"Error deleting application: {str(e)}")
         notify(f"Error deleting application: {str(e)}", "error")
         return False
 
@@ -142,7 +145,8 @@ def handle_update_form():
             st.rerun()
         else:
             notify("Unable to update application: Session not available", "error")
-    except Exception as e:
+    except Exception as e:  # Only Exception is possible here due to DB errors
+        logger.exception(f"Error updating application: {str(e)}")
         notify(f"Error updating application: {str(e)}", "error")
 
 def handle_delete_app():
@@ -156,7 +160,9 @@ def handle_delete_app():
             notify("Application deleted successfully!", "success")
             st.session_state.current_app = None
             st.rerun()
-    except Exception as e:
+    except Exception as e:  # Only Exception is possible here due to DB errors
+        session.rollback()
+        logger.exception(f"Error deleting application: {str(e)}")
         notify(f"Error deleting application: {str(e)}", "error")
 
 def render_applications_view(engine) -> None:
@@ -452,14 +458,15 @@ def render_applications_view(engine) -> None:
                                             logger.warning(f"No application found for ID: {selected_app_id}")
                                             notify("Application not found", "error")
                                     except Exception as e:
-                                        logger.error(f"Error loading application details: {str(e)}")
+                                        logger.exception(f"Error loading application details: {str(e)}")
                                         notify("Error loading application details. Please try again.", "error")
                     
                     except Exception as e:
-                        logger.error(f"Error handling grid selection: {str(e)}")
+                        logger.exception(f"Error handling grid selection: {str(e)}")
                         clear_notifications()  # Clear any existing notifications before showing error
                         notify("Error displaying application details. Please try again.", "error")
     except Exception as e:
+        logger.exception(f"Error rendering applications view: {str(e)}")
         notify(f"Error rendering applications view: {str(e)}", "error")
 
     # Show notifications at the end using the placeholder
@@ -627,10 +634,12 @@ def render_application_details(application: Application) -> None:
                                         notify(f"{success_count} certificate(s) bound successfully!", "success")
                                         st.rerun()
                                 except Exception as e:
+                                    logger.exception(f"Error binding certificates: {str(e)}")
                                     notify(f"Error binding certificates: {str(e)}", "error")
                     else:
                         notify("No available certificates found to bind.", "info")
             except Exception as e:
+                logger.exception(f"Error loading available certificates: {str(e)}")
                 notify(f"Error loading available certificates: {str(e)}", "error")
         
         with tab3:
@@ -657,7 +666,7 @@ def render_application_details(application: Application) -> None:
                         return True
                     except Exception as e:
                         delete_session.rollback()
-                        logger.error(f"Error deleting application: {str(e)}")
+                        logger.exception(f"Error deleting application: {str(e)}")
                         return False
                 
                 # Use render_danger_zone without additional wrappers

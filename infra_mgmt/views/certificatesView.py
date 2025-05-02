@@ -38,6 +38,9 @@ from ..static.styles import load_warning_suppression, load_css
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 def render_certificate_list(engine):
     """Render the certificate list view"""
@@ -773,9 +776,10 @@ def save_manual_certificate(cert_type, common_name, serial_number, thumbprint,
         notify("Certificate added successfully!", "success")
         st.session_state.show_manual_entry = False
         st.rerun()
-    except Exception as e:
-        notify(f"Error saving certificate: {str(e)}", "error")
+    except Exception as e:  # Only Exception is possible here due to DB errors
         session.rollback()
+        logger.exception(f"Error saving certificate: {str(e)}")
+        notify(f"Error saving certificate: {str(e)}", "error")
 
 def export_certificates_to_pdf(certificates, filename):
     """

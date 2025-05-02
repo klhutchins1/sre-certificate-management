@@ -312,17 +312,10 @@ class CertificateScanner:
             ScanResult: Scan result containing certificate info or error
         """
         self.logger.info(f"Starting certificate scan for {address}:{port}")
-        
         try:
-            # Apply rate limiting
             self._apply_rate_limit()
-            
-            # Reset chain validation status
             self._last_cert_chain = False
-            
-            # Get the certificate
             cert_binary = self._get_certificate(address, port)
-            
             if cert_binary:
                 cert_info = self._process_certificate(cert_binary, address, port)
                 if cert_info:
@@ -335,9 +328,11 @@ class CertificateScanner:
                     return ScanResult(error="Failed to process certificate data")
             else:
                 return ScanResult(error="No certificate data received")
-            
+        except (ssl.SSLError, socket.timeout, ConnectionRefusedError, requests.RequestException) as e:
+            self.logger.warning(f"Network or SSL error scanning {address}:{port}: {str(e)}")
+            return ScanResult(error=str(e))
         except Exception as e:
-            self.logger.error(f"Error scanning {address}:{port}: {str(e)}")
+            self.logger.exception(f"Unexpected error scanning {address}:{port}: {str(e)}")
             return ScanResult(error=str(e))
     
     def _get_certificate(self, address: str, port: int) -> Optional[bytes]:
@@ -475,13 +470,25 @@ class CertificateScanner:
                 self.logger.error(msg)
                 raise Exception(msg)
                 
+            except requests.RequestException as e:
+                error_msg = f"HTTP request error for {address}:{port}: {str(e)}"
+                last_error = error_msg
+                self.logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                else:
+                    self.logger.error(error_msg)
+                    raise Exception(error_msg)
+            
             except Exception as e:
                 error_msg = f"Error during certificate retrieval for {address}:{port}: {str(e)}"
                 last_error = error_msg
-                self.logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                self.logger.exception(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
                 
                 if "getaddrinfo failed" in str(e):
-                    error_msg = f"Could not resolve hostname '{address}'"
+                    error_msg = f"Domain '{address}' has no A or AAAA record; cannot scan for certificate."
+                    self.logger.error(error_msg)
                     raise Exception(error_msg)
                 
                 if attempt < max_retries - 1:
@@ -532,9 +539,12 @@ class CertificateScanner:
                     verify_sock.close()
                 except:
                     pass
+        except ssl.SSLError as verify_error:
+            self._last_cert_chain = False
+            self.logger.warning(f"SSL error during certificate chain validation for {address}:{port}: {str(verify_error)}")
         except Exception as verify_error:
             self._last_cert_chain = False
-            self.logger.warning(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
+            self.logger.exception(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
     
     def _check_dns_for_platform(self, domain: str) -> Optional[str]:
         """Check DNS records for platform indicators."""
@@ -581,6 +591,9 @@ class CertificateScanner:
             
             return None
             
+        except dns.resolver.Resolver as e:
+            self.logger.warning(f"DNS resolver error in platform check for {domain}: {str(e)}")
+            return None
         except Exception as e:
             self.logger.debug(f"Error in DNS platform check: {str(e)}")
             return None
@@ -749,8 +762,11 @@ class CertificateScanner:
                 self.logger.error(f"Error extracting certificate information for {address}:{port}: {str(e)}")
                 return None
 
+        except x509.UnsupportedAlgorithm as e:
+            self.logger.error(f"Unsupported algorithm in certificate for {address}:{port}: {str(e)}")
+            return None
         except Exception as e:
-            self.logger.error(f"Error processing certificate for {address}:{port}: {str(e)}")
+            self.logger.exception(f"Error processing certificate for {address}:{port}: {str(e)}")
             return None
     
     def add_scan_target(self, domain: str, port: int = 443) -> bool:

@@ -113,8 +113,14 @@ class ScanManager:
             
             return True, hostname, port, None
             
+        except ValueError as e:
+            self.logger.error(f"Value error processing scan target {entry}: {str(e)}")
+            return False, None, None, str(e)
+        except TypeError as e:
+            self.logger.error(f"Type error processing scan target {entry}: {str(e)}")
+            return False, None, None, str(e)
         except Exception as e:
-            self.logger.error(f"Error processing scan target {entry}: {str(e)}")
+            self.logger.exception(f"Unexpected error processing scan target {entry}: {str(e)}")
             return False, None, None, str(e)
     
     def _is_domain_ignored(self, session: Session, domain: str) -> Tuple[bool, Optional[str]]:
@@ -161,7 +167,7 @@ class ScanManager:
             return False, None
             
         except Exception as e:
-            self.logger.error(f"Error checking ignore list for domain {domain}: {str(e)}")
+            self.logger.exception(f"Unexpected error checking ignore list for domain {domain}: {str(e)}")
             return False, None
 
     def _is_certificate_ignored(self, session: Session, common_name: str) -> Tuple[bool, Optional[str]]:
@@ -190,7 +196,7 @@ class ScanManager:
             return False, None
             
         except Exception as e:
-            self.logger.error(f"Error checking certificate ignore list for {common_name}: {str(e)}")
+            self.logger.exception(f"Unexpected error checking certificate ignore list for {common_name}: {str(e)}")
             return False, None
     
     def add_to_queue(self, hostname: str, port: int) -> bool:
@@ -283,6 +289,22 @@ class ScanManager:
             # Check if it's an IP address
             is_ip = is_ip_address(domain)
             
+            # --- New: Check if domain resolves before scanning certificate ---
+            if not is_ip:
+                import socket
+                try:
+                    # Try to resolve the domain to an IP address
+                    addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
+                    if not addrinfo:
+                        self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                        return False
+                except socket.gaierror:
+                    self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                    return False
+                except Exception as e:
+                    self.logger.warning(f"[SCAN] Skipping {domain}:{port} - DNS resolution error: {str(e)}")
+                    return False
+            
             if is_ip:
                 # For IPs, skip DNS checks and only do certificate and WHOIS
                 kwargs['check_dns'] = False
@@ -317,6 +339,94 @@ class ScanManager:
                     self.logger.info(f"[SCAN] Network for {domain}: {ip_info['network']}")
                 
                 session.commit()
+
+                # --- Certificate scan for IPs (same as for domains) ---
+                # Always check DNS resolution before scanning
+                try:
+                    addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
+                    if not addrinfo:
+                        self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                        return False
+                except socket.gaierror:
+                    self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                    return False
+                except Exception as e:
+                    self.logger.warning(f"[SCAN] Skipping {domain}:{port} - DNS resolution error: {str(e)}")
+                    return False
+                scan_result = self.infra_mgmt.scan_certificate(domain, port)
+                if scan_result and scan_result.certificate_info:
+                    cert_info = scan_result.certificate_info
+                    # Process certificate
+                    cert = session.query(Certificate).filter_by(
+                        serial_number=cert_info.serial_number
+                    ).first()
+                    if not cert:
+                        cert = Certificate(
+                            serial_number=cert_info.serial_number,
+                            thumbprint=cert_info.thumbprint,
+                            common_name=cert_info.common_name,
+                            valid_from=cert_info.valid_from,
+                            valid_until=cert_info.expiration_date,
+                            _issuer=json.dumps(cert_info.issuer),
+                            _subject=json.dumps(cert_info.subject),
+                            _san=json.dumps(cert_info.san),
+                            key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
+                            signature_algorithm=cert_info.signature_algorithm,
+                            chain_valid=kwargs.get('validate_chain', True) and cert_info.chain_valid,
+                            sans_scanned=kwargs.get('check_sans', False),
+                            created_at=datetime.now(),
+                            updated_at=datetime.now()
+                        )
+                        session.add(cert)
+                        session.commit()  # Commit certificate creation
+                    # Host already created above for IPs
+                    # Create or update certificate binding
+                    binding = session.query(CertificateBinding).filter_by(
+                        host=host,
+                        port=port
+                    ).first()
+                    if not binding:
+                        binding = CertificateBinding(
+                            host=host,
+                            certificate=cert,
+                            port=port,
+                            binding_type='IP',
+                            platform=cert_info.platform if kwargs.get('detect_platform', True) else None,
+                            last_seen=datetime.now(),
+                            manually_added=False
+                        )
+                        session.add(binding)
+                    else:
+                        binding.certificate = cert
+                        binding.last_seen = datetime.now()
+                        if kwargs.get('detect_platform', True):
+                            binding.platform = cert_info.platform
+                    session.commit()  # Commit binding changes
+                    self.logger.info(f"[SCAN] Successfully processed certificate for IP {domain}:{port}")
+                    # Remove from no_cert list if present
+                    if domain in self.scan_results["no_cert"]:
+                        self.scan_results["no_cert"].remove(domain)
+                    # Add to success list if not already there
+                    target_key = f"{domain}:{port}"
+                    if target_key not in self.scan_results["success"]:
+                        self.scan_results["success"].append(target_key)
+                    # --- SAN scanning for IPs ---
+                    if kwargs.get('check_sans', False) and cert_info.san:
+                        for san in cert_info.san:
+                            san_clean = san.strip('*. ').lower()
+                            if san_clean and not self.infra_mgmt.tracker.is_endpoint_scanned(san_clean, port) and (san_clean, port) not in self.infra_mgmt.tracker.scan_queue:
+                                # Basic domain validation: must have at least one dot and not be the same as the IP
+                                if '.' in san_clean and san_clean != domain:
+                                    self.infra_mgmt.tracker.add_to_queue(san_clean, port)
+                                    self.logger.info(f"[SCAN] Added SAN to queue: {san_clean}:{port}")
+                    return True
+                else:
+                    self.logger.warning(f"[SCAN] No certificate found for IP {domain}:{port}")
+                    # Only add to no_cert if not already in success list
+                    target_key = f"{domain}:{port}"
+                    if target_key not in self.scan_results["success"] and domain not in self.scan_results["no_cert"]:
+                        self.scan_results["no_cert"].append(domain)
+                    return False
             else:
                 # Handle domain scanning
                 # Get domain information first
@@ -404,11 +514,24 @@ class ScanManager:
                                     # Continue with the scan even if DNS processing fails
                     
                     except Exception as e:
-                        self.logger.error(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
+                        self.logger.exception(f"[SCAN] Error gathering domain info for {domain}: {str(e)}")
                         session.rollback()
                         raise
                 
                 # Scan for certificate
+                # Always check DNS resolution before scanning
+                import socket
+                try:
+                    addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
+                    if not addrinfo:
+                        self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                        return False
+                except socket.gaierror:
+                    self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                    return False
+                except Exception as e:
+                    self.logger.warning(f"[SCAN] Skipping {domain}:{port} - DNS resolution error: {str(e)}")
+                    return False
                 scan_result = self.infra_mgmt.scan_certificate(domain, port)
                 if scan_result and scan_result.certificate_info:
                     cert_info = scan_result.certificate_info
@@ -483,9 +606,7 @@ class ScanManager:
                         try:
                             if kwargs.get('status_container'):
                                 kwargs['status_container'].text(f'Discovering subdomains for {domain}...')
-                            
                             self.subdomain_scanner.set_status_container(kwargs.get('status_container'))
-                            
                             subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(
                                 domain=domain,
                                 port=port,
@@ -493,23 +614,27 @@ class ScanManager:
                                 check_dns=kwargs.get('check_dns', False),
                                 scanned_domains=self.infra_mgmt.tracker.scanned_domains
                             )
-                            
                             if subdomain_results:
                                 self.logger.info(f"[SCAN] Found {len(subdomain_results)} subdomains for {domain}")
-                                
                                 for result in subdomain_results:
                                     subdomain = result['domain']
                                     if not self.infra_mgmt.tracker.is_endpoint_scanned(subdomain, port):
                                         self.infra_mgmt.tracker.add_to_queue(subdomain, port)
                                         self.logger.info(f"[SCAN] Added subdomain to queue: {subdomain}:{port}")
-                            
                             self.subdomain_scanner.set_status_container(None)
-                            
                         except Exception as subdomain_error:
                             self.logger.error(f"[SCAN] Error in subdomain scanning for {domain}: {str(subdomain_error)}")
                             session.rollback()
                             raise
-                    
+                    # --- SAN scanning for domains ---
+                    if kwargs.get('check_sans', False) and cert_info.san:
+                        for san in cert_info.san:
+                            san_clean = san.strip('*. ').lower()
+                            if san_clean and not self.infra_mgmt.tracker.is_endpoint_scanned(san_clean, port) and (san_clean, port) not in self.infra_mgmt.tracker.scan_queue:
+                                # Basic domain validation: must have at least one dot and not be the same as the current domain
+                                if '.' in san_clean and san_clean != domain:
+                                    self.infra_mgmt.tracker.add_to_queue(san_clean, port)
+                                    self.logger.info(f"[SCAN] Added SAN to queue: {san_clean}:{port}")
                     self.logger.info(f"[SCAN] Successfully processed certificate for {'IP' if is_ip else 'domain'} {domain}:{port}")
                     
                     # Remove from no_cert list if present
@@ -531,7 +656,7 @@ class ScanManager:
                     return False
             
         except Exception as e:
-            self.logger.error(f"Error in scan_target for {domain}:{port}: {str(e)}")
+            self.logger.exception(f"Unexpected error in scan_target for {domain}:{port}: {str(e)}")
             session.rollback()
             raise
     

@@ -545,9 +545,9 @@ def render_hosts_view(engine) -> None:
                         else:
                             # If no binding, show host details
                             render_details(selected_host, None, session)
-            except Exception as e:
+            except Exception as e:  # Only Exception is possible here due to UI/DB/unknown errors
                 st.error(f"Error handling selection: {str(e)}")
-                logger.error(f"Selection error: {str(e)}", exc_info=True)  # Add detailed logging
+                logger.exception(f"Selection error: {str(e)}")  # Add detailed logging
                 
             # Add spacing after grid
             st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)

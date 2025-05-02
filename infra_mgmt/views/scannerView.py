@@ -52,20 +52,19 @@ class StreamlitProgressContainer:
     def progress(self, value: float):
         """Update progress bar."""
         try:
-            # Clamp value between 0.0 and 1.0
             clamped_value = max(0.0, min(1.0, value))
             self.progress_bar.progress(clamped_value)
-        except Exception:
-            # Silently handle any errors
-            pass
+        except ValueError as e:
+            logger.error(f"Value error updating progress bar: {str(e)}")
+        except Exception as e:
+            logger.exception(f"Unexpected error updating progress bar: {str(e)}")
     
     def text(self, message: str):
         """Update status text."""
         try:
             self.status_text.text(message)
-        except Exception:
-            # Silently handle any errors
-            pass
+        except Exception as e:
+            logger.exception(f"Unexpected error updating status text: {str(e)}")
 
 def is_ip_address(address: str) -> bool:
     """Check if a string is an IP address."""
@@ -73,6 +72,9 @@ def is_ip_address(address: str) -> bool:
         ipaddress.ip_address(address)
         return True
     except ValueError:
+        return False
+    except Exception as e:
+        logger.exception(f"Unexpected error in is_ip_address for {address}: {str(e)}")
         return False
 
 def load_domain_data(session: Session, domain_name: str):
@@ -121,8 +123,11 @@ def load_domain_data(session: Session, domain_name: str):
             joinedload(Domain.dns_records),
             joinedload(Domain.certificates).joinedload(Certificate.certificate_bindings)
         ).filter_by(domain_name=domain_name).first()
+    except ImportError as e:
+        logger.error(f"Import error loading domain data for {domain_name}: {str(e)}")
+        return None
     except Exception as e:
-        logger.error(f"Error loading domain data for {domain_name}: {str(e)}")
+        logger.exception(f"Unexpected error loading domain data for {domain_name}: {str(e)}")
         return None
 
 def render_scan_interface(engine) -> None:
@@ -330,19 +335,25 @@ internal.server.local:444"""
                     total_steps = len(st.session_state.scan_queue)
                     current_step = 0
                     
-                    # Initialize progress
-                    update_progress(0, 1, progress_container, current_step, total_steps)
+                    # Initial progress: 0 of total
+                    completed = len(st.session_state.scan_manager.infra_mgmt.tracker.scanned_endpoints)
+                    remaining = st.session_state.scan_manager.infra_mgmt.tracker.queue_size()
+                    total = completed + remaining if (completed + remaining) > 0 else 1
+                    progress_container.progress(completed / total)
+                    progress_container.text(f"Scanning target {completed + 1 if remaining > 0 else total} of {total} (Remaining in queue: {remaining})")
                     
-                    while st.session_state.scan_queue:
-                        # Get next target from queue
-                        target = st.session_state.scan_queue.pop()
+                    while st.session_state.scan_manager.has_pending_targets():
+                        # Get next target from ScanManager's queue
+                        target = st.session_state.scan_manager.get_next_target()
                         if not target:
                             break
-                        
-                        current_step += 1  # Increment step before processing
                         hostname, port = target
                         target_key = f"{hostname}:{port}"
-                        
+                        # Skip if already scanned or queued
+                        if st.session_state.scan_manager.infra_mgmt.tracker.is_endpoint_scanned(hostname, port):
+                            continue
+                        # Mark as scanned before processing to avoid re-adding
+                        st.session_state.scan_manager.infra_mgmt.tracker.add_scanned_endpoint(hostname, port)
                         try:
                             # Skip if this operation is already in progress
                             if st.session_state.current_operation == target_key:
@@ -366,18 +377,11 @@ internal.server.local:444"""
                                     validate_chain=validate_chain,
                                     status_container=status_container,
                                     progress_container=progress_container,
-                                    current_step=current_step,
-                                    total_steps=total_steps
+                                    current_step=None,
+                                    total_steps=None
                                 )
-                                
                                 # Add domain to scanned domains set
                                 st.session_state.scanned_domains.add(hostname)
-                                
-                                # Update progress
-                                update_progress(1, 1, progress_container, current_step, total_steps)
-                                
-                                # Commit changes after each successful scan
-                                session.commit()
                                 
                                 # Add to success results and remove from no_cert if present
                                 st.session_state.scan_results["success"].append(target_key)
@@ -409,6 +413,16 @@ internal.server.local:444"""
                             st.session_state.scan_results["error"].append(f"{target_key} - {str(e)}")
                             session.rollback()
                         finally:
+                            # Update progress after scan or skip
+                            completed = len(st.session_state.scan_manager.infra_mgmt.tracker.scanned_endpoints)
+                            remaining = st.session_state.scan_manager.infra_mgmt.tracker.queue_size()
+                            total = completed + remaining if (completed + remaining) > 0 else 1
+                            current = min(completed + 1, total)
+                            if remaining == 0:
+                                current = total
+                            progress_container.progress(completed / total)
+                            progress_container.text(f"Scanning target {current} of {total} (Remaining in queue: {remaining})")
+                        
                             # Clear current operation
                             if st.session_state.current_operation == target_key:
                                 st.session_state.current_operation = None

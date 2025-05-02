@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 # Local application imports
 from .settings import settings
-from .certificate_scanner import CertificateScanner, CertificateInfo
+from .scanner.certificate_scanner import CertificateScanner, CertificateInfo
 from .scanner import ScanManager
 from .models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,

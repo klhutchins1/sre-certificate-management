@@ -5,7 +5,7 @@ Unit tests for the app module.
 import pytest
 import streamlit as st
 from infra_mgmt.app import init_session_state, render_sidebar, main
-from infra_mgmt.certificate_scanner import CertificateScanner, CertificateInfo
+from infra_mgmt.scanner.certificate_scanner import CertificateScanner, CertificateInfo
 from infra_mgmt.scanner import ScanManager
 from infra_mgmt.settings import Settings
 from unittest.mock import patch, MagicMock, call

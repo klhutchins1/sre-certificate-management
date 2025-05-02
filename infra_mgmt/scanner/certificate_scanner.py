@@ -25,9 +25,9 @@ import json
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from .settings import settings
-from .models import Certificate, Domain
-from .notifications import notify
+from ..settings import settings
+from ..models import Certificate, Domain
+from ..notifications import notify
 
 # Suppress only the specific InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -36,7 +36,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 
-from .constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
+from ..constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 
 def get_db_session():
     """Get a new database session."""
@@ -240,7 +240,7 @@ class CertificateScanner:
         self._last_cert_chain = False
         
         # Initialize scan tracker
-        from .scanner import ScanTracker
+        from . import ScanTracker
         self.tracker = ScanTracker()
     
     def reset_scan_state(self):

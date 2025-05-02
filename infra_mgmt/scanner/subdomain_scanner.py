@@ -14,8 +14,8 @@ import time
 from typing import Set, List, Optional, Dict
 from .domain_scanner import DomainScanner
 from .certificate_scanner import CertificateScanner
-from .models import IgnoredDomain, Domain
-from .db import get_session
+from ..models import IgnoredDomain, Domain
+from ..db import get_session
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -50,7 +50,7 @@ class SubdomainScanner:
         self.methods = methods or ['cert', 'ct']
         
         # Load rate limits from settings
-        from .settings import settings
+        from ..settings import settings
         self.ct_rate_limit = settings.get('scanning.ct.rate_limit', 10)  # Default 10/min
         
         logger.info(f"Initialized SubdomainScanner with methods: {self.methods}, CT rate limit: {self.ct_rate_limit}/min")
@@ -135,7 +135,7 @@ class SubdomainScanner:
                 time.sleep(sleep_time)
             
             # Get request timeout from settings
-            from .settings import settings
+            from ..settings import settings
             request_timeout = settings.get('scanning.timeouts.request', 10)
             
             # Query crt.sh with both direct and wildcard searches
@@ -248,7 +248,7 @@ class SubdomainScanner:
         
         # Check if domain is in ignore list
         from sqlalchemy import create_engine
-        from .settings import settings
+        from ..settings import settings
         
         # Get database path from settings
         db_path = settings.get("paths.database", "data/certificates.db")
@@ -392,9 +392,9 @@ class SubdomainScanner:
             self.update_status(f'Processing {len(discovered_subdomains)} discovered subdomains for {domain}...')
             
             # Create database session
-            from .db import get_session
+            from ..db import get_session
             from sqlalchemy import create_engine
-            from .settings import settings
+            from ..settings import settings
             
             # Get database path from settings
             db_path = settings.get("paths.database", "data/certificates.db")

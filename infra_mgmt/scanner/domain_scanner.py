@@ -17,10 +17,10 @@ import re
 import socket
 import time
 from sqlalchemy.orm import Session
-from .models import IgnoredDomain, Domain, DomainDNSRecord
-from .db import get_session
+from ..models import IgnoredDomain, Domain, DomainDNSRecord
+from ..db import get_session
 import ipaddress
-from .constants import INTERNAL_TLDS, EXTERNAL_TLDS
+from ..constants import INTERNAL_TLDS, EXTERNAL_TLDS
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ class DomainScanner:
         self.last_dns_query_time = 0
         
         # Load rate limits from settings
-        from .settings import settings
+        from ..settings import settings
         self.whois_rate_limit = settings.get('scanning.whois.rate_limit', 10)  # Default 10/min
         self.dns_rate_limit = settings.get('scanning.dns.rate_limit', 30)      # Default 30/min
         
@@ -502,8 +502,8 @@ class DomainScanner:
             # Create database session
             from sqlalchemy import create_engine
             from sqlalchemy.orm import Session
-            from .settings import settings
-            from .models import IgnoredDomain
+            from ..settings import settings
+            from ..models import IgnoredDomain
             
             # Get database path from settings
             db_path = settings.get("paths.database", "data/certificates.db")
@@ -600,8 +600,8 @@ class DomainScanner:
             # Create database session for ignore list check
             from sqlalchemy import create_engine
             from sqlalchemy.orm import Session
-            from .settings import settings
-            from .models import IgnoredDomain, Domain, DomainDNSRecord
+            from ..settings import settings
+            from ..models import IgnoredDomain, Domain, DomainDNSRecord
             
             db_path = settings.get("paths.database", "data/certificates.db")
             engine = create_engine(f"sqlite:///{db_path}")
@@ -760,7 +760,7 @@ class DomainScanner:
             
             # Create database session
             from sqlalchemy import create_engine
-            from .settings import settings
+            from ..settings import settings
             
             db_path = settings.get("paths.database", "data/certificates.db")
             engine = create_engine(f"sqlite:///{db_path}")

@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime
 from infra_mgmt.scanner import ScanManager, ScanProcessor
-from infra_mgmt.certificate_scanner import CertificateInfo, ScanResult
+from infra_mgmt.scanner.certificate_scanner import CertificateInfo, ScanResult
 from infra_mgmt.models import Domain, Certificate, Host, HostIP, CertificateBinding, CertificateScan
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def test_scan_manager_initialization(scan_manager):
     assert hasattr(scan_manager, 'domain_scanner')
     assert hasattr(scan_manager, 'subdomain_scanner')
     assert hasattr(scan_manager, 'scan_results')
-    assert scan_manager.scan_results == {'success': [], 'error': [], 'warning': []}
+    assert scan_manager.scan_results == {'success': [], 'error': [], 'warning': [], 'no_cert': []}
 
 def test_process_scan_target(scan_manager):
     """Test processing a scan target."""
@@ -97,16 +97,14 @@ def test_scan_target_error(scan_manager, mock_session, mock_status_container):
     # Configure mock to raise an error
     scan_manager.infra_mgmt.scan_certificate.side_effect = Exception("Scan failed")
     
-    # Test the scan
-    result = scan_manager.scan_target(
-        session=mock_session,
-        domain="example.com",
-        port=443,
-        status_container=mock_status_container
-    )
-    
-    assert result is False
-    assert any("example.com:443" in err for err in scan_manager.scan_results["error"])
+    # Test the scan (should raise Exception)
+    with pytest.raises(Exception, match="Scan failed"):
+        scan_manager.scan_target(
+            session=mock_session,
+            domain="example.com",
+            port=443,
+            status_container=mock_status_container
+        )
     mock_session.rollback.assert_called()
 
 def test_scan_target_no_certificate(scan_manager, mock_session, mock_status_container):
@@ -123,7 +121,7 @@ def test_scan_target_no_certificate(scan_manager, mock_session, mock_status_cont
     )
     
     assert result is False
-    assert any("No certificate found" in err for err in scan_manager.scan_results["error"])
+    assert "example.com" in scan_manager.scan_results["no_cert"]
 
 def test_scan_target_with_subdomains(scan_manager, mock_session, mock_status_container, mock_scan_result):
     """Test scanning with subdomain discovery."""

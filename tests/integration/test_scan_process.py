@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from infra_mgmt.scanner import ScanManager
 from infra_mgmt.models import Base, Domain, Certificate, Host, HostIP, CertificateBinding, CertificateScan
-from infra_mgmt.certificate_scanner import CertificateInfo, ScanResult
+from infra_mgmt.scanner.certificate_scanner import CertificateInfo, ScanResult
 
 @pytest.fixture
 def test_db():

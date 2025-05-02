@@ -1,5 +1,5 @@
 import pytest
-from infra_mgmt.certificate_scanner import ScanResult
+from infra_mgmt.scanner.certificate_scanner import ScanResult
 
 @pytest.fixture
 def test_scan_result(mock_cert_info):

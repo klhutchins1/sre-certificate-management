@@ -443,7 +443,7 @@ def render_settings_view(engine) -> None:
         
         # Socket timeout
         try:
-            current_socket_timeout = int(settings.get("scanning.timeouts.socket", 5))
+            current_socket_timeout = int(settings.get("scanning.timeouts.socket", 10))
             socket_timeout = st.number_input(
                 "Socket Timeout (seconds)",
                 min_value=1,
@@ -452,12 +452,12 @@ def render_settings_view(engine) -> None:
                 help="Maximum time to wait for socket connections"
             )
         except ValueError:
-            socket_timeout = 5
-            notify("Invalid socket timeout value, using default: 5", "warning")
+            socket_timeout = 10
+            notify("Invalid socket timeout value, using default: 10", "warning")
         
         # Request timeout
         try:
-            current_request_timeout = int(settings.get("scanning.timeouts.request", 10))
+            current_request_timeout = int(settings.get("scanning.timeouts.request", 15))
             request_timeout = st.number_input(
                 "Request Timeout (seconds)",
                 min_value=1,
@@ -466,12 +466,12 @@ def render_settings_view(engine) -> None:
                 help="Maximum time to wait for HTTP/HTTPS requests"
             )
         except ValueError:
-            request_timeout = 10
-            notify("Invalid request timeout value, using default: 10", "warning")
+            request_timeout = 15
+            notify("Invalid request timeout value, using default: 15", "warning")
         
         # DNS timeout
         try:
-            current_dns_timeout = float(settings.get("scanning.timeouts.dns", 3.0))
+            current_dns_timeout = float(settings.get("scanning.timeouts.dns", 5.0))
             dns_timeout = st.number_input(
                 "DNS Timeout (seconds)",
                 min_value=0.1,
@@ -482,8 +482,8 @@ def render_settings_view(engine) -> None:
                 help="Maximum time to wait for DNS responses"
             )
         except ValueError:
-            dns_timeout = 3.0
-            notify("Invalid DNS timeout value, using default: 3.0", "warning")
+            dns_timeout = 5.0
+            notify("Invalid DNS timeout value, using default: 5.0", "warning")
         
         # Save scanning settings
         if st.button("Save Scanning Settings"):

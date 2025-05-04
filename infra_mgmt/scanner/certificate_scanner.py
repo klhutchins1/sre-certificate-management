@@ -315,7 +315,9 @@ class CertificateScanner:
         try:
             self._apply_rate_limit()
             self._last_cert_chain = False
-            cert_binary = self._get_certificate(address, port)
+            # Use timeout from settings
+            socket_timeout = settings.get('scanning.timeouts.socket', 10)
+            cert_binary = self._get_certificate(address, port, socket_timeout=socket_timeout)
             if cert_binary:
                 cert_info = self._process_certificate(cert_binary, address, port)
                 if cert_info:
@@ -328,14 +330,18 @@ class CertificateScanner:
                     return ScanResult(error="Failed to process certificate data")
             else:
                 return ScanResult(error="No certificate data received")
-        except (ssl.SSLError, socket.timeout, ConnectionRefusedError, requests.RequestException) as e:
+        except (ssl.SSLError, ConnectionRefusedError, requests.RequestException) as e:
             self.logger.warning(f"Network or SSL error scanning {address}:{port}: {str(e)}")
             return ScanResult(error=str(e))
+        except socket.timeout:
+            msg = f"The server at {address}:{port} did not respond within the configured timeout."
+            self.logger.warning(msg)
+            return ScanResult(error=msg)
         except Exception as e:
             self.logger.exception(f"Unexpected error scanning {address}:{port}: {str(e)}")
             return ScanResult(error=str(e))
     
-    def _get_certificate(self, address: str, port: int) -> Optional[bytes]:
+    def _get_certificate(self, address: str, port: int, socket_timeout: int = 10) -> Optional[bytes]:
         """Get certificate from host with timeout."""
         sock = None
         ssock = None
@@ -350,7 +356,7 @@ class CertificateScanner:
             # Only try HTTPS for port 443 or if explicitly using HTTPS port
             if port == 443 or str(port).endswith('443'):
                 url = f"https://{address}"
-                response = requests.get(url, timeout=self.socket_timeout, verify=False)
+                response = requests.get(url, timeout=socket_timeout, verify=False)
                 headers = dict(response.headers)
                 self.logger.debug(f"Got HTTP headers for {address}: {headers}")
         except Exception as e:
@@ -397,7 +403,7 @@ class CertificateScanner:
                     raise Exception(f"Failed to create socket for {address}:{port}")
                 
                 # Set timeout and connect
-                sock.settimeout(self.socket_timeout)
+                sock.settimeout(socket_timeout)
                 self.logger.debug(f"Attempting connection to {sockaddr}")
                 sock.connect(sockaddr)
                 self.logger.debug(f"Successfully connected to {address}:{port}")
@@ -408,7 +414,7 @@ class CertificateScanner:
                 if not ssock:
                     raise Exception(f"Failed to wrap socket with SSL for {address}:{port}")
                 
-                ssock.settimeout(self.socket_timeout)
+                ssock.settimeout(socket_timeout)
                 self.logger.debug(f"Successfully established SSL connection to {address}:{port}")
                         
                 # Get certificate in binary form
@@ -421,7 +427,7 @@ class CertificateScanner:
                     self._last_headers = headers
                     
                     # Validate certificate chain
-                    self._validate_cert_chain(address, port, self.socket_timeout)
+                    self._validate_cert_chain(address, port, socket_timeout)
                     return cert_binary
                 else:
                     msg = f"The server at {address}:{port} accepted the connection but did not present a certificate"
@@ -453,7 +459,7 @@ class CertificateScanner:
                     raise Exception(error_msg)
                     
             except socket.timeout:
-                msg = f"The server at {address}:{port} did not respond within {self.socket_timeout} seconds"
+                msg = f"The server at {address}:{port} did not respond within {socket_timeout} seconds"
                 last_error = msg
                 self.logger.warning(f"{msg} (attempt {attempt + 1}/{max_retries})")
                 

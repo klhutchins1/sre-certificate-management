@@ -30,6 +30,7 @@ from sqlalchemy.orm import sessionmaker
 from ..settings import settings
 from ..models import Certificate, Domain
 from ..notifications import notify
+from infra_mgmt.exceptions import ScannerError, CertificateError
 
 # Suppress only the specific InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -337,7 +338,9 @@ class CertificateScanner:
         self.logger = logger or logging.getLogger(__name__)
         
         # Initialize rate limiting configuration
-        self.rate_limit = settings.get('scanning.certificate.rate_limit', 30)  # Default 30 requests/minute
+        self.rate_limit = settings.get('scanning.certificate.rate_limit')  # Must be set in config
+        if self.rate_limit is None:
+            raise ValueError("Missing required config: scanning.certificate.rate_limit")
         self.request_timestamps = deque(maxlen=self.rate_limit)
         self.last_scan_time = 0
         
@@ -492,6 +495,9 @@ class CertificateScanner:
                    f"Try increasing the timeout in settings or check the server's status.")
             self.logger.warning(f"Timeout error scanning {address}:{port}: {msg}")
             return ScanResult(error=msg)
+        except (ScannerError, CertificateError) as e:
+            self.logger.error(f"Error during certificate scanning: {str(e)}")
+            return ScanResult(error=str(e))
         except Exception as e:
             self.logger.exception(f"Unexpected error scanning {address}:{port}: {str(e)}")
             return ScanResult(error=str(e))
@@ -558,7 +564,7 @@ class CertificateScanner:
                 self.logger.debug(f"Resolving hostname {address}")
                 addrinfo = socket.getaddrinfo(address, port, proto=socket.IPPROTO_TCP)
                 if not addrinfo:
-                    raise Exception(f"Could not resolve hostname '{address}'")
+                    raise ScannerError(f"Could not resolve hostname '{address}'")
                 self.logger.debug(f"Successfully resolved {address} to {addrinfo[0][4]}")
                 
                 # Get the first address info entry
@@ -568,7 +574,7 @@ class CertificateScanner:
                 self.logger.debug(f"Creating socket for {address}:{port}")
                 sock = socket.socket(family, socktype, proto)
                 if not sock:
-                    raise Exception(f"Failed to create socket for {address}:{port}")
+                    raise ScannerError(f"Failed to create socket for {address}:{port}")
                 
                 # Set timeout and connect
                 sock.settimeout(socket_timeout)
@@ -580,7 +586,7 @@ class CertificateScanner:
                 self.logger.debug(f"Wrapping socket with SSL for {address}:{port}")
                 ssock = context.wrap_socket(sock, server_hostname=address)
                 if not ssock:
-                    raise Exception(f"Failed to wrap socket with SSL for {address}:{port}")
+                    raise ScannerError(f"Failed to wrap socket with SSL for {address}:{port}")
                 
                 ssock.settimeout(socket_timeout)
                 self.logger.debug(f"Successfully established SSL connection to {address}:{port}")
@@ -619,7 +625,7 @@ class CertificateScanner:
                 msg = f"Nothing is listening for HTTPS connections at {address}:{port}"
                 self.logger.warning(f"{address}:{port} is not reachable")
                 self.logger.error(msg)
-                raise Exception(msg)
+                raise ScannerError(msg)
                 
             except requests.RequestException as e:
                 error_msg = f"HTTP request error for {address}:{port}: {str(e)}"
@@ -630,7 +636,7 @@ class CertificateScanner:
                     continue
                 else:
                     self.logger.error(error_msg)
-                    raise Exception(error_msg)
+                    raise ScannerError(error_msg)
             
             except Exception as e:
                 error_msg = f"Error during certificate retrieval for {address}:{port}: {str(e)}"
@@ -640,14 +646,14 @@ class CertificateScanner:
                 if "getaddrinfo failed" in str(e):
                     error_msg = f"Domain '{address}' has no A or AAAA record; cannot scan for certificate."
                     self.logger.error(error_msg)
-                    raise Exception(error_msg)
+                    raise ScannerError(error_msg)
                 
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
                 else:
                     self.logger.error(error_msg)
-                    raise Exception(error_msg)
+                    raise ScannerError(error_msg)
             
             finally:
                 # Clean up sockets in reverse order of creation
@@ -669,7 +675,7 @@ class CertificateScanner:
             # Only treat as timeout if the last_error message matches our timeout pattern
             if last_error.startswith(f"The server at {address}:{port} did not respond within"):
                 raise CertificateScanTimeoutError(last_error)
-            raise Exception(f"Failed to retrieve certificate after {max_retries} attempts: {last_error}")
+            raise ScannerError(f"Failed to retrieve certificate after {max_retries} attempts: {last_error}")
         return None
         
     def _validate_cert_chain(self, address: str, port: int, timeout: float) -> None:

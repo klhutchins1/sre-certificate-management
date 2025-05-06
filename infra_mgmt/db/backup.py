@@ -15,6 +15,7 @@ import sqlite3
 
 from sqlalchemy import Engine, create_engine, text
 from .engine import normalize_path
+from infra_mgmt.exceptions import BackupError, DatabaseError
 
 
 def backup_database(engine, backup_dir):
@@ -29,13 +30,13 @@ def backup_database(engine, backup_dir):
         str: Path to backup file
         
     Raises:
-        Exception: If backup operation fails
+        BackupError: If backup operation fails
     """
     try:
         # Get source database path from engine and verify it exists
         source_path = engine.url.database
         if not os.path.exists(source_path):
-            raise Exception(f"Source database does not exist: {source_path}")
+            raise BackupError(f"Source database does not exist: {source_path}")
         
         # Convert backup directory to Path and resolve
         backup_path = normalize_path(str(backup_dir)).resolve()
@@ -43,23 +44,23 @@ def backup_database(engine, backup_dir):
         # Check if backup directory exists and is writable
         if backup_path.exists():
             if not backup_path.is_dir():
-                raise Exception(f"Backup path exists but is not a directory: {backup_path}")
+                raise BackupError(f"Backup path exists but is not a directory: {backup_path}")
             if not os.access(str(backup_path), os.W_OK):
-                raise Exception(f"No write permission for backup directory: {backup_path}")
+                raise BackupError(f"No write permission for backup directory: {backup_path}")
         else:
             # Try to create backup directory
             try:
                 backup_path.mkdir(parents=True, exist_ok=True)
             except PermissionError:
-                raise Exception(f"No write permission to create backup directory: {backup_path}")
+                raise BackupError(f"No write permission to create backup directory: {backup_path}")
             except Exception as e:
-                raise Exception(f"Failed to create backup directory: {str(e)}")
+                raise BackupError(f"Failed to create backup directory: {str(e)}")
             
             # Verify directory was created and is writable
             if not backup_path.is_dir():
-                raise Exception(f"Failed to create backup directory: {backup_path}")
+                raise BackupError(f"Failed to create backup directory: {backup_path}")
             if not os.access(str(backup_path), os.W_OK):
-                raise Exception(f"No write permission for created backup directory: {backup_path}")
+                raise BackupError(f"No write permission for created backup directory: {backup_path}")
         
         # Generate unique backup filename with timestamp and random suffix
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -76,9 +77,9 @@ def backup_database(engine, backup_dir):
             # Now copy the actual database file
             shutil.copy2(source_path, str(backup_file))
         except PermissionError:
-            raise Exception(f"Failed to create backup file")
+            raise BackupError(f"Failed to create backup file")
         except Exception as e:
-            raise Exception(f"Failed to create backup file")
+            raise BackupError(f"Failed to create backup file")
         
         # Verify backup is valid
         try:
@@ -93,11 +94,11 @@ def backup_database(engine, backup_dir):
                     backup_file.unlink()
             except Exception:
                 pass
-            raise Exception(f"Failed to verify backup: {str(e)}")
+            raise BackupError(f"Failed to verify backup: {str(e)}")
         
         return str(backup_file)
     except Exception as e:
-        raise Exception(f"Failed to create database backup: {str(e)}")
+        raise BackupError(f"Failed to create database backup: {str(e)}")
 
 def restore_database(backup_path: str, engine: Engine) -> bool:
     """Restore database from backup file.
@@ -110,10 +111,10 @@ def restore_database(backup_path: str, engine: Engine) -> bool:
         bool: True if restore was successful
         
     Raises:
-        sqlite3.DatabaseError: If backup file is invalid or database is locked
+        DatabaseError: If backup file is invalid or database is locked
     """
     if not os.path.exists(backup_path):
-        raise sqlite3.DatabaseError("unable to open database file")
+        raise DatabaseError("unable to open database file")
         
     # Check if database is locked by attempting to acquire a write lock
     try:
@@ -123,7 +124,7 @@ def restore_database(backup_path: str, engine: Engine) -> bool:
             conn.execute("ROLLBACK")
     except sqlite3.OperationalError as e:
         if "database is locked" in str(e).lower():
-            raise sqlite3.OperationalError("Database is locked")
+            raise DatabaseError("Database is locked")
         raise
         
     # Validate backup file
@@ -134,7 +135,7 @@ def restore_database(backup_path: str, engine: Engine) -> bool:
             cursor.execute("PRAGMA page_count")
             cursor.execute("PRAGMA page_size")
     except sqlite3.DatabaseError:
-        raise sqlite3.DatabaseError("file is not a database")
+        raise DatabaseError("file is not a database")
         
     # Copy backup file to database
     shutil.copy2(backup_path, engine.url.database)

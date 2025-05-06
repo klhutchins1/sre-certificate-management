@@ -63,6 +63,8 @@ paths:
   backups: data/backups
   database: data/certificates.db
 scanning:
+  certificate:
+    rate_limit: 30
   ct:
     rate_limit: 60
   default_rate_limit: 240

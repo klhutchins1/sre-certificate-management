@@ -131,6 +131,33 @@ The Infrastructure Management System (IMS) is a comprehensive, web-based platfor
 - Alerting for critical failures (scan, backup, config)
 - Planned: Transaction-safe imports, rollback, audit trail
 
+### 7.1 Exception Hierarchy and Error Handling Standards
+
+IMS uses a custom exception hierarchy defined in `infra_mgmt/exceptions.py` to ensure robust, traceable, and domain-specific error handling across all modules. All domain-specific errors should raise a custom exception, never the base `Exception` class. This enables:
+- Consistent error handling and logging
+- Easier debugging and user feedback
+- Clear separation of error types for different subsystems
+
+**Exception Classes:**
+
+| Exception Class      | Purpose/Domain                        | Example Usage                                      |
+|---------------------|---------------------------------------|----------------------------------------------------|
+| AppError            | Base for all IMS errors                | `raise AppError("General error")`                  |
+| DatabaseError       | Database operation failures            | `raise DatabaseError("Invalid DB path")`           |
+| BackupError         | Backup/restore operation failures      | `raise BackupError("Failed to create backup")`      |
+| ScannerError        | Certificate/domain scan failures       | `raise ScannerError("Could not resolve host")`      |
+| CertificateError    | Certificate-specific errors            | `raise CertificateError("Certificate expired")`     |
+| NotFoundError       | Resource not found                     | `raise NotFoundError("Domain not found")`          |
+| PermissionError     | Permission denied                      | `raise PermissionError("No write permission")`      |
+
+**Guidelines:**
+- Always raise the most specific exception for the error domain.
+- Catch custom exceptions in business logic and views for user-friendly error reporting.
+- Only catch base `Exception` for truly unexpected errors, and log them as critical.
+- Extend the exception hierarchy as new domains/features are added.
+
+**Reference:** See `infra_mgmt/exceptions.py` for full documentation and usage examples.
+
 ---
 
 ## 8. Performance & Scalability
@@ -238,6 +265,12 @@ Every function, method, and class should include a docstring that covers:
 - Private/internal functions should have at least a brief description.
 - Docstrings must be updated with any change to function signature or behavior.
 - Documentation reviews are part of the code review process.
+
+### 14.4 Custom Exceptions and Error Handling
+
+- Major features, modules, and public interfaces must be documented in this design document and referenced in code docstrings.
+- Changes to code should be reflected in documentation and vice versa.
+- **All custom exceptions and error handling patterns must be documented and referenced in both code and this design document.**
 
 ---
 

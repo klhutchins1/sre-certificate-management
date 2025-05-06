@@ -15,6 +15,7 @@ from sqlalchemy import Engine, create_engine, text
 from pathlib import Path, WindowsPath
 from ..models import Base
 from ..settings import Settings
+from infra_mgmt.exceptions import DatabaseError
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def init_database(db_path=None):
         # Check for invalid characters in path first
         invalid_chars = '<>"|?*'  # Remove ':' from invalid chars since it's valid in Windows paths
         if any(char in str(db_path) for char in invalid_chars):
-            raise Exception(f"Invalid database path: {db_path}")
+            raise DatabaseError(f"Invalid database path: {db_path}")
         
         # Get parent directory and create if it doesn't exist
         parent_dir = db_path.parent
@@ -105,30 +106,30 @@ def init_database(db_path=None):
 
         # Check if parent exists but is not a directory
         if parent_dir.exists() and not parent_dir.is_dir():
-            raise Exception(f"Path exists but is not a directory: {parent_dir}")
+            raise DatabaseError(f"Path exists but is not a directory: {parent_dir}")
 
         # Check if parent's parent exists
         if not parent_dir.parent.exists():
-            raise Exception(f"Parent directory's parent does not exist: {parent_dir.parent}")
+            raise DatabaseError(f"Parent directory's parent does not exist: {parent_dir.parent}")
 
         try:
             # Create all parent directories
             parent_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created parent directory: {parent_dir}")
         except PermissionError:
-            raise Exception(f"No write permission to create directory: {parent_dir}")
+            raise DatabaseError(f"No write permission to create directory: {parent_dir}")
         except Exception as e:
-            raise Exception(f"Failed to create directory {parent_dir}: {str(e)}")
+            raise DatabaseError(f"Failed to create directory {parent_dir}: {str(e)}")
 
         # Verify directory is writable
         if not os.access(str(parent_dir), os.W_OK):
-            raise Exception(f"No write permission for database directory: {parent_dir}")
+            raise DatabaseError(f"No write permission for database directory: {parent_dir}")
         
         # Handle existing database file
         if db_path.exists():
             logger.info(f"Database file exists at: {db_path}")
             if not os.access(str(db_path), os.W_OK):
-                raise Exception(f"No write permission for database file: {db_path}")
+                raise DatabaseError(f"No write permission for database file: {db_path}")
             
             # Validate existing database
             try:
@@ -180,7 +181,7 @@ def init_database(db_path=None):
             logger.info(f"Checking current directory: {current_dir}")
             for file in current_dir.glob("*.db"):
                 logger.info(f"Found database file: {file}")
-            raise Exception(f"Database file was not created at: {db_path}")
+            raise DatabaseError(f"Database file was not created at: {db_path}")
         
         return engine
     except Exception as e:

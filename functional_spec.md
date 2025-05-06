@@ -109,6 +109,23 @@ IMS is a single-page web application built with Streamlit, backed by a SQLite da
 - **Planned Features:**  
   Transaction-safe imports, rollback capabilities, and audit trails are planned for future releases.
 
+### 6.1 Exception Hierarchy
+
+IMS uses a custom exception hierarchy (see `infra_mgmt/exceptions.py`) to ensure all domain-specific errors are handled in a structured and traceable way. This includes:
+- `AppError`: Base class for all IMS errors
+- `DatabaseError`: Database operation failures
+- `BackupError`: Backup/restore operation failures
+- `ScannerError`: Certificate/domain scan failures
+- `CertificateError`: Certificate-specific errors
+- `NotFoundError`: Resource not found
+- `PermissionError`: Permission denied
+
+**Guidelines:**
+- Always raise the most specific exception for the error domain.
+- Never raise the base `Exception` for domain-specific errors.
+- Catch custom exceptions in business logic and UI for user-friendly error reporting.
+- See the Design Document for full details and usage examples.
+
 ---
 
 ## 7. Performance and Scalability

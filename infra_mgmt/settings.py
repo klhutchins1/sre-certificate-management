@@ -45,6 +45,9 @@ DEFAULT_CONFIG = {
         "backups": "data/backups"             # Default backup directory
     },
     "scanning": {
+        "certificate": {
+            "rate_limit": 30  # Certificate scan rate limit (requests per minute)
+        },
         "default_rate_limit": 60,             # Default to 1 request per second
         "whois": {
             "rate_limit": 30,                 # 30 requests per minute (1 every 2 seconds)

@@ -14,82 +14,143 @@ CertificateScanner = None
 
 class ScanManager:
     """
-    Centralized manager for scanning operations.
-    
-    This class coordinates between different scanners and manages:
-    - Target validation and processing
-    - Scan queue management
-    - Progress tracking
-    - Result aggregation
+    Centralized manager for all scanning operations in the Infrastructure Management System (IMS).
+
+    ScanManager acts as the orchestrator for domain, subdomain, and certificate scanning. It coordinates
+    between the various scanner classes (CertificateScanner, DomainScanner, SubdomainScanner), manages
+    the scan queue, tracks progress, and aggregates results. It is responsible for:
+
+    - Validating and processing scan targets (domains, IPs, URLs)
+    - Managing the scan queue and avoiding duplicate or ignored targets
+    - Delegating scanning tasks to the appropriate scanner (domain, subdomain, certificate)
+    - Handling scan results, including success, error, warning, and no-certificate cases
+    - Providing statistics and status for the scanning process
+    - Integrating with the database for persistent tracking and ignore lists
+    - Ensuring robust error handling and logging throughout the scan lifecycle
+
+    Relationships:
+        - Uses CertificateScanner for certificate retrieval and analysis
+        - Uses DomainScanner for WHOIS/DNS/domain info
+        - Uses SubdomainScanner for passive subdomain discovery
+        - Shares a tracker instance across scanners for unified state
+
+    Example usage:
+        >>> manager = ScanManager()
+        >>> valid, host, port, err = manager.process_scan_target('example.com:443', session)
+        >>> if valid:
+        ...     manager.add_to_queue(host, port)
+        ...     # ...
+        >>> while manager.has_pending_targets():
+        ...     target = manager.get_next_target()
+        ...     if target:
+        ...         manager.scan_target(session, *target)
+
+    Edge Cases:
+        - Handles empty/invalid input, duplicate scans, ignored domains/certificates, and network errors
+        - Designed to be robust against partial failures and to log all significant events
     """
     
     def __init__(self):
-        """Initialize scan manager with required scanners."""
-        # Import CertificateScanner lazily to avoid circular imports
+        """
+        Initialize scan manager with required scanners and shared state.
+        
+        This constructor sets up the core scanning components and ensures that the
+        subdomain scanner shares the same tracker as the certificate scanner, so that
+        all discovered domains and endpoints are tracked consistently. It also initializes
+        the scan history and results structures, and prepares a logger for detailed tracing.
+        
+        Side Effects:
+            - Imports CertificateScanner lazily to avoid circular imports.
+            - Initializes scanner instances and shared tracker.
+            - Sets up scan state and logging.
+        """
         global CertificateScanner
         if CertificateScanner is None:
             from .certificate_scanner import CertificateScanner
-        
         self.infra_mgmt = CertificateScanner()
         self.domain_scanner = DomainScanner()
         self.subdomain_scanner = SubdomainScanner()
-        
-        # Share tracker between scanners
         self.subdomain_scanner.tracker = self.infra_mgmt.tracker
-        
-        # Initialize scan state
-        self.scan_history = []  # Changed from set() to [] since we want to maintain order
+        self.scan_history = []
         self.scan_results = {
             "success": [],
             "error": [],
             "warning": [],
-            "no_cert": []  # Add no_cert category
+            "no_cert": []
         }
-        
         self.logger = logging.getLogger(__name__)
-        
-        # Initialize processor as None - will be set when needed
         self.processor = None
     
     def reset_scan_state(self):
-        """Reset scan state for a new scan session."""
+        """
+        Reset scan state for a new scan session.
+        
+        This method clears all accumulated scan history and results, and resets the
+        underlying CertificateScanner's state. It is typically called at the start of
+        a new scan session to ensure no stale data is carried over.
+        
+        Side Effects:
+            - Clears scan history and results.
+            - Resets state in infra_mgmt (CertificateScanner).
+        """
         self.infra_mgmt.reset_scan_state()
-        self.scan_history.clear()  # Clear scan history for new session
+        self.scan_history.clear()
         self.scan_results = {
             "success": [],
             "error": [],
             "warning": [],
-            "no_cert": []  # Add no_cert category
+            "no_cert": []
         }
     
     def process_scan_target(self, entry: str, session: Session = None) -> tuple:
-        """Process and validate a scan target."""
+        """
+        Process and validate a scan target string, extracting the hostname and port.
+        
+        This method parses the input (which may be a domain, IP, or URL), determines
+        if it is a valid scan target, and prepares it for queueing. For IP addresses,
+        it also updates the database with host information and logs any discovered
+        hostnames or network details. Returns a tuple indicating validity, the parsed
+        hostname, port, and an error message if applicable.
+        
+        Args:
+            entry (str): The scan target string (domain, IP, or URL)
+            session (Session, optional): SQLAlchemy session for DB operations
+        
+        Returns:
+            tuple: (is_valid, hostname, port, error_message)
+                - is_valid (bool): True if the target is valid and ready for scanning
+                - hostname (str or None): The parsed hostname or IP
+                - port (int or None): The parsed port (default 443 if not specified)
+                - error_message (str or None): Error message if invalid
+        
+        Edge Cases:
+            - Handles empty input, invalid formats, and parsing errors.
+            - For IPs, creates/updates host records and logs info.
+            - Accepts both URL and domain:port formats.
+        
+        Example:
+            >>> process_scan_target('example.com:443', session)
+            (True, 'example.com', 443, None)
+            >>> process_scan_target('https://test.com', session)
+            (True, 'test.com', 443, None)
+            >>> process_scan_target('', session)
+            (False, None, None, 'Empty target')
+        """
         try:
-            # Check if target is empty
             if not entry.strip():
                 return False, None, None, "Empty target"
-            
-            # Parse the target
             if '://' in entry:
-                # URL format
                 parsed = urlparse(entry)
                 hostname = parsed.hostname
                 port = parsed.port or 443
             else:
-                # domain:port or just domain format
                 parts = entry.split(':')
                 hostname = parts[0]
                 port = int(parts[1]) if len(parts) > 1 else 443
-            
-            # Check if it's an IP address
             is_ip = is_ip_address(hostname)
-            
             if is_ip:
-                # Get IP information
                 ip_info = get_ip_info(hostname)
                 self.logger.info(f"[SCAN] IP information for {hostname}: {ip_info}")
-                
-                # Create or update host record
                 host = session.query(Host).filter_by(name=hostname).first()
                 if not host:
                     host = Host(
@@ -99,20 +160,12 @@ class ScanManager:
                         last_seen=datetime.now()
                     )
                     session.add(host)
-                
-                # Add any discovered hostnames from reverse DNS
                 if ip_info['hostnames']:
                     self.logger.info(f"[SCAN] Found hostnames for {hostname}: {ip_info['hostnames']}")
-                    # Add these domains to scan queue if needed
-                
-                # Add network information if available
                 if ip_info['network']:
                     self.logger.info(f"[SCAN] Network for {hostname}: {ip_info['network']}")
-                
                 session.commit()
-            
             return True, hostname, port, None
-            
         except ValueError as e:
             self.logger.error(f"Value error processing scan target {entry}: {str(e)}")
             return False, None, None, str(e)
@@ -122,50 +175,51 @@ class ScanManager:
         except Exception as e:
             self.logger.exception(f"Unexpected error processing scan target {entry}: {str(e)}")
             return False, None, None, str(e)
-    
+
     def _is_domain_ignored(self, session: Session, domain: str) -> Tuple[bool, Optional[str]]:
         """
-        Check if a domain is in the ignore list.
-        
+        Check if a domain is in the ignore list, using all supported pattern types.
+
+        This method queries the database for ignore patterns and checks the given domain
+        against exact, wildcard, suffix, and contains patterns. Returns a tuple indicating
+        whether the domain should be ignored and the reason if applicable.
+
         Args:
-            session: Database session
-            domain: Domain to check
-            
+            session (Session): Database session
+            domain (str): Domain to check
+
         Returns:
             Tuple[bool, Optional[str]]: (is_ignored, reason)
+                - is_ignored (bool): True if the domain matches an ignore pattern
+                - reason (str or None): The reason for ignoring, if any
+
+        Edge Cases:
+            - Handles wildcard, suffix, exact, and contains patterns.
+            - Returns False, None if no match or on error.
+        
+        Example:
+            >>> _is_domain_ignored(session, 'test.example.com')
+            (True, 'Test domain')
         """
         try:
-            # Get ignore patterns from database
             ignore_patterns = session.query(IgnoredDomain).all()
-            
-            # Check each pattern
             for pattern in ignore_patterns:
                 pattern_str = pattern.pattern
-                
-                # Handle wildcard prefix (e.g., *.example.com)
                 if pattern_str.startswith('*.'):
-                    base_domain = pattern_str[2:]  # Remove '*.'
+                    base_domain = pattern_str[2:]
                     if domain.endswith(base_domain):
                         return True, pattern.reason
-                        
-                # Handle suffix match (e.g., example.com)
                 elif pattern_str.startswith('.'):
                     if domain.endswith(pattern_str):
                         return True, pattern.reason
-                        
-                # Handle exact match
                 elif pattern_str == domain:
                     return True, pattern.reason
-                    
-                # Handle contains pattern (e.g., *test*)
                 elif '*' in pattern_str:
                     parts = pattern_str.split('*')
-                    if len(parts) == 2:  # Only handle single wildcard patterns
+                    if len(parts) == 2:
                         if parts[0] in domain and parts[1] in domain:
                             return True, pattern.reason
-            
             return False, None
-            
         except Exception as e:
             self.logger.exception(f"Unexpected error checking ignore list for domain {domain}: {str(e)}")
             return False, None
@@ -173,117 +227,143 @@ class ScanManager:
     def _is_certificate_ignored(self, session: Session, common_name: str) -> Tuple[bool, Optional[str]]:
         """
         Check if a certificate should be ignored based on its Common Name.
-        
+
+        This method checks both exact and pattern-based matches in the ignore list.
+        Returns a tuple indicating whether the certificate should be ignored and the reason.
+
         Args:
-            session: Database session
-            common_name: Certificate Common Name to check
-            
+            session (Session): Database session
+            common_name (str): Certificate Common Name to check
+
         Returns:
             Tuple[bool, Optional[str]]: (is_ignored, reason)
+                - is_ignored (bool): True if the certificate matches an ignore pattern
+                - reason (str or None): The reason for ignoring, if any
+
+        Edge Cases:
+            - Checks both exact and pattern-based matches.
+            - Returns False, None if no match or on error.
+        
+        Example:
+            >>> _is_certificate_ignored(session, 'test.example.com')
+            (True, 'Test cert')
         """
         try:
-            # First check exact matches
             ignored = session.query(IgnoredCertificate).filter_by(pattern=common_name).first()
             if ignored:
                 return True, ignored.reason
-            
-            # Then check patterns
             patterns = session.query(IgnoredCertificate).all()
             for pattern in patterns:
                 if pattern.matches(common_name):
                     return True, pattern.reason
-            
             return False, None
-            
         except Exception as e:
             self.logger.exception(f"Unexpected error checking certificate ignore list for {common_name}: {str(e)}")
             return False, None
-    
+
     def add_to_queue(self, hostname: str, port: int) -> bool:
         """
-        Add target to scan queue if not already processed.
-        
+        Add a scan target to the queue if not already processed or ignored.
+
+        This method checks the ignore list and the scan tracker to avoid duplicate or
+        unwanted scans. If the target is valid, it is added to the scan queue and scan history.
+        Returns True if the target was added, False otherwise.
+
         Args:
-            hostname: Domain to scan
-            port: Port to scan
-            
+            hostname (str): Domain to scan
+            port (int): Port to scan
+
         Returns:
-            bool: True if target was added, False if already scanned
-        """
-        # Create a session to check ignore lists
-        from sqlalchemy import create_engine
+            bool: True if target was added, False if already scanned or ignored
+
+        Side Effects:
+            - Checks ignore lists and updates scan history.
+            - Adds to scan queue if not ignored or already scanned.
         
+        Example:
+            >>> add_to_queue('example.com', 443)
+            True
+        """
+        from sqlalchemy import create_engine
         db_path = settings.get("paths.database", "data/certificates.db")
         engine = create_engine(f"sqlite:///{db_path}")
         session = Session(engine)
-        
         try:
-            # First check if already scanned to avoid unnecessary DB queries
             if self.infra_mgmt.tracker.is_endpoint_scanned(hostname, port):
                 self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned in this scan session")
                 self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned in this scan session)")
                 return False
-
-            # Check if domain is ignored using all pattern types
             is_ignored = False
             ignore_reason = None
-            
-            # Get all ignore patterns at once to minimize DB queries
             patterns = session.query(IgnoredDomain).all()
-            
-            # First check exact matches
             for pattern in patterns:
                 if pattern.pattern == hostname:
                     is_ignored = True
                     ignore_reason = pattern.reason
                     break
-                    
-                # Handle wildcard prefix (*.example.com)
                 if pattern.pattern.startswith('*.'):
-                    suffix = pattern.pattern[2:]  # Remove *. from pattern
+                    suffix = pattern.pattern[2:]
                     if hostname.endswith(suffix):
                         is_ignored = True
                         ignore_reason = pattern.reason
                         break
-                        
-                # Handle suffix match (example.com)
                 elif hostname.endswith(pattern.pattern):
                     is_ignored = True
                     ignore_reason = pattern.reason
                     break
-                    
-                # Handle contains pattern (*test*)
                 elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
                     search_term = pattern.pattern.strip('*')
                     if search_term in hostname:
                         is_ignored = True
                         ignore_reason = pattern.reason
                         break
-            
             if is_ignored:
-                self.logger.info(f"[SCAN] Skipping {hostname} - Domain is in ignore list" + 
-                               (f" ({ignore_reason})" if ignore_reason else ""))
+                self.logger.info(f"[SCAN] Skipping {hostname} - Domain is in ignore list" + (f" ({ignore_reason})" if ignore_reason else ""))
                 self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (domain in ignore list)")
-                # Mark as scanned to prevent re-scanning attempts
                 self.infra_mgmt.tracker.add_scanned_domain(hostname)
                 self.infra_mgmt.tracker.add_scanned_endpoint(hostname, port)
                 return False
-            
-            # If not ignored and not already scanned, add to queue
             if self.infra_mgmt.add_scan_target(hostname, port):
                 self.scan_history.append(hostname)
                 self.logger.info(f"[SCAN] Added target to queue: {hostname}:{port}")
                 return True
-            
             return False
-            
         finally:
             session.close()
             engine.dispose()
-    
+
     def scan_target(self, session: Session, domain: str, port: int, **kwargs):
         """
-        Scan a target (domain or IP).
+        Scan a target (domain or IP), performing all necessary sub-steps.
+
+        This method is the main entry point for scanning a single target. It handles
+        DNS resolution, certificate retrieval, WHOIS/DNS info, subdomain discovery,
+        and updates all relevant database records and scan state. It is robust to
+        network errors and partial failures, and logs all significant events.
+
+        Args:
+            session (Session): SQLAlchemy session for DB operations
+            domain (str): Domain or IP to scan
+            port (int): Port to scan
+            **kwargs: Additional scan options (e.g., check_whois, check_dns, check_subdomains, check_sans, detect_platform, validate_chain, status_container, progress_container, current_step, total_steps)
+
+        Returns:
+            bool: True if scan was successful, False otherwise
+
+        Raises:
+            Exception: If an unexpected error occurs during scanning
+
+        Side Effects:
+            - Updates database records for hosts, domains, certificates, and bindings.
+            - Modifies scan_results and tracker state.
+
+        Edge Cases:
+            - Handles DNS resolution failures, connection errors, and missing certificates.
+            - Skips targets that cannot be resolved or are ignored.
+        
+        Example:
+            >>> scan_target(session, 'example.com', 443, check_whois=True, check_dns=True)
+            True
         """
         try:
             # Check if it's an IP address
@@ -659,9 +739,29 @@ class ScanManager:
             self.logger.exception(f"Unexpected error in scan_target for {domain}:{port}: {str(e)}")
             session.rollback()
             raise
+        finally:
+            # At the end of the scan loop, if there are no more pending targets, log completion
+            if not self.has_pending_targets():
+                stats = self.get_scan_stats()
+                self.logger.info(
+                    f"[SCAN COMPLETE] All scanning finished. "
+                    f"Success: {stats.get('success_count', 0)}, "
+                    f"Errors: {stats.get('error_count', 0)}, "
+                    f"Warnings: {stats.get('warning_count', 0)}, "
+                    f"No Cert: {stats.get('no_cert_count', 0)}."
+                )
     
     def get_scan_stats(self) -> dict:
-        """Get current scanning statistics."""
+        """
+        Get current scanning statistics, including scan history and result counts.
+
+        Returns:
+            dict: Dictionary of scan statistics (history size, success, error, warning, no_cert counts)
+        
+        Example:
+            >>> get_scan_stats()
+            {'scan_history_size': 10, 'success_count': 8, 'error_count': 1, 'warning_count': 1, 'no_cert_count': 0}
+        """
         stats = self.infra_mgmt.get_scan_stats()
         stats.update({
             "scan_history_size": len(self.scan_history),
@@ -673,13 +773,39 @@ class ScanManager:
         return stats
     
     def has_pending_targets(self) -> bool:
-        """Check if there are targets waiting to be scanned."""
+        """
+        Check if there are targets waiting to be scanned in the queue.
+
+        Returns:
+            bool: True if there are pending targets, False otherwise
+        
+        Example:
+            >>> has_pending_targets()
+            True
+        """
         return self.infra_mgmt.has_pending_targets()
     
     def get_next_target(self) -> Optional[Tuple[str, int]]:
-        """Get the next target from the queue."""
+        """
+        Get the next target from the scan queue.
+
+        Returns:
+            Optional[Tuple[str, int]]: (domain, port) tuple or None if queue is empty
+        
+        Example:
+            >>> get_next_target()
+            ('example.com', 443)
+        """
         return self.infra_mgmt.get_next_target()
 
     def get_scanners(self):
-        """Get scanner instances with shared tracking."""
+        """
+        Get scanner instances (domain, certificate, subdomain) with shared tracking.
+
+        Returns:
+            tuple: (domain_scanner, infra_mgmt, subdomain_scanner)
+        
+        Example:
+            >>> domain_scanner, cert_scanner, subdomain_scanner = get_scanners()
+        """
         return self.domain_scanner, self.infra_mgmt, self.subdomain_scanner

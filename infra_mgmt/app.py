@@ -1,9 +1,9 @@
 """
-Main application module for the Certificate Management System.
+Main application module for the Infrastructure Management System (IMS).
 
 This module serves as the entry point for the Streamlit-based web application that manages
-SSL/TLS certificates across different environments and platforms. It provides functionality
-for scanning, monitoring, and managing digital certificates, hosts, and their relationships.
+SSL/TLS certificates, hosts, and domains across different environments and platforms. It provides functionality
+for scanning, monitoring, and managing digital certificates, hosts, domains, and their relationships.
 
 The application features multiple views including:
 - Dashboard: Overview of certificate status and metrics
@@ -69,14 +69,19 @@ init_lock = threading.Lock()
 def init_session_state():
     """
     Initialize the Streamlit session state with required variables and objects.
-    
-    This function ensures that all necessary components are initialized only once
-    per session, including:
+
+    Ensures that all necessary components are initialized only once per session, including:
     - Certificate scanner instance
     - Database engine
     - UI state variables
-    
-    The initialization is thread-safe using a lock mechanism.
+
+    Side Effects:
+        - Modifies st.session_state to add scanner, engine, and UI state variables.
+        - Logs initialization steps.
+
+    Edge Cases:
+        - If already initialized, does nothing.
+        - If database initialization fails, logs an error.
     """
     with init_lock:
         if 'initialized' not in st.session_state:
@@ -98,18 +103,22 @@ def init_session_state():
 def render_sidebar():
     """
     Render the application's sidebar navigation menu.
-    
+
     Creates a sidebar with:
     - Application title
     - Navigation options with icons
     - Version information
-    
+
     Returns:
         str: The currently selected view name
-    
-    Note:
-        Uses Streamlit's radio component for navigation and handles view changes
-        by triggering page reruns when necessary.
+
+    Side Effects:
+        - Modifies st.session_state['current_view'] based on user selection.
+        - Calls st.rerun() to trigger a rerun on navigation change.
+        - Renders sidebar UI elements.
+
+    Edge Cases:
+        - If the current view is not in the mapping, defaults to Dashboard.
     """
     with st.sidebar:
         st.title("SRO Infra Manager")
@@ -157,15 +166,20 @@ def render_sidebar():
 def main():
     """
     Main application entry point and routing function.
-    
+
     This function:
     1. Initializes the session state
     2. Loads CSS styles
     3. Renders the sidebar navigation
     4. Routes to the appropriate view based on user selection
-    
-    The application follows a single-page architecture where views are
-    rendered based on the current navigation state.
+
+    Side Effects:
+        - Calls init_session_state() to initialize session state.
+        - Calls load_css() to load UI styles.
+        - Renders the selected view.
+
+    Edge Cases:
+        - If an unknown view is selected, nothing is rendered.
     """
     # Initialize session state
     init_session_state()

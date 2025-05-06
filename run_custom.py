@@ -16,6 +16,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def run_streamlit():
+    """
+    Launch the Streamlit application with custom command-line arguments and logging.
+
+    This function sets up the environment, configures command-line arguments for Streamlit,
+    and starts the Streamlit CLI. It ensures the correct app file is used and logs all major steps.
+
+    Side Effects:
+        - Modifies sys.argv to set Streamlit CLI arguments.
+        - Adds the current directory to sys.path.
+        - Writes logs to 'streamlit_runner.log' and stdout.
+        - Calls sys.exit() to terminate the process after Streamlit exits.
+
+    Raises:
+        Exception: Any exception during setup or Streamlit execution is logged and re-raised.
+
+    Edge Cases:
+        - If the main app file ('run.py') does not exist, logs an error and returns without running Streamlit.
+        - Any exception during execution is logged with a traceback.
+    """
     try:
         logger.info("Starting Streamlit application...")
         

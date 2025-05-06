@@ -1,5 +1,5 @@
 """
-Configuration management module for the Certificate Management System.
+Configuration management module for the Infastructure Management System.
 
 This module provides a thread-safe singleton configuration manager that handles:
 - Default configuration values

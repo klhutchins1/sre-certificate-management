@@ -7,6 +7,8 @@ including:
 - Certificate parsing and information extraction
 - Certificate chain validation
 - Rate-limited scanning operations
+
+It is designed to support robust, error-tolerant, and auditable certificate analysis for the Infrastructure Management System (IMS).
 """
 
 import ssl
@@ -39,7 +41,12 @@ from cryptography.hazmat.backends import default_backend
 from ..constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 
 def get_db_session():
-    """Get a new database session."""
+    """
+    Get a new database session using the configured database path.
+    
+    Returns:
+        Session: SQLAlchemy session object
+    """
     db_path = settings.get("paths.database", "data/certificates.db")
     engine = create_engine(f"sqlite:///{db_path}")
     Session = sessionmaker(bind=engine)
@@ -50,8 +57,30 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class CertificateInfo:
-    """Container for certificate information."""
+    """
+    Container for certificate information.
     
+    Encapsulates all relevant data about an SSL/TLS certificate, including subject, issuer,
+    validity, SANs, key usage, signature algorithm, and platform detection. Used as the
+    return type for certificate scans and for database persistence.
+    
+    Attributes:
+        serial_number (str): Certificate serial number
+        thumbprint (str): Certificate thumbprint (SHA1)
+        subject (Dict): Subject fields
+        issuer (Dict): Issuer fields
+        valid_from (datetime): Not valid before
+        expiration_date (datetime): Not valid after
+        san (List[str]): Subject Alternative Names
+        key_usage (List[str]): Key usage flags
+        signature_algorithm (str): Signature algorithm name
+        common_name (str): Common Name (CN)
+        chain_valid (bool): Whether the certificate chain is valid
+        ip_addresses (List[str]): Associated IP addresses
+        validation_errors (List[str]): Validation error messages
+        platform (str): Detected platform (F5, Akamai, etc.)
+        headers (Dict[str, str]): HTTP headers from endpoint
+    """
     def __init__(self,
                  serial_number: str = None,
                  thumbprint: str = None,
@@ -68,7 +97,11 @@ class CertificateInfo:
                  validation_errors: List[str] = None,
                  platform: str = None,
                  headers: Dict[str, str] = None):
-        """Initialize certificate information."""
+        """
+        Initialize certificate information.
+        
+        All fields are optional and will be validated after initialization.
+        """
         self.serial_number = serial_number
         self.thumbprint = thumbprint
         self.subject = subject or {}
@@ -89,7 +122,12 @@ class CertificateInfo:
         self._validate()
     
     def _validate(self):
-        """Perform basic validation of the certificate."""
+        """
+        Perform basic validation of the certificate.
+        
+        Checks expiration, not-yet-valid, required fields, and weak signature algorithms.
+        Populates validation_errors list.
+        """
         now = datetime.now(timezone.utc)  # Use UTC-aware datetime
         
         # Check expiration
@@ -117,12 +155,22 @@ class CertificateInfo:
     
     @property
     def is_valid(self) -> bool:
-        """Check if the certificate is valid."""
+        """
+        Check if the certificate is valid (no validation errors and chain is valid).
+        
+        Returns:
+            bool: True if valid, False otherwise
+        """
         return not self.validation_errors and self.chain_valid
     
     @property
     def validation_status(self) -> str:
-        """Get a human-readable validation status."""
+        """
+        Get a human-readable validation status string.
+        
+        Returns:
+            str: Status message
+        """
         if self.is_valid:
             return "Valid"
         
@@ -135,7 +183,12 @@ class CertificateInfo:
         return "Unknown"
     
     def to_dict(self) -> Dict:
-        """Convert certificate info to dictionary."""
+        """
+        Convert certificate info to dictionary.
+        
+        Returns:
+            dict: Dictionary representation of the certificate info
+        """
         return {
             'serial_number': self.serial_number,
             'thumbprint': self.thumbprint,
@@ -157,14 +210,32 @@ class CertificateInfo:
         }
 
 class ScanResult:
-    """Container for scan results."""
+    """
+    Container for scan results.
     
+    Encapsulates the result of a certificate scan, including the certificate info,
+    error messages, IP addresses, and warnings. Used for reporting and UI display.
+    
+    Attributes:
+        certificate_info (Optional[CertificateInfo]): Parsed certificate info
+        error (Optional[str]): Error message, if any
+        ip_addresses (List[str]): IP addresses scanned
+        warnings (List[str]): Warning messages
+    """
     def __init__(self,
                  certificate_info: Optional[CertificateInfo] = None,
                  error: Optional[str] = None,
                  ip_addresses: List[str] = None,
                  warnings: List[str] = None):
-        """Initialize scan result."""
+        """
+        Initialize scan result.
+        
+        Args:
+            certificate_info (Optional[CertificateInfo]): Parsed certificate info
+            error (Optional[str]): Error message, if any
+            ip_addresses (List[str]): IP addresses scanned
+            warnings (List[str]): Warning messages
+        """
         self.certificate_info = certificate_info
         self.error = error
         self.ip_addresses = ip_addresses or []
@@ -172,17 +243,32 @@ class ScanResult:
     
     @property
     def has_certificate(self) -> bool:
-        """Check if scan result contains a certificate."""
+        """
+        Check if scan result contains a certificate.
+        
+        Returns:
+            bool: True if certificate_info is present
+        """
         return self.certificate_info is not None
     
     @property
     def is_valid(self) -> bool:
-        """Check if scan result is valid."""
+        """
+        Check if scan result is valid (certificate present and no error).
+        
+        Returns:
+            bool: True if valid, False otherwise
+        """
         return self.has_certificate and not self.error
     
     @property
     def status(self) -> str:
-        """Get human-readable status."""
+        """
+        Get human-readable status string for the scan result.
+        
+        Returns:
+            str: Status message
+        """
         if self.error:
             return f"Error: {self.error}"
         
@@ -201,7 +287,12 @@ class ScanResult:
         return "Valid certificate"
     
     def to_dict(self) -> Dict:
-        """Convert scan result to dictionary."""
+        """
+        Convert scan result to dictionary.
+        
+        Returns:
+            dict: Dictionary representation of the scan result
+        """
         return {
             'has_certificate': self.has_certificate,
             'is_valid': self.is_valid,
@@ -212,20 +303,37 @@ class ScanResult:
             'certificate_info': self.certificate_info.to_dict() if self.certificate_info else None
         }
 
+class CertificateScanTimeoutError(Exception):
+    """
+    Custom exception for certificate scan socket timeouts.
+    """
+    pass
+
 class CertificateScanner:
     """
-    Certificate scanning and analysis class.
+    Certificate scanning and analysis class for IMS.
     
-    This class provides functionality to:
+    Provides robust, rate-limited, and error-tolerant methods to:
     - Scan certificates from network endpoints
     - Process and extract certificate information
     - Handle rate limiting for certificate operations
     - Validate certificate chains
-    - Extract certificate details
-    """
+    - Extract certificate details and platform information
     
+    Used by ScanManager and other components to enrich certificate data and support compliance/audit workflows.
+    
+    Example usage:
+        >>> scanner = CertificateScanner()
+        >>> result = scanner.scan_certificate('example.com', 443)
+        >>> if result.has_certificate:
+        ...     print(result.certificate_info.to_dict())
+    """
     def __init__(self, logger=None):
-        """Initialize the certificate scanner."""
+        """
+        Initialize the certificate scanner, loading configuration and rate limits.
+        
+        Sets up rate limiting, timeout settings, and initializes the scan tracker.
+        """
         self.logger = logger or logging.getLogger(__name__)
         
         # Initialize rate limiting configuration
@@ -244,35 +352,67 @@ class CertificateScanner:
         self.tracker = ScanTracker()
     
     def reset_scan_state(self):
-        """Reset the scanner's state for a new scan session."""
+        """
+        Reset the scanner's state for a new scan session.
+        
+        Clears the tracker, resets validation flags, and clears rate limiting state.
+        """
         self.tracker.reset()
         self._last_cert_chain = False
         self.last_scan_time = 0
         self.request_timestamps.clear()
     
     def is_domain_scanned(self, domain: str) -> bool:
-        """Check if a domain has been scanned in this session."""
+        """
+        Check if a domain has been scanned in this session.
+        
+        Args:
+            domain (str): Domain name
+        
+        Returns:
+            bool: True if scanned, False otherwise
+        """
         return self.tracker.is_domain_scanned(domain)
     
     def add_scanned_domain(self, domain: str):
-        """Mark a domain as scanned."""
+        """
+        Mark a domain as scanned in the tracker.
+        
+        Args:
+            domain (str): Domain name
+        """
         self.tracker.add_scanned_domain(domain)
     
     def add_pending_domain(self, domain: str):
-        """Add a domain to be scanned if not already processed."""
+        """
+        Add a domain to be scanned if not already processed.
+        
+        Args:
+            domain (str): Domain name
+        """
         self.tracker.add_pending_domain(domain)
     
     def get_pending_domains(self) -> Set[str]:
-        """Get domains waiting to be scanned."""
+        """
+        Get domains waiting to be scanned.
+        
+        Returns:
+            Set[str]: Pending domains
+        """
         return self.tracker.get_pending_domains()
     
     def _apply_rate_limit(self):
-        """Apply rate limiting for certificate operations."""
+        """
+        Apply rate limiting for certificate operations.
+        
+        Ensures that certificate scans do not exceed configured rate limits.
+        Sleeps if necessary to avoid overloading endpoints.
+        """
         current_time = time.time()
             
         # Calculate time per request in seconds
         time_per_request = 60.0 / self.rate_limit
-        
+            
         # Remove timestamps older than our window
         while self.request_timestamps and current_time - self.request_timestamps[0] > 60:
             self.request_timestamps.popleft()
@@ -304,18 +444,26 @@ class CertificateScanner:
         """
         Scan a host for SSL/TLS certificates.
         
+        Connects to the given address and port, retrieves the certificate, parses it,
+        validates the chain, and returns a ScanResult. Handles network errors, timeouts,
+        and protocol issues robustly.
+        
         Args:
-            address: The hostname or IP to scan
-            port: The port to scan (default 443)
-            
+            address (str): The hostname or IP to scan
+            port (int): The port to scan (default 443)
+        
         Returns:
             ScanResult: Scan result containing certificate info or error
+        
+        Example:
+            >>> scanner = CertificateScanner()
+            >>> result = scanner.scan_certificate('example.com', 443)
+            >>> if result.has_certificate:
+            ...     print(result.certificate_info.to_dict())
         """
-        self.logger.info(f"Starting certificate scan for {address}:{port}")
         try:
             self._apply_rate_limit()
             self._last_cert_chain = False
-            # Use timeout from settings
             socket_timeout = settings.get('scanning.timeouts.socket', 10)
             cert_binary = self._get_certificate(address, port, socket_timeout=socket_timeout)
             if cert_binary:
@@ -330,19 +478,39 @@ class CertificateScanner:
                     return ScanResult(error="Failed to process certificate data")
             else:
                 return ScanResult(error="No certificate data received")
+        except CertificateScanTimeoutError as e:
+            # Only log as warning, not full stack trace
+            self.logger.warning(f"Timeout scanning {address}:{port}: {str(e)}")
+            return ScanResult(error=str(e))
         except (ssl.SSLError, ConnectionRefusedError, requests.RequestException) as e:
             self.logger.warning(f"Network or SSL error scanning {address}:{port}: {str(e)}")
             return ScanResult(error=str(e))
-        except socket.timeout:
-            msg = f"The server at {address}:{port} did not respond within the configured timeout."
-            self.logger.warning(msg)
+        except socket.timeout as e:
+            socket_timeout = settings.get('scanning.timeouts.socket', 10)
+            msg = (f"The server at {address}:{port} did not respond within {socket_timeout} seconds. "
+                   f"This may indicate a firewall, network issue, or that the server is down. "
+                   f"Try increasing the timeout in settings or check the server's status.")
+            self.logger.warning(f"Timeout error scanning {address}:{port}: {msg}")
             return ScanResult(error=msg)
         except Exception as e:
             self.logger.exception(f"Unexpected error scanning {address}:{port}: {str(e)}")
             return ScanResult(error=str(e))
     
     def _get_certificate(self, address: str, port: int, socket_timeout: int = 10) -> Optional[bytes]:
-        """Get certificate from host with timeout."""
+        """
+        Get certificate from host with timeout and retry logic.
+        
+        Handles DNS resolution, socket creation, SSL handshake, and error handling.
+        Returns the certificate in binary form if successful.
+        
+        Args:
+            address (str): Hostname or IP
+            port (int): Port
+            socket_timeout (int): Timeout in seconds
+        
+        Returns:
+            Optional[bytes]: DER-encoded certificate or None
+        """
         sock = None
         ssock = None
         cert_binary = None
@@ -434,41 +602,18 @@ class CertificateScanner:
                     self.logger.warning(msg)
                     return None
                     
-            except ssl.SSLError as e:
-                self._last_cert_chain = False
-                error_msg = ""
-                if "alert internal error" in str(e):
-                    error_msg = f"The server at {address}:{port} actively rejected the SSL/TLS connection"
-                elif "handshake failure" in str(e):
-                    error_msg = f"SSL/TLS handshake failed - The server might not support the offered protocol versions or cipher suites"
-                elif "unknown protocol" in str(e):
-                    error_msg = f"SSL/TLS protocol error - The server might be using an unsupported protocol version"
-                elif "certificate verify failed" in str(e):
-                    error_msg = f"Certificate verification failed - The server's certificate chain could not be validated"
-                else:
-                    error_msg = f"SSL/TLS connection failed: {str(e)}"
-                
-                last_error = error_msg
-                self.logger.warning(f"SSL error for {address}:{port} (attempt {attempt + 1}/{max_retries}): {error_msg}")
-                
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-                    continue
-                else:
-                    self.logger.error(f"SSL error for {address}:{port}: {error_msg}")
-                    raise Exception(error_msg)
-                    
             except socket.timeout:
-                msg = f"The server at {address}:{port} did not respond within {socket_timeout} seconds"
+                msg = (f"The server at {address}:{port} did not respond within {socket_timeout} seconds on attempt {attempt + 1} of {max_retries}. "
+                       f"This may indicate a firewall, network issue, or that the server is down. "
+                       f"Try increasing the timeout in settings or check the server's status.")
                 last_error = msg
-                self.logger.warning(f"{msg} (attempt {attempt + 1}/{max_retries})")
-                
+                self.logger.warning(f"Timeout error for {address}:{port} (attempt {attempt + 1}/{max_retries}): {msg}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
                 else:
-                    self.logger.error(msg)
-                    raise Exception(msg)
+                    self.logger.warning(msg)
+                    raise CertificateScanTimeoutError(msg)
             
             except ConnectionRefusedError:
                 msg = f"Nothing is listening for HTTPS connections at {address}:{port}"
@@ -521,11 +666,23 @@ class CertificateScanner:
         
         # If we get here, all retries failed
         if last_error:
+            # Only treat as timeout if the last_error message matches our timeout pattern
+            if last_error.startswith(f"The server at {address}:{port} did not respond within"):
+                raise CertificateScanTimeoutError(last_error)
             raise Exception(f"Failed to retrieve certificate after {max_retries} attempts: {last_error}")
         return None
         
     def _validate_cert_chain(self, address: str, port: int, timeout: float) -> None:
-        """Validate certificate chain separately."""
+        """
+        Validate certificate chain separately using system trust store.
+        
+        Sets self._last_cert_chain to True if valid, False otherwise.
+        
+        Args:
+            address (str): Hostname or IP
+            port (int): Port
+            timeout (float): Timeout in seconds
+        """
         try:
             verify_context = ssl.create_default_context()
             verify_context.check_hostname = False
@@ -553,7 +710,15 @@ class CertificateScanner:
             self.logger.exception(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
     
     def _check_dns_for_platform(self, domain: str) -> Optional[str]:
-        """Check DNS records for platform indicators."""
+        """
+        Check DNS records for platform indicators (Akamai, Cloudflare, etc.).
+        
+        Args:
+            domain (str): Domain name
+        
+        Returns:
+            Optional[str]: Detected platform or None
+        """
         try:
             resolver = dns.resolver.Resolver()
             
@@ -605,7 +770,20 @@ class CertificateScanner:
             return None
 
     def _process_certificate(self, cert_binary: bytes, address: str, port: int) -> Optional[CertificateInfo]:
-        """Process a certificate and extract its information."""
+        """
+        Process a certificate and extract its information.
+        
+        Parses the DER-encoded certificate, extracts subject, issuer, SANs, key usage,
+        signature algorithm, and attempts to detect platform. Handles parsing errors robustly.
+        
+        Args:
+            cert_binary (bytes): DER-encoded certificate
+            address (str): Hostname or IP
+            port (int): Port
+        
+        Returns:
+            Optional[CertificateInfo]: Parsed certificate info or None
+        """
         try:
             self.logger.debug(f"Processing certificate for {address}:{port}")
             
@@ -777,40 +955,60 @@ class CertificateScanner:
     
     def add_scan_target(self, domain: str, port: int = 443) -> bool:
         """
-        Add a target to the scan queue.
+        Add a target to the scan queue if not already scanned.
         
         Args:
-            domain: Domain to scan
-            port: Port to scan (default: 443)
-            
+            domain (str): Domain to scan
+            port (int): Port to scan (default: 443)
+        
         Returns:
             bool: True if target was added, False if already scanned
         """
         return self.tracker.add_to_queue(domain, port)
     
     def get_next_target(self) -> Optional[Tuple[str, int]]:
-        """Get the next target from the queue."""
+        """
+        Get the next target from the queue.
+        
+        Returns:
+            Optional[Tuple[str, int]]: (domain, port) tuple or None if queue is empty
+        """
         return self.tracker.get_next_target()
     
     def has_pending_targets(self) -> bool:
-        """Check if there are targets waiting to be scanned."""
+        """
+        Check if there are targets waiting to be scanned.
+        
+        Returns:
+            bool: True if there are pending targets, False otherwise
+        """
         return self.tracker.has_pending_targets()
     
     def get_queue_size(self) -> int:
-        """Get the number of targets in the queue."""
+        """
+        Get the number of targets in the queue.
+        
+        Returns:
+            int: Number of targets in the queue
+        """
         return self.tracker.queue_size()
     
     def get_scan_stats(self) -> Dict:
-        """Get current scanning statistics."""
+        """
+        Get current scanning statistics from the tracker.
+        
+        Returns:
+            dict: Scanning statistics
+        """
         return self.tracker.get_scan_stats()
     
     def process_discovered_domain(self, domain: str, port: int = 443) -> None:
         """
-        Process a newly discovered domain.
+        Process a newly discovered domain and add it to the scan queue if not already scanned.
         
         Args:
-            domain: Domain that was discovered
-            port: Port to scan (default: 443)
+            domain (str): Domain that was discovered
+            port (int): Port to scan (default: 443)
         """
         if not self.tracker.is_endpoint_scanned(domain, port):
             self.tracker.add_to_queue(domain, port)
@@ -818,11 +1016,11 @@ class CertificateScanner:
     
     def process_discovered_cname(self, cname: str, port: int = 443) -> None:
         """
-        Process a newly discovered CNAME record.
+        Process a newly discovered CNAME record and add it to the scan queue if not already scanned.
         
         Args:
-            cname: CNAME target that was discovered
-            port: Port to scan (default: 443)
+            cname (str): CNAME target that was discovered
+            port (int): Port to scan (default: 443)
         """
         cname = cname.rstrip('.')  # Remove trailing dot if present
         if not self.tracker.is_endpoint_scanned(cname, port):
@@ -833,11 +1031,13 @@ class CertificateScanner:
         """
         Detect if certificate is being served through a WAF/CDN/Load Balancer.
         
+        Checks HTTP headers, certificate issuer, and SANs for platform indicators.
+        
         Args:
-            cert_info: Certificate information object
-            
+            cert_info (CertificateInfo): Certificate information object
+        
         Returns:
-            Optional[str]: Detected platform (PLATFORM_F5, PLATFORM_AKAMAI, etc.) or None
+            Optional[str]: Detected platform or None
         """
         try:
             # Check headers first (most reliable)
@@ -905,9 +1105,11 @@ class CertificateScanner:
         """
         Scan a list of domains for certificates.
         
+        Adds all domains to the scan queue and processes them sequentially.
+        
         Args:
-            domains: List of domains to scan
-            
+            domains (List[str]): List of domains to scan
+        
         Returns:
             List[ScanResult]: List of scan results for each domain
         """
@@ -937,10 +1139,10 @@ class CertificateScanner:
         Process Subject Alternative Names from a certificate and add them to scan queue.
         
         Args:
-            session: Database session
-            cert: Certificate object to process
-            port: Port to use for scanning
-            
+            session (Session): Database session
+            cert (Certificate): Certificate object to process
+            port (int): Port to use for scanning
+        
         Returns:
             Set[str]: Set of processed SANs
         """
@@ -960,7 +1162,15 @@ class CertificateScanner:
         return processed_sans 
 
     def get_certificate_sans(self, session: Session) -> List[str]:
-        """Get all unique SANs from existing certificates."""
+        """
+        Get all unique SANs from existing certificates in the database.
+        
+        Args:
+            session (Session): Database session
+        
+        Returns:
+            List[str]: List of unique SANs
+        """
         all_sans = set()
         try:
             certificates = session.query(Certificate).all()

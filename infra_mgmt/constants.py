@@ -1,16 +1,29 @@
 """
-Application-wide constants for the Certificate Management System.
+Application-wide constants for the Infrastructure Management System (IMS).
 
-This module defines all the constant values, mappings, and enumerations used throughout
-the application. It includes definitions for:
+This module defines all constant values, mappings, and enumerations used throughout
+IMS. It provides a single source of truth for:
 - Platform types and their display representations
 - Application types and categories
 - Host classification types
 - Environment definitions
 - Certificate binding types
+- Platform deployment types
+- Domain classification TLDs
+- Default rate limits and timeouts
+- Certificate chain validation settings
 
 Each constant is carefully chosen to maintain consistency across the application
-and provide clear, meaningful values for the UI and database operations.
+and provide clear, meaningful values for the UI, API, and database operations.
+
+Usage:
+    Import this module wherever you need to reference a constant, e.g.:
+        from infra_mgmt.constants import PLATFORM_F5, ENV_PRODUCTION
+
+Maintainability:
+    - Update this file when adding new platforms, environments, or types.
+    - Keep all constant names UPPERCASE and group related constants together.
+    - Document the rationale for any changes or additions.
 """
 
 #------------------------------------------------------------------------------
@@ -124,6 +137,10 @@ PLATFORMS = [
     PLATFORM_CONNECTION
 ]
 
+#------------------------------------------------------------------------------
+# Domain Classification TLDs
+#------------------------------------------------------------------------------
+
 # Common internal TLDs and subdomains
 # Used for automatic domain classification when not explicitly configured
 INTERNAL_TLDS = {
@@ -136,8 +153,12 @@ INTERNAL_TLDS = {
 EXTERNAL_TLDS = {
     '.com', '.org', '.net', '.edu', '.gov', '.mil', '.int',
     '.info', '.biz', '.name', '.pro', '.museum', '.coop', '.aero',
-    '.asia', '.cat', '.jobs', '.mobi', '.tel', '.travel', '.xxx'
+    '.asia', '.cat', '.jobs', '.mobi', '.tel', '.travel'
 }
+
+#------------------------------------------------------------------------------
+# Default Rate Limits and Timeouts
+#------------------------------------------------------------------------------
 
 # Default rate limits (requests per minute)
 DEFAULT_RATE_LIMIT = 30  # Default 30 requests/minute (1/2sec)
@@ -146,8 +167,12 @@ EXTERNAL_RATE_LIMIT = 20  # Default 20 requests/minute (1/3sec)
 
 # Default timeouts (seconds)
 DNS_TIMEOUT = 5.0
-SOCKET_TIMEOUT = 10.0
-REQUEST_TIMEOUT = 10.0
+SOCKET_TIMEOUT = 5.0
+REQUEST_TIMEOUT = 5.0
+
+#------------------------------------------------------------------------------
+# Certificate Chain Validation Settings
+#------------------------------------------------------------------------------
 
 # Certificate chain validation settings
 CHAIN_VALIDATION_TIMEOUT = 5.0

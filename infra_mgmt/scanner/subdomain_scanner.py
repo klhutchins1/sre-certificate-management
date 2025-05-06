@@ -4,6 +4,8 @@ Subdomain Scanner Module
 This module provides subdomain enumeration functionality using safe, passive methods:
 1. Certificate-based discovery (from SSL certificates' Subject Alternative Names)
 2. Public sources (Certificate Transparency logs)
+
+It is designed to support robust, error-tolerant, and auditable subdomain discovery for the Infrastructure Management System (IMS).
 """
 
 import dns.resolver
@@ -35,11 +37,28 @@ if not logger.handlers:
 
 class SubdomainScanner:
     """
-    Passive subdomain discovery using certificate data and public sources.
+    Passive subdomain discovery using certificate data and public sources for IMS.
+
+    This class provides methods to:
+    - Discover subdomains from SSL certificate SANs
+    - Discover subdomains from Certificate Transparency logs
+    - Save discovered subdomains to the database
+    - Integrate with the scan queue and tracker
+    - Support rate limiting and robust error handling
+
+    Example usage:
+        >>> scanner = SubdomainScanner()
+        >>> subdomains = scanner.scan_subdomains('example.com')
+        >>> print(subdomains)
     """
     
     def __init__(self, methods=None):
-        """Initialize the subdomain scanner."""
+        """
+        Initialize the subdomain scanner, loading configuration and rate limits.
+        
+        Args:
+            methods (Optional[List[str]]): List of methods to use ('cert', 'ct'). Defaults to both.
+        """
         self.domain_scanner = DomainScanner()
         self.infra_mgmt = CertificateScanner()
         self.last_ct_query_time = 0
@@ -56,25 +75,38 @@ class SubdomainScanner:
         logger.info(f"Initialized SubdomainScanner with methods: {self.methods}, CT rate limit: {self.ct_rate_limit}/min")
     
     def set_status_container(self, container):
-        """Set the status container for UI updates."""
+        """
+        Set the status container for UI updates.
+        
+        Args:
+            container: Streamlit or UI status container
+        """
         self.status_container = container
     
     def update_status(self, message: str):
-        """Update the UI status if container is available."""
+        """
+        Update the UI status if container is available and log the message.
+        
+        Args:
+            message (str): Status message
+        """
         if self.status_container:
             self.status_container.text(message)
         logger.info(message)
 
     def _get_certificate_sans(self, domain: str, port: int = 443) -> Set[str]:
         """
-        Get subdomains from SSL certificate's Subject Alternative Names.
+        Get subdomains from SSL certificate's Subject Alternative Names (SANs).
         
         Args:
-            domain: Domain to check
-            port: Port to connect to (default: 443)
-            
+            domain (str): Domain to check
+            port (int): Port to connect to (default: 443)
+        
         Returns:
             Set[str]: Set of discovered subdomains
+        
+        Edge Cases:
+            - Handles missing/invalid certificates, wildcards, and non-matching SANs.
         """
         subdomains = set()
         try:
@@ -113,13 +145,16 @@ class SubdomainScanner:
     
     def _get_ct_logs_subdomains(self, domain: str) -> Set[str]:
         """
-        Get subdomains from Certificate Transparency logs.
+        Get subdomains from Certificate Transparency logs (crt.sh).
         
         Args:
-            domain: Domain to search for
-            
+            domain (str): Domain to search for
+        
         Returns:
             Set[str]: Set of discovered subdomains
+        
+        Edge Cases:
+            - Handles rate limiting, request errors, and invalid formats.
         """
         subdomains = set()
         try:
@@ -196,13 +231,13 @@ class SubdomainScanner:
 
     def _validate_domain_format(self, domain: str) -> bool:
         """
-        Validate domain name format.
+        Validate domain name format for subdomain discovery.
         
         Args:
-            domain: Domain name to validate
-            
+            domain (str): Domain name to validate
+        
         Returns:
-            bool: True if domain name format is valid
+            bool: True if valid, False otherwise
         """
         # Handle wildcard domains
         if domain.startswith('*.'):
@@ -246,15 +281,21 @@ class SubdomainScanner:
     
     def scan_subdomains(self, domain: str, methods: List[str] = None) -> Set[str]:
         """
-        Discover subdomains using passive methods.
+        Discover subdomains using passive methods (certificate SANs, CT logs).
         
         Args:
-            domain: Domain to scan
-            methods: List of methods to use (cert, ct)
-                    If None, uses instance default methods
+            domain (str): Domain to scan
+            methods (List[str], optional): Methods to use ('cert', 'ct'). Defaults to instance methods.
         
         Returns:
             Set[str]: Set of all discovered subdomains
+        
+        Edge Cases:
+            - Handles ignore list, duplicate subdomains, and method errors.
+        
+        Example:
+            >>> scanner = SubdomainScanner()
+            >>> subdomains = scanner.scan_subdomains('example.com')
         """
         # Use provided methods or instance defaults
         methods = methods or self.methods
@@ -319,15 +360,18 @@ class SubdomainScanner:
 
     def _save_subdomain_to_db(self, session: Session, parent_domain: str, subdomain: str) -> Optional[Domain]:
         """
-        Save a discovered subdomain to the database.
+        Save a discovered subdomain to the database and link to parent domain.
         
         Args:
-            session: Database session
-            parent_domain: Parent domain name
-            subdomain: Subdomain name to save
-            
+            session (Session): Database session
+            parent_domain (str): Parent domain name
+            subdomain (str): Subdomain name to save
+        
         Returns:
             Optional[Domain]: Created or updated domain object
+        
+        Edge Cases:
+            - Handles DB errors, duplicate domains, and parent relationships.
         """
         try:
             # Get or create parent domain
@@ -374,17 +418,24 @@ class SubdomainScanner:
 
     def scan_and_process_subdomains(self, domain: str, port: int = 443, check_whois: bool = True, check_dns: bool = True, scanned_domains: Set[str] = None) -> List[Dict]:
         """
-        Discover and process subdomains for a given domain.
+        Discover and process subdomains for a given domain, saving results to the database.
         
         Args:
-            domain: The domain to scan subdomains for
-            port: Port to use for scanning (default: 443)
-            check_whois: Whether to check WHOIS for discovered subdomains
-            check_dns: Whether to check DNS for discovered subdomains
-            scanned_domains: Set of already scanned domains to avoid duplicates
-            
+            domain (str): The domain to scan subdomains for
+            port (int): Port to use for scanning (default: 443)
+            check_whois (bool): Whether to check WHOIS for discovered subdomains
+            check_dns (bool): Whether to check DNS for discovered subdomains
+            scanned_domains (Set[str], optional): Already scanned domains to avoid duplicates
+        
         Returns:
             List[Dict]: List of processed subdomain results
+        
+        Edge Cases:
+            - Handles ignore list, duplicate subdomains, and DB errors.
+        
+        Example:
+            >>> scanner = SubdomainScanner()
+            >>> results = scanner.scan_and_process_subdomains('example.com')
         """
         results = []
         

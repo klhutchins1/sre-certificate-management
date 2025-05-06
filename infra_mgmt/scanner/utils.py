@@ -5,7 +5,28 @@ import logging
 from typing import Any, Dict
 
 def is_ip_address(address: str) -> bool:
-    """Check if a string is an IP address."""
+    """
+    Check if a string is an IP address (IPv4 or IPv6).
+
+    Attempts to parse the input string as an IP address using the ipaddress module.
+    Returns True if valid, False otherwise. Handles both IPv4 and IPv6.
+
+    Args:
+        address (str): The string to check
+
+    Returns:
+        bool: True if the string is a valid IP address, False otherwise
+
+    Edge Cases:
+        - Returns False for empty strings, malformed addresses, or exceptions
+        - Logs unexpected errors for debugging
+
+    Example:
+        >>> is_ip_address('192.168.1.1')
+        True
+        >>> is_ip_address('not.an.ip')
+        False
+    """
     try:
         ipaddress.ip_address(address)
         return True
@@ -17,14 +38,31 @@ def is_ip_address(address: str) -> bool:
 
 def get_ip_info(ip: str) -> Dict[str, Any]:
     """
-    Get information about an IP address.
+    Get information about an IP address, including WHOIS, reverse DNS, and network range.
+
+    This function attempts to gather:
+    - Reverse DNS (PTR records)
+    - Network range (CIDR block)
+    - WHOIS information (registrar, organization, country, creation/updated date)
+
     Args:
-        ip: IP address to look up
+        ip (str): IP address to look up
+
     Returns:
-        Dict containing IP information including:
-        - WHOIS data
-        - Reverse DNS
-        - Network range
+        Dict[str, Any]: Dictionary containing:
+            - 'whois': WHOIS info dict or None
+            - 'hostnames': List of PTR hostnames (may be empty)
+            - 'network': Network range as string (CIDR) or None
+
+    Edge Cases:
+        - Handles NXDOMAIN, NoNameservers, and other DNS errors gracefully
+        - Handles ValueError for invalid IP/network
+        - Handles ImportError if whois module is missing
+        - Logs all errors for debugging
+
+    Example:
+        >>> get_ip_info('8.8.8.8')
+        {'whois': {...}, 'hostnames': [...], 'network': '8.8.8.0/24'}
     """
     logger = logging.getLogger(__name__)
     info = {

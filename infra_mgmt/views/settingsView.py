@@ -42,7 +42,7 @@ import logging
 import yaml
 import time
 from typing import List, Tuple, Dict, Optional, Union, Any
-from ..db import SessionManager, _is_network_path, _normalize_path
+from ..db import SessionManager, is_network_path, normalize_path
 from ..exports import (
     export_certificates_to_csv,
     export_certificates_to_pdf,

@@ -1,5 +1,8 @@
 """
 Module for handling database and configuration backup operations.
+
+Provides functions to create, restore, and list backups for the IMS database and configuration files.
+Ensures backups are timestamped, manifest-driven, and support both database and YAML config recovery.
 """
 from datetime import datetime
 import json
@@ -16,15 +19,27 @@ from infra_mgmt.models import Base
 
 def create_backup(engine=None):
     """
-    Create a backup of the database and configuration
-    
+    Create a backup of the database and configuration.
+
+    This function creates timestamped backups of the main database file and the current configuration.
+    It also generates a manifest JSON file describing the backup contents for traceability and recovery.
+
     Args:
-        engine: Optional SQLAlchemy engine instance
-    
+        engine (optional): SQLAlchemy engine instance. If not provided, uses settings to locate the DB.
+
     Returns:
-        Tuple[bool, str]: A tuple containing:
+        Tuple[bool, str]:
             - bool: Success status of the backup operation
-            - str: Message describing the result
+            - str: Message describing the result (success or error details)
+
+    Edge Cases:
+        - Handles missing database/config files, path resolution errors, and file I/O errors.
+        - Ensures backup directory exists and is writable.
+        - Returns clear error messages for all failure modes.
+
+    Example:
+        >>> success, msg = create_backup()
+        >>> print(msg)
     """
     try:
         settings = Settings()
@@ -95,13 +110,27 @@ def create_backup(engine=None):
 
 def restore_backup(backup_path):
     """
-    Restore database and configuration from a backup
-    
+    Restore database and configuration from a backup manifest.
+
+    This function reads a manifest JSON file, verifies the referenced backup files exist,
+    and restores both the database and configuration to their previous state.
+
     Args:
-        backup_path: Path to the backup manifest file
-        
+        backup_path (str or Path): Path to the backup manifest file
+
     Returns:
-        Tuple[bool, str]: Success status and message
+        Tuple[bool, str]:
+            - bool: Success status of the restore operation
+            - str: Message describing the result (success or error details)
+
+    Edge Cases:
+        - Handles missing/invalid manifest, missing backup files, and file I/O errors.
+        - Ensures atomic restore of both DB and config.
+        - Returns clear error messages for all failure modes.
+
+    Example:
+        >>> success, msg = restore_backup('backups/backup_20240101_120000.json')
+        >>> print(msg)
     """
     settings = Settings()
     db_path = settings.get("paths.database")
@@ -154,10 +183,22 @@ def restore_backup(backup_path):
 
 def list_backups():
     """
-    List available backups ordered by timestamp (newest first)
-    
+    List available backups ordered by timestamp (newest first).
+
+    This function scans the backup directory for manifest files, loads their metadata,
+    and returns a list of backup information dictionaries sorted by creation time.
+
     Returns:
-        List[Dict]: List of backup information dictionaries
+        List[Dict]: List of backup information dictionaries, each including manifest path, database, config, and timestamps.
+
+    Edge Cases:
+        - Handles missing/empty backup directory, invalid manifests, and file I/O errors.
+        - Returns an empty list if no valid backups are found.
+
+    Example:
+        >>> backups = list_backups()
+        >>> for b in backups:
+        ...     print(b['manifest_file'], b['created'])
     """
     settings = Settings()
     backup_dir = Path(settings.get("paths.backups"))

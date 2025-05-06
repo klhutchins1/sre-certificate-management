@@ -17,29 +17,65 @@ from ..settings import settings
 
 class ScanProcessor:
     """
-    Handles the processing and storage of scan results.
-    
+    Handles the processing and storage of scan results for the Infrastructure Management System (IMS).
+
     This class is responsible for:
     - Creating and updating domain records
     - Processing and storing certificates
     - Managing DNS records
     - Creating and updating host records
     - Managing certificate bindings
+    - Recording scan history
+
+    It provides a single point of logic for persisting scan results and ensuring
+    consistency between the database and the results of scanning operations.
+
+    Example usage:
+        >>> processor = ScanProcessor(session)
+        >>> domain_obj = processor.process_domain_info('example.com', domain_info)
+        >>> processor.process_dns_records(domain_obj, dns_records)
+        >>> processor.process_certificate('example.com', 443, cert_info, domain_obj)
     """
     
     def __init__(self, session: Session, status_container: Optional[Any] = None):
-        """Initialize scan processor."""
+        """
+        Initialize scan processor with a database session and optional status container.
+        
+        Args:
+            session (Session): SQLAlchemy session for DB operations
+            status_container (Optional[Any]): UI/status container for progress updates
+        """
         self.session = session
         self.status_container = status_container
         self.logger = logging.getLogger(__name__)
     
     def set_status(self, message: str) -> None:
-        """Update status if container is available."""
+        """
+        Update status if a status container is available.
+        
+        Args:
+            message (str): Status message to display
+        """
         if self.status_container:
             self.status_container.text(message)
     
     def process_domain_info(self, domain: str, domain_info: Optional[DomainInfo]) -> Domain:
-        """Process domain information and update database."""
+        """
+        Process domain information and update or create the corresponding database record.
+        
+        Args:
+            domain (str): Domain name
+            domain_info (Optional[DomainInfo]): DomainInfo object with parsed data
+        
+        Returns:
+            Domain: The updated or created Domain SQLAlchemy object
+        
+        Raises:
+            ValueError, TypeError, Exception: On DB or data errors
+        
+        Example:
+            >>> domain_obj = processor.process_domain_info('example.com', domain_info)
+        """
         try:
             # Get or create domain
             domain_obj = self.session.query(Domain).filter_by(domain_name=domain).first()
@@ -79,7 +115,24 @@ class ScanProcessor:
             raise
     
     def process_dns_records(self, domain_obj: Domain, dns_records: List[Dict[str, Any]], scan_queue: Optional[Set[Tuple[str, int]]] = None, port: int = 443) -> None:
-        """Process DNS records and update database."""
+        """
+        Process DNS records for a domain and update the database.
+        
+        Args:
+            domain_obj (Domain): SQLAlchemy Domain object
+            dns_records (List[Dict[str, Any]]): List of DNS record dicts
+            scan_queue (Optional[Set[Tuple[str, int]]]): Optional scan queue to add CNAMEs
+            port (int): Port for new scan targets (default 443)
+        
+        Returns:
+            None
+        
+        Raises:
+            ValueError, TypeError, Exception: On DB or data errors
+        
+        Example:
+            >>> processor.process_dns_records(domain_obj, dns_records)
+        """
         try:
             if not dns_records:
                 return
@@ -169,7 +222,32 @@ class ScanProcessor:
             raise
     
     def process_certificate(self, domain: str, port: int, cert_info: CertificateInfo, domain_obj: Domain, **kwargs) -> None:
-        """Process certificate information and update database."""
+        """
+        Process certificate information and update or create the corresponding database records.
+        
+        This includes:
+        - Creating/updating the Certificate record
+        - Associating the certificate with the domain
+        - Creating/updating the Host and HostIP records
+        - Creating/updating the CertificateBinding
+        - Recording the scan in CertificateScan
+        
+        Args:
+            domain (str): Domain name
+            port (int): Port number
+            cert_info (CertificateInfo): Parsed certificate information
+            domain_obj (Domain): SQLAlchemy Domain object
+            **kwargs: Additional options (e.g., validate_chain, check_sans, detect_platform)
+        
+        Returns:
+            None
+        
+        Raises:
+            ValueError, TypeError, Exception: On DB or data errors
+        
+        Example:
+            >>> processor.process_certificate('example.com', 443, cert_info, domain_obj)
+        """
         try:
             # Get or create certificate
             cert = self.session.query(Certificate).filter_by(

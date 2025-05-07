@@ -32,13 +32,14 @@ from ..models import (
     HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
     ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking, Application
 )
-from ..constants import platform_options
+from ..constants import HOST_TYPE_SERVER, platform_options
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import json
 import logging
+from ..services.CertificateService import CertificateService
 
 logger = logging.getLogger(__name__)
 
@@ -447,19 +448,17 @@ def render_certificate_bindings(cert, session):
                 hostname = st.text_input("Service/Application Name", help="Name of the service or application using this certificate")
                 ip = ""
                 port = None
-            
+        
         if st.button("Save Usage Record"):
-            binding_type_map = {
-                "IP-Based Usage": "IP",
-                "Application Usage": "JWT",
-                "Client Certificate Usage": "CLIENT"
-            }
-            try:
-                add_host_to_certificate(cert, hostname, ip, port, platform, binding_type_map[binding_type], session)
+            service = CertificateService()
+            result = service.add_usage_record_to_certificate(
+                cert.id, platform, binding_type, hostname, ip, port, session
+            )
+            if result['success']:
                 notify("Usage record added successfully", "success")
                 st.rerun()
-            except Exception as e:
-                notify(f"Failed to add usage record: {str(e)}", "error")
+            else:
+                notify(f"Failed to add usage record: {result['error']}", "error")
     
     # Current Usage Records
     if not cert.certificate_bindings:
@@ -470,21 +469,23 @@ def render_certificate_bindings(cert, session):
     applications = {app.id: app.name for app in session.query(Application).all()}
     
     # Create a clean table-like display for bindings
-    for binding in cert.certificate_bindings:
+    service = CertificateService()
+    bindings = service.get_certificate_bindings(cert.id, session)
+    for binding in bindings:
         with st.container():
             cols = st.columns([4, 2, 1])
             
             # Column 1: Main Info (Hostname/IP/Port or Application) with binding type
             with cols[0]:
-                if binding.binding_type == "IP":
+                if binding['binding_type'] == "IP":
                     # For IP bindings, show hostname if available, otherwise IP
-                    display_name = binding.host.name if binding.host and binding.host.name else binding.host_ip.ip_address if binding.host_ip else ""
-                    port_text = f":{binding.port}" if binding.port else ""
+                    display_name = binding['host_name'] if binding['host_name'] else binding['host_ip'] if binding['host_ip'] else ""
+                    port_text = f":{binding['port']}" if binding['port'] else ""
                     st.write(f"**Hostname/IP:** {display_name}{port_text} (IP-Based)")
                 else:
                     # For JWT and Client Certificate bindings, show app name
-                    app_name = applications.get(binding.application_id, "Unknown Application")
-                    binding_type = "(JWT-Based)" if binding.binding_type == "JWT" else "(Client Certificate)"
+                    app_name = applications.get(binding['application_id'], "Unknown Application")
+                    binding_type = "(JWT-Based)" if binding['binding_type'] == "JWT" else "(Client Certificate)"
                     st.write(f"**Application:** {app_name} {binding_type}")
             
             # Column 2: Platform dropdown
@@ -492,16 +493,16 @@ def render_certificate_bindings(cert, session):
                 platform = st.selectbox(
                     "Platform",
                     ["F5", "IIS", "Akamai", "Cloudflare", "Connection"],
-                    key=f"platform_{binding.id}",
-                    index=["F5", "IIS", "Akamai", "Cloudflare", "Connection"].index(binding.platform) if binding.platform in ["F5", "IIS", "Akamai", "Cloudflare", "Connection"] else 0
+                    key=f"platform_{binding['id']}",
+                    index=["F5", "IIS", "Akamai", "Cloudflare", "Connection"].index(binding['platform']) if binding['platform'] in ["F5", "IIS", "Akamai", "Cloudflare", "Connection"] else 0
                 )
-                if platform != binding.platform:
-                    binding.platform = platform
+                if platform != binding['platform']:
+                    binding['platform'] = platform
                     session.commit()
             
             # Column 3: Delete button
             with cols[2]:
-                if st.button("🗑️", key=f"delete_{binding.id}", help="Remove this usage record"):
+                if st.button("🗑️", key=f"delete_{binding['id']}", help="Remove this usage record"):
                     session.delete(binding)
                     session.commit()
                     notify("Usage record deleted", "success")
@@ -646,10 +647,8 @@ def render_certificate_tracking(cert, session):
 def render_manual_entry_form(session):
     """
     Render the manual certificate entry form.
-    
     Args:
         session (Session): Database session for saving the certificate
-        
     Features:
     - Input fields for certificate details
     - Certificate type selection
@@ -657,9 +656,9 @@ def render_manual_entry_form(session):
     - Validity period selection
     - Form validation and error handling
     """
+    from ..services.CertificateService import CertificateService
     with st.form("manual_certificate_entry"):
         st.subheader("Manual Certificate Entry")
-        
         col1, col2 = st.columns(2)
         with col1:
             cert_type = st.selectbox(
@@ -683,7 +682,6 @@ def render_manual_entry_form(session):
                 help="SHA1 or SHA256 fingerprint of the certificate",
                 key="manual_thumbprint"
             )
-        
         with col2:
             valid_from = st.date_input(
                 "Valid From",
@@ -701,202 +699,18 @@ def render_manual_entry_form(session):
                 format_func=lambda x: platform_options.get(x, 'Not Set') if x else 'Select Platform',
                 key="manual_platform"
             )
-        
         submitted = st.form_submit_button("Save Certificate")
         if submitted:
-            save_manual_certificate(cert_type, common_name, serial_number, thumbprint, 
-                                 valid_from, valid_until, platform, session)
-
-def add_host_to_certificate(cert, hostname, ip, port, platform, binding_type, session):
-    """Add a new host binding to a certificate."""
-    try:
-        # Create or get host
-        host = session.query(Host).filter_by(name=hostname).first()
-        if not host:
-            host = Host(
-                name=hostname,
-                host_type=HOST_TYPE_VIRTUAL if binding_type != BINDING_TYPE_IP else HOST_TYPE_SERVER,
-                environment=ENV_INTERNAL,
-                last_seen=datetime.now()
+            service = CertificateService()
+            result = service.add_manual_certificate(
+                cert_type, common_name, serial_number, thumbprint, valid_from, valid_until, platform, session
             )
-            session.add(host)
-            session.flush()
-        
-        # Create HostIP if provided
-        host_ip = None
-        if ip:
-            host_ip = session.query(HostIP).filter_by(
-                host_id=host.id,
-                ip_address=ip
-            ).first()
-            
-            if not host_ip:
-                host_ip = HostIP(
-                    host_id=host.id,
-                    ip_address=ip,
-                    last_seen=datetime.now()
-                )
-                session.add(host_ip)
-                session.flush()
-        
-        # Create binding
-        binding = CertificateBinding(
-            host_id=host.id,
-            host_ip_id=host_ip.id if host_ip else None,
-            certificate_id=cert.id,
-            port=port if binding_type == BINDING_TYPE_IP else None,
-            binding_type=binding_type,
-            platform=platform,
-            last_seen=datetime.now()
-        )
-        session.add(binding)
-        session.commit()
-        notify("Host added successfully!", "success")
-        st.rerun()
-    except Exception as e:
-        notify(f"Error adding host: {str(e)}", "error")
-        session.rollback()
-
-def save_manual_certificate(cert_type, common_name, serial_number, thumbprint, 
-                          valid_from, valid_until, platform, session):
-    """Save a manually entered certificate to the database."""
-    try:
-        # Create certificate
-        cert = Certificate(
-            serial_number=serial_number,
-            thumbprint=thumbprint,
-            common_name=common_name,
-            valid_from=datetime.combine(valid_from, datetime.min.time()),
-            valid_until=datetime.combine(valid_until, datetime.max.time()),
-            sans_scanned=False,
-            _san=json.dumps([])
-        )
-        session.add(cert)
-        session.commit()
-        notify("Certificate added successfully!", "success")
-        st.session_state.show_manual_entry = False
-        st.rerun()
-    except Exception as e:  # Only Exception is possible here due to DB errors
-        session.rollback()
-        logger.exception(f"Error saving certificate: {str(e)}")
-        notify(f"Error saving certificate: {str(e)}", "error")
-
-def export_certificates_to_pdf(certificates, filename):
-    """
-    Export certificate information to PDF format.
-    
-    Args:
-        certificates: Single Certificate object or list of Certificate objects
-        filename (str): Output PDF file path
-        
-    Creates a detailed PDF report including:
-    - Certificate overview
-    - Binding information
-    - Technical details
-    - Subject Alternative Names
-    - Current status
-    
-    Features:
-    - Multi-certificate support
-    - Page numbering
-    - Structured sections
-    - Error handling for malformed data
-    """
-    from fpdf import FPDF
-    from datetime import datetime
-    
-    # Convert single certificate to list for consistent handling
-    if not isinstance(certificates, (list, tuple)):
-        certificates = [certificates]
-    
-    # Create PDF object
-    pdf = FPDF()
-    
-    # For each certificate
-    for i, cert in enumerate(certificates):
-        pdf.add_page()
-        
-        # Set font
-        pdf.set_font('helvetica', 'B', 16)
-        
-        # Title
-        pdf.cell(0, 10, f'Certificate Details: {cert.common_name}', ln=True, align='C')
-        pdf.ln(10)
-        
-        # Set font for content
-        pdf.set_font('helvetica', '', 12)
-        
-        # Certificate Overview
-        pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 10, 'Overview', ln=True)
-        pdf.set_font('helvetica', '', 12)
-        pdf.cell(0, 8, f'Common Name: {cert.common_name}', ln=True)
-        pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
-        pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', ln=True)
-        pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', ln=True)
-        pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
-        pdf.ln(5)
-        
-        # Bindings
-        if cert.certificate_bindings:
-            pdf.set_font('helvetica', 'B', 14)
-            pdf.cell(0, 10, 'Bindings', ln=True)
-            pdf.set_font('helvetica', '', 12)
-            for binding in cert.certificate_bindings:
-                host_name = binding.host.name if binding.host else "Unknown Host"
-                host_ip = getattr(binding, 'host_ip', None)
-                ip_address = host_ip.ip_address if host_ip else "No IP"
-                port = binding.port if binding.port else "N/A"
-                
-                pdf.cell(0, 8, f'Host: {host_name}', ln=True)
-                if binding.binding_type == BINDING_TYPE_IP:
-                    pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', ln=True)
-                pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
-                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
-                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
-                pdf.ln(5)
-        
-        # Subject Alternative Names
-        if cert.san:
-            pdf.set_font('helvetica', 'B', 14)
-            pdf.cell(0, 10, 'Subject Alternative Names', ln=True)
-            pdf.set_font('helvetica', '', 12)
-            try:
-                san_list = cert.san
-                if isinstance(san_list, str):
-                    try:
-                        san_list = eval(san_list)
-                    except:
-                        san_list = cert.san.split(',')
-                
-                san_list = [s.strip() for s in san_list if s.strip()]
-                for san in san_list:
-                    pdf.cell(0, 8, san, ln=True)
-            except Exception as e:
-                pdf.cell(0, 8, f'Error parsing SANs: {str(e)}', ln=True)
-            pdf.ln(5)
-        
-        # Certificate Details
-        pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 10, 'Technical Details', ln=True)
-        pdf.set_font('helvetica', '', 12)
-        pdf.cell(0, 8, f'Thumbprint: {cert.thumbprint}', ln=True)
-        if cert.issuer:
-            issuer_dict = eval(cert.issuer)
-            pdf.cell(0, 8, f'Issuer: {", ".join(f"{k}={v}" for k, v in issuer_dict.items())}', ln=True)
-        if cert.subject:
-            subject_dict = eval(cert.subject)
-            pdf.cell(0, 8, f'Subject: {", ".join(f"{k}={v}" for k, v in subject_dict.items())}', ln=True)
-        pdf.cell(0, 8, f'Key Usage: {cert.key_usage}', ln=True)
-        pdf.cell(0, 8, f'Signature Algorithm: {cert.signature_algorithm}', ln=True)
-        
-        # Add page number
-        pdf.set_y(-15)
-        pdf.set_font('helvetica', 'I', 8)
-        pdf.cell(0, 10, f'Page {i+1} of {len(certificates)}', 0, 0, 'C')
-    
-    # Save the PDF
-    pdf.output(filename)
+            if result['success']:
+                notify("Certificate added successfully!", "success")
+                st.session_state.show_manual_entry = False
+                st.rerun()
+            else:
+                notify(f"Error saving certificate: {result['error']}", "error")
 
 def render_certificate_scans(cert):
     """

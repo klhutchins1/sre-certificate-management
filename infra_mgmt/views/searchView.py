@@ -34,6 +34,8 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_, String
+
+from infra_mgmt.notifications import notify
 from ..models import Certificate, Host, HostIP, CertificateBinding
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css

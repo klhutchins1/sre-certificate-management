@@ -56,6 +56,7 @@ from ..models import IgnoredDomain, IgnoredCertificate
 from sqlalchemy.orm import Session
 import re
 from infra_mgmt.notifications import initialize_notifications, show_notifications, notify
+from ..services.CertificateExportService import CertificateExportService
 
 
 logger = logging.getLogger(__name__)
@@ -642,7 +643,10 @@ def render_settings_view(engine) -> None:
             if st.button("Export Certificates to PDF"):
                 try:
                     with SessionManager(engine) as session:
-                        output_path = export_certificates_to_pdf(session)
+                        # Fetch certificates from the database
+                        certificates = session.query(Certificate).all()
+                        output_path = "certificates_export.pdf"
+                        CertificateExportService.export_certificates_to_pdf(certificates, output_path)
                         notify(f"Certificates exported to PDF: {output_path}", "success")
                 except Exception as e:  # Only Exception is possible here due to file IO or DB errors
                     notify(f"Failed to export certificates to PDF: {str(e)}", "error")

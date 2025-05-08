@@ -141,6 +141,9 @@ def render_scan_interface(engine) -> None:
     # Create a placeholder for notifications at the top
     notification_placeholder = st.empty()
     
+    # Always initialize scan_service
+    scan_service = ScanService(engine)
+    
     # Initialize session state
     if 'scan_in_progress' not in st.session_state:
         st.session_state.scan_in_progress = False
@@ -244,7 +247,6 @@ internal.server.local:444"""
                 status_container.text("Initializing scan...")
                 progress_container.text("Preparing to scan targets...")
                 # Use ScanService for validation and scan orchestration
-                scan_service = ScanService(engine)
                 valid_targets, validation_errors = scan_service.validate_and_prepare_targets(st.session_state.scan_input)
                 if validation_errors:
                     for err in validation_errors:
@@ -282,8 +284,13 @@ internal.server.local:444"""
                 # Run the scan
                 scan_results = scan_service.run_scan(valid_targets, options)
                 st.session_state.scan_results = scan_results
-                # Update scanned_domains for UI display
-                st.session_state.scanned_domains = set([host for host, _ in valid_targets])
+                # Update scanned_domains for UI display to include all successfully scanned domains
+                scanned_domains_set = set()
+                for entry in scan_results.get('success', []):
+                    # Each entry is like 'domain:port', extract domain
+                    domain = entry.split(':')[0]
+                    scanned_domains_set.add(domain)
+                st.session_state.scanned_domains = scanned_domains_set
                 # Set progress to complete
                 progress_container.progress(1.0)
                 progress_container.text("Scan completed!")
@@ -294,205 +301,212 @@ internal.server.local:444"""
                 with notification_placeholder:
                     show_notifications()
     
-    # Show results summary
-    st.divider()
-    st.subheader("Scan Results")
-    results_container = st.container()
-    with results_container:
-        tab_domains, tab_certs, tab_dns, tab_errors = st.tabs([
-            "🌐 Domains",
-            "🔐 Certificates",
-            "📝 DNS Records",
-            "⚠️ Issues"
-        ])
-        
-        # Domains tab
-        with tab_domains:
-            with Session() as session:
-                try:
-                    # Get all scanned domains from session state
-                    scanned_domains = list(st.session_state.scanned_domains)
-                    if not scanned_domains:
-                        st.markdown("No domains or IPs scanned yet.")
-                    else:
-                        for domain in sorted(scanned_domains):
-                            # Load domain with relationships
-                            obj = load_domain_data(engine, domain)
-                            if obj:
-                                if isinstance(obj, Host):  # IP address
-                                    st.markdown(f"### IP: {obj.name}")
+    # Only show results if a scan has been performed
+    has_results = (
+        st.session_state.scan_results["success"] or
+        st.session_state.scan_results["error"] or
+        st.session_state.scan_results["warning"] or
+        st.session_state.scan_results["no_cert"]
+    )
+
+    if has_results:
+        st.divider()
+        st.subheader("Scan Results")
+        results_container = st.container()
+        with results_container:
+            tab_domains, tab_certs, tab_dns, tab_errors = st.tabs([
+                "🌐 Domains",
+                "🔐 Certificates",
+                "📝 DNS Records",
+                "⚠️ Issues"
+            ])
+            
+            # Domains tab
+            with tab_domains:
+                with Session() as session:
+                    try:
+                        # Get all scanned domains from session state
+                        scanned_domains = list(st.session_state.scanned_domains)
+                        if not scanned_domains:
+                            st.markdown("No domains or IPs scanned yet.")
+                        else:
+                            for domain in sorted(scanned_domains):
+                                # Load domain with relationships
+                                result = scan_service.load_domain_data(engine, domain)
+                                if result['success']:
+                                    obj = result['data']
+                                    if isinstance(obj, Host):  # IP address
+                                        st.markdown(f"### IP: {obj.name}")
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.write("**Type:**", obj.host_type or "N/A")
+                                            st.write("**Environment:**", obj.environment or "N/A")
+                                            st.write("**Last Seen:**", obj.last_seen.strftime("%Y-%m-%d %H:%M:%S") if obj.last_seen else "N/A")
+                                            # Show reverse DNS if available
+                                            try:
+                                                import dns.resolver
+                                                import dns.reversename
+                                                addr = dns.reversename.from_address(obj.name)
+                                                answers = dns.resolver.resolve(addr, "PTR")
+                                                hostnames = [str(rdata).rstrip('.') for rdata in answers]
+                                                if hostnames:
+                                                    st.write("**Hostnames:**", ", ".join(hostnames))
+                                            except Exception:
+                                                pass
+                                        with col2:
+                                            # Show network information
+                                            try:
+                                                import ipaddress
+                                                ip_obj = ipaddress.ip_address(obj.name)
+                                                if isinstance(ip_obj, ipaddress.IPv4Address):
+                                                    network = ipaddress.ip_network(f"{obj.name}/24", strict=False)
+                                                else:
+                                                    network = ipaddress.ip_network(f"{obj.name}/64", strict=False)
+                                                st.write("**Network:**", str(network))
+                                            except Exception:
+                                                pass
+                                            # Show certificate bindings
+                                            bindings = session.query(CertificateBinding).filter_by(host=obj).all()
+                                            st.write("**Certificates:**", len(bindings))
+                                            if bindings:
+                                                st.write("**Ports:**", ", ".join(str(b.port) for b in bindings if b.port))
+                                    else:  # Domain
+                                        st.markdown(f"### Domain: {obj.domain_name}")
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.write("**Registrar:**", obj.registrar or "N/A")
+                                            st.write("**Registration Date:**", obj.registration_date.strftime("%Y-%m-%d") if obj.registration_date else "N/A")
+                                            st.write("**Owner:**", obj.owner or "N/A")
+                                        with col2:
+                                            st.write("**Expiration Date:**", obj.expiration_date.strftime("%Y-%m-%d") if obj.expiration_date else "N/A")
+                                            st.write("**Certificates:**", len(obj.certificates))
+                                            st.write("**DNS Records:**", len(obj.dns_records))
+                                else:
+                                    notify(result['error'], "error")
+                    except Exception as e:
+                        logger.error(f"Error displaying domain/IP data: {str(e)}")
+                        st.error(f"Error displaying domain/IP data: {str(e)}")
+            
+            # Certificates tab
+            with tab_certs:
+                scanned_domains = list(st.session_state.scanned_domains)
+                if not scanned_domains:
+                    st.markdown("No certificates found yet.")
+                else:
+                    for domain in sorted(scanned_domains):
+                        certificates = scan_service.get_certificates_for_domain(engine, domain)
+                        if certificates:
+                            for cert in certificates:
+                                with st.expander(f"Certificate: {cert.common_name}"):
                                     col1, col2 = st.columns(2)
                                     with col1:
-                                        st.write("**Type:**", obj.host_type or "N/A")
-                                        st.write("**Environment:**", obj.environment or "N/A")
-                                        st.write("**Last Seen:**", obj.last_seen.strftime("%Y-%m-%d %H:%M:%S") if obj.last_seen else "N/A")
-                                        # Show reverse DNS if available
-                                        try:
-                                            import dns.resolver
-                                            import dns.reversename
-                                            addr = dns.reversename.from_address(obj.name)
-                                            answers = dns.resolver.resolve(addr, "PTR")
-                                            hostnames = [str(rdata).rstrip('.') for rdata in answers]
-                                            if hostnames:
-                                                st.write("**Hostnames:**", ", ".join(hostnames))
-                                        except Exception:
-                                            pass
+                                        st.write("**Common Name:**", cert.common_name)
+                                        st.write("**Valid From:**", cert.valid_from.strftime("%Y-%m-%d"))
+                                        st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
+                                        st.write("**Serial Number:**", cert.serial_number)
                                     with col2:
-                                        # Show network information
-                                        try:
-                                            import ipaddress
-                                            ip_obj = ipaddress.ip_address(obj.name)
-                                            if isinstance(ip_obj, ipaddress.IPv4Address):
-                                                network = ipaddress.ip_network(f"{obj.name}/24", strict=False)
-                                            else:
-                                                network = ipaddress.ip_network(f"{obj.name}/64", strict=False)
-                                            st.write("**Network:**", str(network))
-                                        except Exception:
-                                            pass
-                                        # Show certificate bindings
-                                        bindings = session.query(CertificateBinding).filter_by(host=obj).all()
-                                        st.write("**Certificates:**", len(bindings))
-                                        if bindings:
-                                            st.write("**Ports:**", ", ".join(str(b.port) for b in bindings if b.port))
-                                else:  # Domain
-                                    st.markdown(f"### Domain: {obj.domain_name}")
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        st.write("**Registrar:**", obj.registrar or "N/A")
-                                        st.write("**Registration Date:**", obj.registration_date.strftime("%Y-%m-%d") if obj.registration_date else "N/A")
-                                        st.write("**Owner:**", obj.owner or "N/A")
-                                    with col2:
-                                        st.write("**Expiration Date:**", obj.expiration_date.strftime("%Y-%m-%d") if obj.expiration_date else "N/A")
-                                        st.write("**Certificates:**", len(obj.certificates))
-                                        st.write("**DNS Records:**", len(obj.dns_records))
-                except Exception as e:
-                    logger.error(f"Error displaying domain/IP data: {str(e)}")
-                    st.error(f"Error displaying domain/IP data: {str(e)}")
-        
-        # Certificates tab
-        with tab_certs:
-            scan_service = ScanService(engine)
-            scanned_domains = list(st.session_state.scanned_domains)
-            if not scanned_domains:
-                st.markdown("No certificates found yet.")
-            else:
-                for domain in sorted(scanned_domains):
-                    certificates = scan_service.get_certificates_for_domain(engine, domain)
-                    if certificates:
-                        for cert in certificates:
-                            with st.expander(f"Certificate: {cert.common_name}"):
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write("**Common Name:**", cert.common_name)
-                                    st.write("**Valid From:**", cert.valid_from.strftime("%Y-%m-%d"))
-                                    st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
-                                    st.write("**Serial Number:**", cert.serial_number)
-                                with col2:
-                                    st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
-                                    st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
-                                    st.write("**SANs:**", ", ".join(cert.san))
-                                    st.write("**Signature Algorithm:**", cert.signature_algorithm)
-                                    platforms = [b.platform for b in cert.certificate_bindings if b.platform]
-                                    if platforms:
-                                        st.write("**Platform:**", ", ".join(set(platforms)))
-                                # Add button to scan SANs
-                                if cert.san:
-                                    sans = cert.san
-                                    if sans:
-                                        button_key = f"scan_sans_{domain}_{cert.serial_number}"
-                                        if st.button(f"Scan SANs ({len(sans)} found)", key=button_key):
-                                            st.session_state.scan_targets = sans
-                                            st.rerun()
+                                        st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
+                                        st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
+                                        st.write("**SANs:**", ", ".join(cert.san))
+                                        st.write("**Signature Algorithm:**", cert.signature_algorithm)
+                                        platforms = [b.platform for b in cert.certificate_bindings if b.platform]
+                                        if platforms:
+                                            st.write("**Platform:**", ", ".join(set(platforms)))
+                                    # Add button to scan SANs
+                                    if cert.san:
+                                        sans = cert.san
+                                        if sans:
+                                            button_key = f"scan_sans_{domain}_{cert.serial_number}"
+                                            if st.button(f"Scan SANs ({len(sans)} found)", key=button_key):
+                                                st.session_state.scan_targets = sans
+                                                st.rerun()
                         # Remove from no_cert list since we found certificates
                         if domain in st.session_state.scan_results["no_cert"]:
                             st.session_state.scan_results["no_cert"].remove(domain)
-                    else:
-                        st.markdown(f"No certificates found for {domain}")
-                        if domain not in st.session_state.scan_results["no_cert"]:
+                        else:
                             st.session_state.scan_results["no_cert"].append(domain)
-        
-        # DNS Records tab
-        with tab_dns:
-            scan_service = ScanService(engine)
-            scanned_domains = list(st.session_state.scanned_domains)
-            if not scanned_domains:
-                st.markdown("No DNS records found yet.")
-            else:
-                for domain in sorted(scanned_domains):
-                    dns_records = scan_service.get_dns_records_for_domain(engine, domain)
-                    if dns_records:
-                        st.markdown(f"### {domain}")
-                        records_df = []
-                        for record in dns_records:
-                            try:
-                                priority = str(record.priority) if record.priority is not None else 'N/A'
-                                record_data = {
-                                    'Type': record.record_type,
-                                    'Name': record.name,
-                                    'Value': record.value,
-                                    'TTL': int(record.ttl),
-                                    'Priority': priority
-                                }
-                                records_df.append(record_data)
-                            except Exception as e:
-                                logger.error(f"Error processing DNS record: {str(e)}")
-                                st.session_state.scan_results["error"].append(f"Error processing DNS record for {domain}: {str(e)}")
-                                continue
-                        if records_df:
-                            df = pd.DataFrame(records_df)
-                            st.dataframe(
-                                df,
-                                column_config={
-                                    'Type': st.column_config.TextColumn('Type', width='small'),
-                                    'Name': st.column_config.TextColumn('Name', width='medium'),
-                                    'Value': st.column_config.TextColumn('Value', width='large'),
-                                    'TTL': st.column_config.NumberColumn('TTL', width='small'),
-                                    'Priority': st.column_config.TextColumn('Priority', width='small')
-                                },
-                                hide_index=True,
-                                use_container_width=True
-                            )
+            
+            # DNS Records tab
+            with tab_dns:
+                scanned_domains = list(st.session_state.scanned_domains)
+                if not scanned_domains:
+                    st.markdown("No DNS records found yet.")
+                else:
+                    for domain in sorted(scanned_domains):
+                        dns_records = scan_service.get_dns_records_for_domain(engine, domain)
+                        if dns_records:
+                            st.markdown(f"### {domain}")
+                            records_df = []
+                            for record in dns_records:
+                                try:
+                                    priority = str(record.priority) if record.priority is not None else 'N/A'
+                                    record_data = {
+                                        'Type': record.record_type,
+                                        'Name': record.name,
+                                        'Value': record.value,
+                                        'TTL': int(record.ttl),
+                                        'Priority': priority
+                                    }
+                                    records_df.append(record_data)
+                                except Exception as e:
+                                    logger.error(f"Error processing DNS record: {str(e)}")
+                                    st.session_state.scan_results["error"].append(f"Error processing DNS record for {domain}: {str(e)}")
+                                    continue
+                            if records_df:
+                                df = pd.DataFrame(records_df)
+                                st.dataframe(
+                                    df,
+                                    column_config={
+                                        'Type': st.column_config.TextColumn('Type', width='small'),
+                                        'Name': st.column_config.TextColumn('Name', width='medium'),
+                                        'Value': st.column_config.TextColumn('Value', width='large'),
+                                        'TTL': st.column_config.NumberColumn('TTL', width='small'),
+                                        'Priority': st.column_config.TextColumn('Priority', width='small')
+                                    },
+                                    hide_index=True,
+                                    use_container_width=True
+                                )
+                            else:
+                                st.markdown(f"No DNS records found for {domain}")
                         else:
                             st.markdown(f"No DNS records found for {domain}")
-                    else:
-                        st.markdown(f"No DNS records found for {domain}")
-        
-        # Issues tab
-        with tab_errors:
-            # Create a container for issues
-            issues_container = st.container()
             
-            with issues_container:
-                # Debug output to verify scan results
-                st.markdown("### Debug Information")
-                st.json(st.session_state.scan_results)
+            # Issues tab
+            with tab_errors:
+                # Create a container for issues
+                issues_container = st.container()
                 
-                # Check for no certificates
-                if st.session_state.scan_results["no_cert"]:
-                    st.markdown("### No Certificates Found")
-                    for target in st.session_state.scan_results["no_cert"]:
-                        st.markdown(f"- {target}")
-                    st.divider()
-                
-                # Check for errors
-                if st.session_state.scan_results["error"]:
-                    st.markdown("### Errors")
-                    for error in st.session_state.scan_results["error"]:
-                        st.markdown(f"- {error}")
-                    st.divider()
-                
-                # Check for warnings
-                if st.session_state.scan_results["warning"]:
-                    st.markdown("### Warnings")
-                    for warning in st.session_state.scan_results["warning"]:
-                        st.markdown(f"- {warning}")
-                
-                # If no issues found
-                if not (st.session_state.scan_results["error"] or 
-                      st.session_state.scan_results["warning"] or 
-                      st.session_state.scan_results["no_cert"]):
-                    st.markdown("### No Issues Found")
-                    st.markdown("All scans completed successfully with no issues detected.")
+                with issues_container:
+                    # Debug output to verify scan results
+                    st.markdown("### Debug Information")
+                    st.json(st.session_state.scan_results)
+                    
+                    # Check for no certificates
+                    if st.session_state.scan_results["no_cert"]:
+                        st.markdown("### No Certificates Found")
+                        for target in st.session_state.scan_results["no_cert"]:
+                            st.markdown(f"- {target}")
+                        st.divider()
+                    
+                    # Check for errors
+                    if st.session_state.scan_results["error"]:
+                        st.markdown("### Errors")
+                        for error in st.session_state.scan_results["error"]:
+                            st.markdown(f"- {error}")
+                        st.divider()
+                    
+                    # Check for warnings
+                    if st.session_state.scan_results["warning"]:
+                        st.markdown("### Warnings")
+                        for warning in st.session_state.scan_results["warning"]:
+                            st.markdown(f"- {warning}")
+                    
+                    # If no issues found
+                    if not (st.session_state.scan_results["error"] or 
+                          st.session_state.scan_results["warning"] or 
+                          st.session_state.scan_results["no_cert"]):
+                        st.markdown("### No Issues Found")
+                        st.markdown("All scans completed successfully with no issues detected.")
     
     # Show notifications after all content is rendered
     with notification_placeholder:

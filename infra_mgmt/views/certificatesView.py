@@ -33,7 +33,7 @@ from ..models import (
     ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking, Application
 )
 from ..constants import HOST_TYPE_SERVER, platform_options
-from ..db import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
@@ -103,7 +103,7 @@ def render_certificate_list(engine):
             show_notifications()
         return
     metrics = result['data']['metrics']
-    certs_data = result['data']['table_data']
+    df = result['data']['df']
     
     # Create metrics columns with minimal spacing
     st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
@@ -114,15 +114,11 @@ def render_certificate_list(engine):
     st.markdown('</div>', unsafe_allow_html=True)
     st.divider()
     
-    if not certs_data:
+    if df.empty:
         notify("No certificates found in database", "info")
         with notification_placeholder:
             show_notifications()
         return
-    
-    # Create DataFrame with explicit data types and clean data
-    df = pd.DataFrame(certs_data)
-    certificates_dict = {row['_id']: row for row in certs_data}
     
     # Configure AG Grid
     gb = GridOptionsBuilder.from_dataframe(df)
@@ -210,21 +206,16 @@ def render_certificate_list(engine):
             if not selected_rows.empty:
                 selected_row = selected_rows.iloc[0].to_dict()
                 selected_cert_id = int(selected_row['_id'])
-                if selected_cert_id in certificates_dict:
-                    selected_cert = certificates_dict[selected_cert_id]
-                    # You may need to fetch the full ORM object for details
-                    with SessionManager(engine) as session:
-                        cert_obj = session.query(Certificate).get(selected_cert_id)
-                        render_certificate_card(cert_obj, session)
+                with SessionManager(engine) as session:
+                    cert_obj = session.query(Certificate).get(selected_cert_id)
+                    render_certificate_card(cert_obj, session)
         elif isinstance(selected_rows, list) and selected_rows:
             selected_row = selected_rows[0]
             if isinstance(selected_row, dict) and '_id' in selected_row:
                 selected_cert_id = int(selected_row['_id'])
-                if selected_cert_id in certificates_dict:
-                    selected_cert = certificates_dict[selected_cert_id]
-                    with SessionManager(engine) as session:
-                        cert_obj = session.query(Certificate).get(selected_cert_id)
-                        render_certificate_card(cert_obj, session)
+                with SessionManager(engine) as session:
+                    cert_obj = session.query(Certificate).get(selected_cert_id)
+                    render_certificate_card(cert_obj, session)
     except Exception as e:
         notify(f"Error handling selection: {str(e)}", "error")
         with notification_placeholder:

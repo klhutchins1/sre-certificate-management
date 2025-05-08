@@ -21,6 +21,7 @@ from ..components.deletion_dialog import render_danger_zone
 from ..notifications import notify, show_notifications, initialize_notifications
 from ..services.DomainService import DomainService, VirtualDomain
 from ..services.ViewDataService import ViewDataService
+from infra_mgmt.utils.SessionManager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -151,13 +152,17 @@ def render_domain_list(engine):
         st.metric("Expired", metrics["expired"])
     # Create a search box
     search = st.text_input("Search Domains", placeholder="Enter domain name...")
-    # Filter and organize domains
-    if search:
-        filtered_domains = [d for d in visible_domains if search.lower() in d.domain_name.lower()]
-    else:
-        filtered_domains = visible_domains
-    # Organize domains into hierarchy
-    root_domains, domain_hierarchy = DomainService.get_domain_hierarchy(filtered_domains)
+    # Use service to get filtered domains and hierarchy
+    result = DomainService.get_filtered_domain_hierarchy(engine, search)
+    if not result['success']:
+        notify(result['error'], "error")
+        show_notifications()
+        return
+    root_domains = result['data']['root_domains']
+    domain_hierarchy = result['data']['domain_hierarchy']
+    visible_domains = result['data']['visible_domains']
+    metrics = result['data']['metrics']
+    ignored_patterns = result['data']['ignored_patterns']
     # Create two columns: domain list and details
     col_list, col_details = st.columns([1, 2])
     
@@ -212,7 +217,7 @@ def render_domain_list(engine):
         if selected_domain:
             # Find the selected domain, handling both real and virtual domains
             try:
-                domain = next(d for d in filtered_domains if d.domain_name == selected_domain)
+                domain = next(d for d in visible_domains if d.domain_name == selected_domain)
             except StopIteration:
                 # If not found in filtered_domains, it might be a virtual domain
                 domain = next((d for d in root_domains if d.domain_name == selected_domain), None)

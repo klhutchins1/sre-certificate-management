@@ -138,9 +138,6 @@ class DomainScanner:
         self.whois_rate_limit = settings.get('scanning.whois.rate_limit', 10)  # Default 10/min
         self.dns_rate_limit = settings.get('scanning.dns.rate_limit', 30)      # Default 30/min
         
-        # Load timeout settings
-        self.dns_timeout = settings.get('scanning.timeouts.dns', 5.0)         # Default 5.0 seconds
-        
         # Load domain classification settings
         self.internal_domains = set(settings.get('scanning.internal.domains', []))
         self.external_domains = set(settings.get('scanning.external.domains', []))
@@ -151,7 +148,7 @@ class DomainScanner:
         self.logger = logging.getLogger(__name__)
         
         logger.info(f"Initialized DomainScanner with WHOIS rate limit: {self.whois_rate_limit}/min, "
-                   f"DNS rate limit: {self.dns_rate_limit}/min, DNS timeout: {self.dns_timeout}s")
+                   f"DNS rate limit: {self.dns_rate_limit}/min")
     
     def _apply_rate_limit(self, last_time: float, rate_limit: int, query_type: str) -> float:
         """
@@ -433,8 +430,10 @@ class DomainScanner:
         
         # Configure DNS resolver with timeout and nameservers
         resolver = dns.resolver.Resolver()
-        resolver.timeout = self.dns_timeout
-        resolver.lifetime = self.dns_timeout
+        from ..settings import settings
+        dns_timeout = settings.get('scanning.timeouts.dns', 5.0)
+        resolver.timeout = dns_timeout
+        resolver.lifetime = dns_timeout
         
         # Check if we have a successful nameserver set for this domain's TLD
         tld = domain.split('.')[-1]

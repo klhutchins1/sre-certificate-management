@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 from ..models import Domain, IgnoredDomain
 from sqlalchemy.exc import SQLAlchemyError
-from ..db.session import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
+from sqlalchemy.orm import joinedload
 
 class VirtualDomain:
     def __init__(self, domain_name):
@@ -121,5 +122,72 @@ class DomainService:
                 session.add(ignore)
                 session.commit()
                 return {'success': True}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def get_filtered_domain_hierarchy(engine, search):
+        try:
+            with SessionManager(engine) as session:
+                domains = session.query(Domain)\
+                    .options(
+                        joinedload(Domain.certificates),
+                        joinedload(Domain.dns_records),
+                        joinedload(Domain.subdomains)
+                    )\
+                    .order_by(Domain.domain_name).all()
+                ignored_domains = session.query(IgnoredDomain).all()
+                ignored_patterns = [d.pattern for d in ignored_domains]
+                # Filter out ignored domains
+                visible_domains = []
+                for domain in domains:
+                    should_show = True
+                    for pattern in ignored_patterns:
+                        if pattern.startswith('*') and pattern.endswith('*'):
+                            search_term = pattern.strip('*')
+                            if search_term.lower() in domain.domain_name.lower():
+                                should_show = False
+                                break
+                        elif pattern.startswith('*.'):
+                            suffix = pattern[2:]
+                            if domain.domain_name.endswith(suffix):
+                                should_show = False
+                                break
+                        elif pattern == domain.domain_name:
+                            should_show = False
+                            break
+                    if should_show:
+                        visible_domains.append(domain)
+                # Apply search filter
+                if search:
+                    filtered_domains = [d for d in visible_domains if search.lower() in d.domain_name.lower()]
+                else:
+                    filtered_domains = visible_domains
+                # Organize domains into hierarchy
+                root_domains, domain_hierarchy = DomainService.get_domain_hierarchy(filtered_domains)
+                # Metrics
+                total_domains = len(visible_domains)
+                active_domains = sum(1 for d in visible_domains if d.is_active)
+                expiring_soon = sum(1 for d in visible_domains 
+                                  if d.expiration_date and d.expiration_date <= datetime.now() + timedelta(days=30)
+                                  and d.expiration_date > datetime.now())
+                expired = sum(1 for d in visible_domains 
+                             if d.expiration_date and d.expiration_date <= datetime.now())
+                metrics = {
+                    "total_domains": total_domains,
+                    "active_domains": active_domains,
+                    "expiring_soon": expiring_soon,
+                    "expired": expired
+                }
+                return {
+                    'success': True,
+                    'data': {
+                        'root_domains': root_domains,
+                        'domain_hierarchy': domain_hierarchy,
+                        'visible_domains': visible_domains,
+                        'metrics': metrics,
+                        'ignored_patterns': ignored_patterns
+                    }
+                }
         except Exception as e:
             return {'success': False, 'error': str(e)}

@@ -30,7 +30,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from ..models import Application, CertificateBinding, Certificate, Host, HostIP
 from ..constants import APP_TYPES, app_types, HOST_TYPE_VIRTUAL, ENV_PRODUCTION
 from ..static.styles import load_warning_suppression, load_css
-from ..db import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 from infra_mgmt.notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import altair as alt
@@ -221,25 +221,10 @@ def render_applications_view(engine) -> None:
             notify(result['error'], "error")
             show_notifications()
             return
-        metrics = result['data']['metrics']
-        col1.metric("Total Applications", metrics['total_apps'])
-        col2.metric("Certificate Bindings", metrics['total_bindings'])
-        col3.metric("Valid Certificates", metrics['valid_certs'])
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.divider()
-        applications = result['data']['applications']
-        app_data = result['data']['app_data']
-        if not applications:
-            notify("No applications found. Use the 'Add Application' button above to create one. \n", "info")
-            return
-        view_type = st.radio(
-            "View By",
-            ["Group by Type", "All Applications"],
-            horizontal=True,
-            help="Group applications by their type or view all applications"
-        )
-        if app_data:
-            df = pd.DataFrame(app_data)
+        df = result['data']['df']
+        column_config = result['data']['column_config']
+        view_type = result['data'].get('view_type', 'All Applications')
+        if not df.empty:
             gb = GridOptionsBuilder.from_dataframe(df)
             gb.configure_default_column(
                 resizable=True,
@@ -328,14 +313,15 @@ def render_applications_view(engine) -> None:
                         row_dict = selected_rows.iloc[0].to_dict()
                         selected_app_id = row_dict.get('_id')
                         if selected_app_id:
-                            selected_app = next((a for a in applications if a.id == selected_app_id), None)
-                            if selected_app:
-                                st.divider()
-                                st.session_state['current_app'] = selected_app
-                                render_application_details(selected_app)
-                            else:
-                                logger.warning(f"No application found for ID: {selected_app_id}")
-                                notify("Application not found", "error")
+                            with SessionManager(engine) as session:
+                                selected_app = session.query(Application).get(selected_app_id)
+                                if selected_app:
+                                    st.divider()
+                                    st.session_state['current_app'] = selected_app
+                                    render_application_details(selected_app)
+                                else:
+                                    logger.warning(f"No application found for ID: {selected_app_id}")
+                                    notify("Application not found", "error")
                 except Exception as e:
                     logger.exception(f"Error handling grid selection: {str(e)}")
                     clear_notifications()
@@ -414,60 +400,53 @@ def render_application_details(application: Application) -> None:
                 notify("No certificate bindings found for this application.", "info")
             st.markdown("### Add Certificate Bindings")
             try:
+                # Fetch available certificates for binding
                 engine = st.session_state.get('engine')
                 if engine:
-                    from ..models import Certificate, CertificateBinding
-                    import sqlalchemy
-                    from sqlalchemy.orm import Session
-                    with Session(engine) as session:
-                        available_certs = (
-                            session.query(Certificate)
-                            .join(CertificateBinding, isouter=True)
-                            .filter(
-                                (CertificateBinding.application_id.is_(None)) |
-                                (CertificateBinding.application_id != application.id)
-                            )
-                            .all()
-                        )
-                    if available_certs:
-                        cert_options = {
-                            f"{cert.common_name} (Valid until: {cert.valid_until.strftime('%Y-%m-%d')})": cert.id
-                            for cert in available_certs
-                        }
-                        binding_type = st.selectbox(
-                            "Binding Type",
-                            options=["IP-Based", "JWT-Based", "Client Certificate"],
-                            help="How will this certificate be used?"
-                        )
-                        binding_type_map = {
-                            "IP-Based": "IP",
-                            "JWT-Based": "JWT",
-                            "Client Certificate": "CLIENT"
-                        }
-                        selected_certs = st.multiselect(
-                            "Select Certificates to Bind",
-                            options=list(cert_options.keys()),
-                            help="Select one or more certificates to bind to this application"
-                        )
-                        if selected_certs:
-                            if st.button("Bind Selected Certificates", type="primary"):
-                                try:
-                                    cert_ids = [cert_options[cert_name] for cert_name in selected_certs]
-                                    result = ApplicationService.bind_certificates(
-                                        engine,
-                                        application.id,
-                                        cert_ids,
-                                        binding_type_map[binding_type]
-                                    )
-                                    if result['success']:
-                                        notify(f"{result['count']} certificate(s) bound successfully!", "success")
-                                    else:
-                                        notify(result['error'], "error")
-                                except Exception as e:
-                                    logger.exception(f"Error binding certificates: {str(e)}")
-                                    notify(f"Error binding certificates: {str(e)}", "error")
+                    result = ApplicationService.get_available_certificates(engine, application.id)
+                    if result['success']:
+                        available_certs = result['data']
                     else:
-                        notify("No available certificates found to bind.", "info")
+                        notify(result['error'], "error")
+                if available_certs:
+                    cert_options = {
+                        f"{cert.common_name} (Valid until: {cert.valid_until.strftime('%Y-%m-%d')})": cert.id
+                        for cert in available_certs
+                    }
+                    binding_type = st.selectbox(
+                        "Binding Type",
+                        options=["IP-Based", "JWT-Based", "Client Certificate"],
+                        help="How will this certificate be used?"
+                    )
+                    binding_type_map = {
+                        "IP-Based": "IP",
+                        "JWT-Based": "JWT",
+                        "Client Certificate": "CLIENT"
+                    }
+                    selected_certs = st.multiselect(
+                        "Select Certificates to Bind",
+                        options=list(cert_options.keys()),
+                        help="Select one or more certificates to bind to this application"
+                    )
+                    if selected_certs:
+                        if st.button("Bind Selected Certificates", type="primary"):
+                            try:
+                                cert_ids = [cert_options[cert_name] for cert_name in selected_certs]
+                                result = ApplicationService.bind_certificates(
+                                    engine,
+                                    application.id,
+                                    cert_ids,
+                                    binding_type_map[binding_type]
+                                )
+                                if result['success']:
+                                    notify(f"{result['count']} certificate(s) bound successfully!", "success")
+                                else:
+                                    notify(result['error'], "error")
+                            except Exception as e:
+                                logger.exception(f"Error binding certificates: {str(e)}")
+                                notify(f"Error binding certificates: {str(e)}", "error")
+                else:
+                    notify("No available certificates found to bind.", "info")
             except Exception as e:
                 logger.exception(f"Error loading available certificates: {str(e)}")
                 notify(f"Error loading available certificates: {str(e)}", "error")

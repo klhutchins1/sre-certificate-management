@@ -467,6 +467,7 @@ class CertificateScanner:
         try:
             self._apply_rate_limit()
             self._last_cert_chain = False
+            from ..settings import settings
             socket_timeout = settings.get('scanning.timeouts.socket', 10)
             cert_binary = self._get_certificate(address, port, socket_timeout=socket_timeout)
             if cert_binary:
@@ -489,6 +490,7 @@ class CertificateScanner:
             self.logger.warning(f"Network or SSL error scanning {address}:{port}: {str(e)}")
             return ScanResult(error=str(e))
         except socket.timeout as e:
+            from ..settings import settings
             socket_timeout = settings.get('scanning.timeouts.socket', 10)
             msg = (f"The server at {address}:{port} did not respond within {socket_timeout} seconds. "
                    f"This may indicate a firewall, network issue, or that the server is down. "

@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from infra_mgmt.db.session import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
 
 class BaseService:
     @contextmanager

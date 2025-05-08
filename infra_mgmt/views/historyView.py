@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 from ..models import Certificate, CertificateScan, Host, HostIP, CertificateBinding, CertificateTracking
-from ..db import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from ..services.HistoryService import HistoryService
 
@@ -91,60 +91,61 @@ def render_host_certificate_history(engine) -> None:
         - Real-time certificate status monitoring
         - Certificate validity period tracking
     """
-    with SessionManager(engine) as session:
-        hosts, host_options = HistoryService.get_host_certificate_history(session)
-        if not hosts:
-            st.warning("No host data found")
-            return
-        selected_host = st.selectbox(
-            "Select Host",
-            options=list(host_options.keys()),
-            index=None,
-            placeholder="Choose a host to view certificate history..."
-        )
-        if selected_host:
-            host_id, ip_id = host_options[selected_host]
-            bindings = HistoryService.get_bindings_for_host(session, host_id, ip_id)
-            if bindings:
-                cert_history = []
-                for binding in bindings:
-                    cert = binding.certificate
-                    cert_history.append({
-                        "Certificate": cert.common_name,
-                        "Serial Number": cert.serial_number,
-                        "Valid From": cert.valid_from,
-                        "Valid Until": cert.valid_until,
-                        "Last Seen": binding.last_seen,
-                        "Port": binding.port,
-                        "Platform": binding.platform or "Unknown",
-                        "Status": "Valid" if cert.valid_until > datetime.now() else "Expired"
-                    })
-                df = pd.DataFrame(cert_history)
-                st.subheader("Certificate Timeline")
-                timeline_chart = {
-                    "Certificate": df["Certificate"].tolist(),
-                    "Start": df["Valid From"].tolist(),
-                    "End": df["Valid Until"].tolist()
-                }
-                st.plotly_chart(create_timeline_chart(timeline_chart))
-                st.subheader("Detailed History")
-                st.dataframe(
-                    df,
-                    column_config={
-                        "Certificate": st.column_config.TextColumn("Certificate", width="medium"),
-                        "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
-                        "Valid From": st.column_config.DatetimeColumn("Valid From", format="DD/MM/YYYY"),
-                        "Valid Until": st.column_config.DatetimeColumn("Valid Until", format="DD/MM/YYYY"),
-                        "Last Seen": st.column_config.DatetimeColumn("Last Seen", format="DD/MM/YYYY HH:mm"),
-                        "Port": st.column_config.NumberColumn("Port", width="small"),
-                        "Platform": st.column_config.TextColumn("Platform", width="small"),
-                        "Status": st.column_config.TextColumn("Status", width="small")
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
-            else:
-                st.info("No certificate history found for this host")
+    result = HistoryService.get_host_certificate_history(engine)
+    if not result['success']:
+        st.warning(result['error'])
+        return
+    hosts = result['data']['hosts']
+    host_options = result['data']['host_options']
+    selected_host = st.selectbox(
+        "Select Host",
+        options=list(host_options.keys()),
+        index=None,
+        placeholder="Choose a host to view certificate history..."
+    )
+    if selected_host:
+        host_id, ip_id = host_options[selected_host]
+        bindings = HistoryService.get_bindings_for_host(engine, host_id, ip_id)
+        if bindings:
+            cert_history = []
+            for binding in bindings:
+                cert = binding.certificate
+                cert_history.append({
+                    "Certificate": cert.common_name,
+                    "Serial Number": cert.serial_number,
+                    "Valid From": cert.valid_from,
+                    "Valid Until": cert.valid_until,
+                    "Last Seen": binding.last_seen,
+                    "Port": binding.port,
+                    "Platform": binding.platform or "Unknown",
+                    "Status": "Valid" if cert.valid_until > datetime.now() else "Expired"
+                })
+            df = pd.DataFrame(cert_history)
+            st.subheader("Certificate Timeline")
+            timeline_chart = {
+                "Certificate": df["Certificate"].tolist(),
+                "Start": df["Valid From"].tolist(),
+                "End": df["Valid Until"].tolist()
+            }
+            st.plotly_chart(create_timeline_chart(timeline_chart))
+            st.subheader("Detailed History")
+            st.dataframe(
+                df,
+                column_config={
+                    "Certificate": st.column_config.TextColumn("Certificate", width="medium"),
+                    "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
+                    "Valid From": st.column_config.DatetimeColumn("Valid From", format="DD/MM/YYYY"),
+                    "Valid Until": st.column_config.DatetimeColumn("Valid Until", format="DD/MM/YYYY"),
+                    "Last Seen": st.column_config.DatetimeColumn("Last Seen", format="DD/MM/YYYY HH:mm"),
+                    "Port": st.column_config.NumberColumn("Port", width="small"),
+                    "Platform": st.column_config.TextColumn("Platform", width="small"),
+                    "Status": st.column_config.TextColumn("Status", width="small")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("No certificate history found for this host")
 
 def create_timeline_chart(data: dict) -> "plotly.graph_objs._figure.Figure":
     """

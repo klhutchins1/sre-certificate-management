@@ -4,28 +4,37 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy import desc
 from sqlalchemy.exc import SQLAlchemyError
 import pandas as pd
+from infra_mgmt.utils.SessionManager import SessionManager
 
 class HistoryService:
     @staticmethod
-    def get_host_certificate_history(session):
-        hosts = session.query(Host).options(
-            joinedload(Host.ip_addresses),
-            joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate)
-        ).all()
-        host_options = {}
-        for host in hosts:
-            for ip in host.ip_addresses:
-                key = f"{host.name} ({ip.ip_address})"
-                host_options[key] = (host.id, ip.id)
-        return hosts, host_options
+    def get_host_certificate_history(engine):
+        try:
+            with SessionManager(engine) as session:
+                hosts = session.query(Host).options(
+                    joinedload(Host.ip_addresses),
+                    joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate)
+                ).all()
+                host_options = {}
+                for host in hosts:
+                    for ip in host.ip_addresses:
+                        key = f"{host.name} ({ip.ip_address})"
+                        host_options[key] = (host.id, ip.id)
+                return {'success': True, 'data': {'hosts': hosts, 'host_options': host_options}}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
 
     @staticmethod
-    def get_bindings_for_host(session, host_id, ip_id):
-        bindings = session.query(CertificateBinding).filter(
-            CertificateBinding.host_id == host_id,
-            CertificateBinding.host_ip_id == ip_id
-        ).join(Certificate).order_by(CertificateBinding.last_seen.desc()).all()
-        return bindings
+    def get_bindings_for_host(engine, host_id, ip_id):
+        try:
+            with SessionManager(engine) as session:
+                bindings = session.query(CertificateBinding).filter(
+                    CertificateBinding.host_id == host_id,
+                    CertificateBinding.host_ip_id == ip_id
+                ).join(Certificate).order_by(CertificateBinding.last_seen.desc()).all()
+                return bindings
+        except Exception as e:
+            return []
 
     @staticmethod
     def get_scan_history(session):

@@ -1,7 +1,7 @@
 from datetime import datetime
 from ..models import Application, CertificateBinding, Certificate
 from sqlalchemy.exc import SQLAlchemyError
-from ..db.session import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
 
 class ApplicationService:
     @staticmethod
@@ -89,5 +89,23 @@ class ApplicationService:
                     count += 1
                 session.commit()
                 return {'success': True, 'count': count}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def get_available_certificates(engine, app_id):
+        try:
+            with SessionManager(engine) as session:
+                from ..models import Certificate, CertificateBinding
+                available_certs = (
+                    session.query(Certificate)
+                    .join(CertificateBinding, isouter=True)
+                    .filter(
+                        (CertificateBinding.application_id.is_(None)) |
+                        (CertificateBinding.application_id != app_id)
+                    )
+                    .all()
+                )
+                return {'success': True, 'data': available_certs}
         except Exception as e:
             return {'success': False, 'error': str(e)} 

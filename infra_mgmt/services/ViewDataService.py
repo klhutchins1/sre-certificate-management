@@ -6,6 +6,8 @@ from .SearchService import SearchService
 from ..models import Certificate, CertificateBinding, Domain, IgnoredDomain, Host, HostIP, Application
 from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
+import pandas as pd
+from st_aggrid import JsCode
 
 class ViewDataService(BaseService):
     def get_certificate_list_view_data(self, engine):
@@ -36,14 +38,37 @@ class ViewDataService(BaseService):
                         "Bindings": int(len(cert.certificate_bindings)),
                         "_id": int(cert.id)
                     })
+                df = pd.DataFrame(table_data)
+                column_config = {
+                    "Common Name": {"minWidth": 200, "flex": 2},
+                    "Serial Number": {"minWidth": 150, "flex": 1},
+                    "Valid From": {"type": ["dateColumnFilter"], "minWidth": 120, "valueFormatter": "value ? new Date(value).toLocaleDateString() : ''"},
+                    "Valid Until": {"type": ["dateColumnFilter"], "minWidth": 120, "valueFormatter": "value ? new Date(value).toLocaleDateString() : ''", "cellClass": JsCode("""
+                        function(params) {
+                            if (!params.data) return ['ag-date-cell'];
+                            if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
+                            return ['ag-date-cell'];
+                        }
+                    """)},
+                    "Status": {"minWidth": 100, "cellClass": JsCode("""
+                        function(params) {
+                            if (!params.data) return [];
+                            if (params.value === 'Expired') return ['ag-status-expired'];
+                            if (params.value === 'Valid') return ['ag-status-valid'];
+                            return [];
+                        }
+                    """)},
+                    "Bindings": {"type": ["numericColumn"], "minWidth": 100, "cellClass": 'ag-numeric-cell'},
+                    "_id": {"hide": True}
+                }
+                metrics = {
+                    "total_certs": total_certs,
+                    "valid_certs": valid_certs,
+                    "total_bindings": total_bindings
+                }
+                return self.result(True, data={"df": df, "column_config": column_config, "metrics": metrics})
             except Exception as e:
                 return self.result(False, error=f"Error fetching table data: {str(e)}")
-            metrics = {
-                "total_certs": total_certs,
-                "valid_certs": valid_certs,
-                "total_bindings": total_bindings
-            }
-            return self.result(True, data={"metrics": metrics, "table_data": table_data})
 
     def get_dashboard_view_data(self, engine):
         """
@@ -121,130 +146,94 @@ class ViewDataService(BaseService):
             except Exception as e:
                 return self.result(False, error=f"Error fetching domain list data: {str(e)}")
 
-    def get_hosts_list_view_data(self, engine):
-        """
-        Aggregate all data needed for the hosts list view.
-        Returns a dict with hosts, binding_data, and metrics.
-        """
+    def get_host_list_view_data(self, engine):
         with self.session_scope(engine) as session:
             try:
-                hosts = session.query(Host)\
-                    .options(
-                        joinedload(Host.ip_addresses),
-                        joinedload(Host.certificate_bindings)
-                            .joinedload(CertificateBinding.certificate)
-                            .joinedload(Certificate.scans),
-                        joinedload(Host.scans)  # Eagerly load Host.scans
-                    )\
-                    .all()
-                total_hosts = session.query(Host).count()
-                total_ips = session.query(HostIP).count()
-                total_certs = session.query(Certificate).count()
-                # Build binding_data for both views
-                binding_data = []
-                now = datetime.now()
+                hosts = session.query(Host).all()
+                table_data = []
                 for host in hosts:
-                    # Hostname view
-                    if host.certificate_bindings:
-                        for binding in host.certificate_bindings:
-                            binding_data.append({
-                                'Hostname': host.name,
-                                'IP Address': binding.host_ip.ip_address if binding.host_ip else 'No IP',
-                                'Port': binding.port,
-                                'Certificate': binding.certificate.common_name if binding.certificate else 'No Certificate',
-                                'Platform': binding.platform or 'Unknown',
-                                'Status': 'Valid' if binding.certificate and binding.certificate.valid_until > now else 'Expired',
-                                'Expires': binding.certificate.valid_until if binding.certificate else None,
-                                'Last Seen': binding.last_seen,
-                                '_id': binding.id,
-                                'Source': '🔒 Manual' if getattr(binding, 'manually_added', False) else '🔍 Scanned'
-                            })
-                    else:
-                        binding_data.append({
-                            'Hostname': host.name,
-                            'IP Address': host.ip_addresses[0].ip_address if host.ip_addresses else 'No IP',
-                            'Port': None,
-                            'Certificate': 'No Certificate',
-                            'Platform': 'Unknown',
-                            'Status': 'No Certificate',
-                            'Expires': None,
-                            'Last Seen': None,
-                            '_id': None,
-                            'Source': ''
-                        })
-                metrics = {
-                    'total_hosts': total_hosts,
-                    'total_ips': total_ips,
-                    'total_certs': total_certs
+                    table_data.append({
+                        "Hostname": host.name,
+                        "Type": host.host_type,
+                        "Environment": host.environment,
+                        "Description": host.description or "",
+                        "Last Seen": host.last_seen.strftime("%Y-%m-%d %H:%M") if host.last_seen else "",
+                        "_id": int(host.id)
+                    })
+                df = pd.DataFrame(table_data)
+                column_config = {
+                    "Hostname": {"minWidth": 200, "flex": 2},
+                    "Type": {"minWidth": 120},
+                    "Environment": {"minWidth": 120},
+                    "Description": {"minWidth": 200},
+                    "Last Seen": {"minWidth": 150, "valueFormatter": "value ? new Date(value).toLocaleString() : ''"},
+                    "_id": {"hide": True}
                 }
-                return self.result(True, data={
-                    'hosts': hosts,
-                    'binding_data': binding_data,
-                    'metrics': metrics
-                })
+                # Add metrics
+                total_hosts = len(hosts)
+                total_ips = sum(len(getattr(host, 'ip_addresses', [])) for host in hosts)
+                total_certs = sum(len(getattr(host, 'certificate_bindings', [])) for host in hosts)
+                metrics = {
+                    "total_hosts": total_hosts,
+                    "total_ips": total_ips,
+                    "total_certs": total_certs
+                }
+                return self.result(True, data={"df": df, "column_config": column_config, "metrics": metrics})
             except Exception as e:
-                return self.result(False, error=f"Error fetching hosts list data: {str(e)}")
+                return self.result(False, error=f"Error fetching host table data: {str(e)}")
 
     def get_applications_list_view_data(self, engine):
-        """
-        Aggregate all data needed for the applications list view.
-        Returns a dict with applications, app_data, and metrics.
-        """
         with self.session_scope(engine) as session:
             try:
-                applications = session.query(Application)\
-                    .options(
-                        joinedload(Application.certificate_bindings)
-                            .joinedload(CertificateBinding.certificate),
-                        joinedload(Application.certificate_bindings)
-                            .joinedload(CertificateBinding.host),
-                        joinedload(Application.certificate_bindings)
-                            .joinedload(CertificateBinding.host_ip)
-                    )\
-                    .all()
-                total_apps = session.query(Application).count()
-                total_bindings = session.query(CertificateBinding).filter(CertificateBinding.application_id.isnot(None)).count()
-                now = datetime.now()
-                valid_certs = session.query(CertificateBinding).join(CertificateBinding.certificate).filter(
-                    CertificateBinding.application_id.isnot(None),
-                    Certificate.valid_until > now
-                ).count()
-                app_data = []
+                applications = session.query(Application).all()
+                table_data = []
                 for app in applications:
-                    cert_count = len(app.certificate_bindings)
-                    valid_certs_count = sum(1 for binding in app.certificate_bindings if binding.certificate and binding.certificate.valid_until > now)
-                    app_data.append({
-                        'Application': app.name,
-                        'Type': app.app_type,
-                        'Description': app.description or '',
-                        'Owner': app.owner,
-                        'Certificates': cert_count,
-                        'Valid Certificates': valid_certs_count,
-                        'Expired Certificates': cert_count - valid_certs_count,
-                        'Created': app.created_at,
-                        '_id': app.id
+                    table_data.append({
+                        "Name": app.name,
+                        "Type": getattr(app, 'app_type', ''),
+                        "Description": app.description or "",
+                        "Owner": app.owner or "",
+                        "_id": int(app.id)
                     })
-                metrics = {
-                    'total_apps': total_apps,
-                    'total_bindings': total_bindings,
-                    'valid_certs': valid_certs
+                df = pd.DataFrame(table_data)
+                column_config = {
+                    "Name": {"minWidth": 200, "flex": 2},
+                    "Type": {"minWidth": 120},
+                    "Description": {"minWidth": 200},
+                    "Owner": {"minWidth": 120},
+                    "_id": {"hide": True}
                 }
-                return self.result(True, data={
-                    'applications': applications,
-                    'app_data': app_data,
-                    'metrics': metrics
-                })
+                return self.result(True, data={"df": df, "column_config": column_config, "view_type": "All Applications"})
             except Exception as e:
-                return self.result(False, error=f"Error fetching applications list data: {str(e)}")
+                return self.result(False, error=f"Error fetching application table data: {str(e)}")
 
     def get_search_view_data(self, engine, query, search_type, status_filter, platform_filter):
-        """
-        Aggregate all data needed for the search view.
-        Returns a dict with search results (certificates, hosts, etc.).
-        """
         with self.session_scope(engine) as session:
             try:
-                results = SearchService.perform_search(session, query, search_type, status_filter, platform_filter)
-                return self.result(True, data=results)
+                # Example: search hosts by name
+                if search_type == 'host':
+                    hosts = session.query(Host).filter(Host.name.ilike(f"%{query}%")).all()
+                    table_data = []
+                    for host in hosts:
+                        table_data.append({
+                            "Hostname": host.name,
+                            "Type": host.host_type,
+                            "Environment": host.environment,
+                            "Description": host.description or "",
+                            "Last Seen": host.last_seen.strftime("%Y-%m-%d %H:%M") if host.last_seen else "",
+                            "_id": int(host.id)
+                        })
+                    df = pd.DataFrame(table_data)
+                    column_config = {
+                        "Hostname": {"minWidth": 200, "flex": 2},
+                        "Type": {"minWidth": 120},
+                        "Environment": {"minWidth": 120},
+                        "Description": {"minWidth": 200},
+                        "Last Seen": {"minWidth": 150, "valueFormatter": "value ? new Date(value).toLocaleString() : ''"},
+                        "_id": {"hide": True}
+                    }
+                    return self.result(True, data={"df": df, "column_config": column_config})
+                # Add more search types as needed
+                return self.result(False, error="Unsupported search type")
             except Exception as e:
                 return self.result(False, error=f"Error fetching search results: {str(e)}") 

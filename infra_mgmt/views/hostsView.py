@@ -27,11 +27,11 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from ..models import Host, HostIP, CertificateBinding, Application, Certificate
 from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
 from ..static.styles import load_warning_suppression, load_css
-from ..db import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 import logging
 from ..services.HostService import HostService
 from ..services.ViewDataService import ViewDataService
+from infra_mgmt.utils.SessionManager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -136,136 +136,57 @@ def render_hosts_view(engine) -> None:
     
     st.divider()
     
-    # Use ViewDataService for hosts, binding_data, and metrics
+    # Use ViewDataService for metrics and table data
     view_data_service = ViewDataService()
-    result = view_data_service.get_hosts_list_view_data(engine)
+    result = view_data_service.get_host_list_view_data(engine)
     if not result['success']:
         st.error(result['error'])
         return
-    hosts = result['data']['hosts']
-    binding_data = result['data']['binding_data']
     metrics = result['data']['metrics']
-    
-    # Create metrics columns with standardized styling
+    df = result['data']['df']
+    column_config = result['data']['column_config']
+
+    # Create metrics columns with minimal spacing
     st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
-    
     col1.metric("Total Hosts", metrics["total_hosts"])
     col2.metric("Total IPs", metrics["total_ips"])
     col3.metric("Total Certificates", metrics["total_certs"])
-    
     st.markdown('</div>', unsafe_allow_html=True)
-    
     st.divider()
-    
-    # Handle platform updates from AG Grid
-    if 'platform_update' in st.session_state:
-        update_data = st.session_state.platform_update
-        try:
-            with Session(engine) as session:
-                result = HostService.update_binding_platform(session, update_data['binding_id'], update_data['platform'])
-                if result['success']:
-                    st.session_state.success_message = f"Platform updated successfully for {update_data['binding_id']}"
-                    del st.session_state.platform_update
-                    st.rerun()
-                else:
-                    st.error(f"Error updating platform: {result['error']}")
-        except Exception as e:
-            st.error(f"Error updating platform: {str(e)}")
-    
-    # Add warning suppression script at the very beginning
-    st.markdown("""
-        <script>
-            // Immediately executing warning suppression
-            (function() {
-                // Store original console methods
-                const originalConsole = {
-                    warn: window.console.warn.bind(console),
-                    error: window.console.error.bind(console),
-                    log: window.console.log.bind(console)
-                };
 
-                // Create a no-op function
-                const noop = () => {};
+    if df.empty:
+        st.warning("No host data available")
+        return
 
-                // Override console methods with filtered versions
-                window.console.warn = function() {
-                    const msg = arguments[0] || '';
-                    if (typeof msg === 'string' && (
-                        msg.includes('Feature Policy') ||
-                        msg.includes('iframe') ||
-                        msg.includes('AgGrid') ||
-                        msg.includes('allow_unsafe_jscode') ||
-                        msg.includes('grid return event') ||
-                        msg.includes('selectionChanged')
-                    )) {
-                        return;
-                    }
-                    return originalConsole.warn.apply(this, arguments);
-                };
-
-                window.console.error = function() {
-                    const msg = arguments[0] || '';
-                    if (typeof msg === 'string' && (
-                        msg.includes('Feature Policy') ||
-                        msg.includes('iframe') ||
-                        msg.includes('sandbox')
-                    )) {
-                        return;
-                    }
-                    return originalConsole.error.apply(this, arguments);
-                };
-            })();
-        </script>
-    """, unsafe_allow_html=True)
-    
-    # AG Grid and selection logic using only service data
-    if binding_data:
-        df = pd.DataFrame(binding_data)
-        gb = GridOptionsBuilder.from_dataframe(df)
-        gb.configure_default_column(
-            resizable=True,
-            sortable=True,
-            filter=True,
-            editable=False
+    # Configure AG Grid to match certificatesView style
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(
+        resizable=True,
+        sortable=True,
+        filter=True,
+        editable=False
+    )
+    # Example explicit column configuration (adjust as needed for your df columns)
+    if "Hostname" in df.columns:
+        gb.configure_column("Hostname", minWidth=200, flex=2)
+    if "Type" in df.columns:
+        gb.configure_column("Type", minWidth=120, flex=1)
+    if "Environment" in df.columns:
+        gb.configure_column("Environment", minWidth=120, flex=1)
+    if "Last Seen" in df.columns:
+        gb.configure_column(
+            "Last Seen",
+            type=["dateColumnFilter"],
+            minWidth=150,
+            valueFormatter="value ? new Date(value).toLocaleString() : ''"
         )
-        view_type = st.radio(
-            "View By",
-            ["Hostname", "IP Address"],
-            horizontal=True
-        )
-        if view_type == "Hostname":
-            gb.configure_column("Hostname", minWidth=200, flex=2, rowGroup=True)
-            gb.configure_column("IP Address", minWidth=150, flex=1)
-        else:
-            gb.configure_column("IP Address", minWidth=150, flex=1, sort="asc")
-            gb.configure_column("Hostname", minWidth=200, flex=2)
-        gb.configure_column("Source", minWidth=100, flex=1)
-        gb.configure_column("Port", type=["numericColumn"], minWidth=100)
+    if "Certificates" in df.columns:
+        gb.configure_column("Certificates", type=["numericColumn"], minWidth=100)
+    if "Status" in df.columns:
         gb.configure_column(
-            "Certificate", minWidth=200, flex=2,
-            cellClass=JsCode("""
-            function(params) {
-                if (!params.data) return [];
-                if (params.data.Status === 'No Certificate') {
-                    return ['ag-cert-cell-none'];
-                }
-                return [];
-            }
-            """))
-        gb.configure_column(
-            "Platform", minWidth=120, editable=True,
-            cellEditor='agSelectCellEditor',
-            cellEditorParams={'values': [''] + list(platform_options.keys())},
-            valueFormatter="value === '' ? 'Unknown' : value",
-            cellClass=JsCode("""
-            function(params) {
-                if (!params.value) return ['ag-platform-cell-unknown'];
-                return [];
-            }
-            """))
-        gb.configure_column(
-            "Status", minWidth=100,
+            "Status",
+            minWidth=100,
             cellClass=JsCode("""
             function(params) {
                 if (!params.data) return [];
@@ -273,82 +194,59 @@ def render_hosts_view(engine) -> None:
                 if (params.value === 'Valid') return ['ag-status-valid'];
                 return [];
             }
-            """))
-        gb.configure_column(
-            "Expires", type=["dateColumnFilter"], minWidth=120,
-            valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
-            cellClass=JsCode("""
-            function(params) {
-                if (!params.data) return ['ag-date-cell'];
-                if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
-                return ['ag-date-cell'];
-            }
-            """))
-        gb.configure_column(
-            "Last Seen", type=["dateColumnFilter"], minWidth=150,
-            valueFormatter="value ? new Date(value).toLocaleString() : ''",
-            cellClass='ag-date-cell'
+            """)
         )
+    # Hide _id column if present
+    if "_id" in df.columns:
         gb.configure_column("_id", hide=True)
-        gb.configure_selection(
-            selection_mode="single",
-            use_checkbox=False,
-            pre_selected_rows=[]
-        )
-        grid_options = {
-            'animateRows': True,
-            'enableRangeSelection': True,
-            'suppressAggFuncInHeader': True,
-            'suppressMovableColumns': True,
-            'rowHeight': 35,
-            'headerHeight': 40
-        }
-        if view_type == "Hostname":
-            grid_options.update({
-                'groupDefaultExpanded': 1,
-                'groupDisplayType': 'groupRows',
-                'groupTotalRow': True,
-                'groupSelectsChildren': True,
-                'suppressGroupClickSelection': True
-            })
-        gb.configure_grid_options(**grid_options)
-        gridOptions = gb.build()
-        grid_response = AgGrid(
-            df,
-            gridOptions=gridOptions,
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-            fit_columns_on_grid_load=True,
-            theme="streamlit",
-            allow_unsafe_jscode=True,
-            key=f"host_grid_{view_type}",
-            height=600
-        )
-        # Handle selection
-        try:
-            selected_rows = grid_response.get('selected_rows', [])
-            if isinstance(selected_rows, pd.DataFrame):
-                selected_rows = selected_rows.to_dict('records')
-            if selected_rows and len(selected_rows) > 0:
-                selected_row = selected_rows[0]
-                if view_type == "Hostname" and not selected_row.get('Hostname'):
-                    return
-                # Find the selected host from the hosts list
-                selected_host = next((h for h in hosts if h.name == selected_row['Hostname']), None)
-                selected_binding = None
-                if selected_row.get('_id'):
-                    # Find the binding from the host's certificate_bindings
-                    if selected_host:
-                        selected_binding = next((b for b in selected_host.certificate_bindings if b.id == selected_row['_id']), None)
-                if selected_host:
-                    st.divider()
-                    render_details(selected_host, selected_binding)
-        except Exception as e:
-            st.error(f"Error handling selection: {str(e)}")
-            logger.exception(f"Selection error: {str(e)}")
-        st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
-    else:
-        st.warning("No host data available")
+    gb.configure_selection(
+        selection_mode="single",
+        use_checkbox=False,
+        pre_selected_rows=[]
+    )
+    grid_options = {
+        'animateRows': True,
+        'enableRangeSelection': True,
+        'suppressAggFuncInHeader': True,
+        'suppressMovableColumns': True,
+        'rowHeight': 35,
+        'headerHeight': 40,
+        'domLayout': 'normal',
+        'pagination': True,
+        'paginationPageSize': 15,
+        'paginationAutoPageSize': False
+    }
+    gb.configure_grid_options(**grid_options)
+    gridOptions = gb.build()
+    grid_response = AgGrid(
+        df,
+        gridOptions=gridOptions,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        fit_columns_on_grid_load=True,
+        theme="streamlit",
+        allow_unsafe_jscode=True,
+        key="host_grid",
+        reload_data=False,
+        height=600
+    )
+    # Handle selection: show all details for the selected host
+    try:
+        selected_rows = grid_response['selected_rows']
+        selected_host_id = None
+        if isinstance(selected_rows, pd.DataFrame) and not selected_rows.empty:
+            selected_row = selected_rows.iloc[0].to_dict()
+            selected_host_id = selected_row.get('_id')
+        elif isinstance(selected_rows, list) and selected_rows:
+            selected_row = selected_rows[0]
+            selected_host_id = selected_row.get('_id')
+        if selected_host_id is not None:
+            with SessionManager(engine) as session:
+                host_obj = session.query(Host).get(selected_host_id)
+                if host_obj:
+                    render_details(host_obj)
+    except Exception as e:
+        st.error(f"Error handling selection: {str(e)}")
 
 def render_details(selected_host: Host, binding: CertificateBinding = None) -> None:
     """

@@ -27,7 +27,7 @@ from ..models import (
     CertificateBinding, domain_certificates
 )
 import plotly.express as px
-from ..db import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from collections import defaultdict
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications

@@ -1,8 +1,9 @@
 from datetime import datetime
 from ..models import Host, HostIP, CertificateBinding
 from sqlalchemy.exc import SQLAlchemyError
-from ..db.session import SessionManager
 
+from sqlalchemy.orm import Session
+from infra_mgmt.utils.SessionManager import SessionManager
 class HostService:
     @staticmethod
     def add_host_with_ips(session, hostname, host_type, environment, description, ip_addresses):

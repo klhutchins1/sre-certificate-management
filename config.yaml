@@ -66,10 +66,10 @@ scanning:
   certificate:
     rate_limit: 30
   ct:
-    rate_limit: 60
+    rate_limit: 120
   default_rate_limit: 240
   dns:
-    rate_limit: 60
+    rate_limit: 120
     timeout: 5
   external:
     delay: 0
@@ -84,5 +84,5 @@ scanning:
     request: 15
     socket: 10
   whois:
-    rate_limit: 60
+    rate_limit: 120
     timeout: 10

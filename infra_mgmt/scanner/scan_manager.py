@@ -289,9 +289,9 @@ class ScanManager:
         engine = create_engine(f"sqlite:///{db_path}")
         session = Session(engine)
         try:
-            if self.infra_mgmt.tracker.is_endpoint_scanned(hostname, port):
-                self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned in this scan session")
-                self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned in this scan session)")
+            if self.infra_mgmt.tracker.is_endpoint_scanned(hostname, port) or (hostname, port) in self.infra_mgmt.tracker.scan_queue:
+                self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned or queued")
+                self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned or queued)")
                 return False
             is_ignored = False
             ignore_reason = None
@@ -366,7 +366,8 @@ class ScanManager:
             True
         """
         try:
-            # Check if it's an IP address
+            # Normalize domain
+            domain = domain.strip().lower().rstrip('.')
             is_ip = is_ip_address(domain)
             
             # --- New: Check if domain resolves before scanning certificate ---
@@ -493,12 +494,13 @@ class ScanManager:
                     # --- SAN scanning for IPs ---
                     if kwargs.get('check_sans', False) and cert_info.san:
                         for san in cert_info.san:
-                            san_clean = san.strip('*. ').lower()
+                            san_clean = san.strip('*. ').lower().rstrip('.')
                             if san_clean and not self.infra_mgmt.tracker.is_endpoint_scanned(san_clean, port) and (san_clean, port) not in self.infra_mgmt.tracker.scan_queue:
-                                # Basic domain validation: must have at least one dot and not be the same as the IP
                                 if '.' in san_clean and san_clean != domain:
                                     self.infra_mgmt.tracker.add_to_queue(san_clean, port)
                                     self.logger.info(f"[SCAN] Added SAN to queue: {san_clean}:{port}")
+                    # After scanning (success or fail), mark as scanned
+                    self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
                     return True
                 else:
                     self.logger.warning(f"[SCAN] No certificate found for IP {domain}:{port}")
@@ -506,6 +508,8 @@ class ScanManager:
                     target_key = f"{domain}:{port}"
                     if target_key not in self.scan_results["success"] and domain not in self.scan_results["no_cert"]:
                         self.scan_results["no_cert"].append(domain)
+                    # After scanning (success or fail), mark as scanned
+                    self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
                     return False
             else:
                 # Handle domain scanning
@@ -709,9 +713,8 @@ class ScanManager:
                     # --- SAN scanning for domains ---
                     if kwargs.get('check_sans', False) and cert_info.san:
                         for san in cert_info.san:
-                            san_clean = san.strip('*. ').lower()
+                            san_clean = san.strip('*. ').lower().rstrip('.')
                             if san_clean and not self.infra_mgmt.tracker.is_endpoint_scanned(san_clean, port) and (san_clean, port) not in self.infra_mgmt.tracker.scan_queue:
-                                # Basic domain validation: must have at least one dot and not be the same as the current domain
                                 if '.' in san_clean and san_clean != domain:
                                     self.infra_mgmt.tracker.add_to_queue(san_clean, port)
                                     self.logger.info(f"[SCAN] Added SAN to queue: {san_clean}:{port}")
@@ -726,6 +729,8 @@ class ScanManager:
                     if target_key not in self.scan_results["success"]:
                         self.scan_results["success"].append(target_key)
                     
+                    # After scanning (success or fail), mark as scanned
+                    self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
                     return True
                 else:
                     self.logger.warning(f"[SCAN] No certificate found for {'IP' if is_ip else 'domain'} {domain}:{port}")
@@ -733,6 +738,8 @@ class ScanManager:
                     target_key = f"{domain}:{port}"
                     if target_key not in self.scan_results["success"] and domain not in self.scan_results["no_cert"]:
                         self.scan_results["no_cert"].append(domain)
+                    # After scanning (success or fail), mark as scanned
+                    self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
                     return False
             
         except Exception as e:

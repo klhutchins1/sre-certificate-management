@@ -3,6 +3,8 @@ from ..models import Certificate, Domain, Host, HostIP, CertificateBinding, HOST
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime
 from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Session
+from infra_mgmt.utils.SessionManager import SessionManager
 
 class CertificateService:
     def __init__(self, repository=None):
@@ -37,23 +39,15 @@ class CertificateService:
         ]
         return certs_data
 
-    def get_certificate_details(self, session, cert_id):
-        """Fetch detailed information for a specific certificate by ID."""
-        cert = session.query(Certificate).get(cert_id)
-        if not cert:
-            return None
-        return {
-            'Common Name': cert.common_name,
-            'Valid From': cert.valid_from.strftime('%Y-%m-%d'),
-            'Valid Until': cert.valid_until.strftime('%Y-%m-%d'),
-            'Chain Valid': cert.chain_valid,
-            'Serial Number': cert.serial_number,
-            'Signature Algorithm': cert.signature_algorithm,
-            'Issuer': cert.issuer,
-            'Subject': cert.subject,
-            'Key Usage': cert.key_usage,
-            'SAN': cert.san if cert.san else [],
-        }
+    def get_certificate_details(self, engine, cert_id):
+        try:
+            with SessionManager(engine) as session:
+                cert = session.query(Certificate).get(cert_id)
+                if not cert:
+                    return {'success': False, 'error': 'Certificate not found'}
+                return {'success': True, 'data': cert}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
 
     def get_certificate_bindings(self, cert_id, session):
         """Fetch all bindings for a given certificate ID."""
@@ -227,4 +221,13 @@ class CertificateService:
             session.rollback()
             import logging
             logging.getLogger(__name__).exception(f"Error deleting certificate: {str(e)}")
+            return {'success': False, 'error': str(e)}
+
+    def get_manual_entry_form_data(self, engine):
+        try:
+            # If you need to fetch dropdown options or other data for the form, do it here
+            # For now, just return an empty dict or any required data structure
+            form_data = {}
+            return {'success': True, 'data': form_data}
+        except Exception as e:
             return {'success': False, 'error': str(e)}

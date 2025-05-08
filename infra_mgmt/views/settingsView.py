@@ -32,6 +32,8 @@ all configuration changes and backup operations.
 
 import logging
 import streamlit as st
+
+from infra_mgmt.backup import create_backup
 from ..settings import Settings
 from infra_mgmt.services.SettingsService import SettingsService
 from infra_mgmt.notifications import initialize_notifications, show_notifications, notify

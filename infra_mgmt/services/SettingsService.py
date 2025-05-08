@@ -7,7 +7,7 @@ import re
 from typing import List, Dict, Any, Tuple, Union
 from ..settings import Settings
 from ..models import Certificate, IgnoredDomain, IgnoredCertificate
-from ..db import SessionManager
+from infra_mgmt.utils.SessionManager import SessionManager
 from ..exports import (
     export_certificates_to_csv,
     export_certificates_to_pdf,

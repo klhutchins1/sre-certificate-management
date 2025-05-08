@@ -19,21 +19,9 @@ import logging
 from ..models import Domain, DomainDNSRecord, Certificate, IgnoredDomain
 from ..components.deletion_dialog import render_danger_zone
 from ..notifications import notify, show_notifications, initialize_notifications
+from ..services.DomainService import DomainService, VirtualDomain
 
 logger = logging.getLogger(__name__)
-
-class VirtualDomain:
-    """Represents a domain that exists as a parent but is not in our database."""
-    def __init__(self, domain_name):
-        self.domain_name = domain_name
-        self.registrar = None
-        self.registration_date = None
-        self.expiration_date = None
-        self.owner = None
-        self.is_active = True
-        self.updated_at = datetime.now()
-        self.certificates = []
-        self.dns_records = []
 
 def get_domain_hierarchy(domains):
     """
@@ -209,7 +197,7 @@ def render_domain_list(engine):
                 filtered_domains = visible_domains
             
             # Organize domains into hierarchy
-            root_domains, domain_hierarchy = get_domain_hierarchy(filtered_domains)
+            root_domains, domain_hierarchy = DomainService.get_domain_hierarchy(filtered_domains)
             
             # Create two columns: domain list and details
             col_list, col_details = st.columns([1, 2])
@@ -280,7 +268,7 @@ def render_domain_list(engine):
                                 
                                 with col_info:
                                     # Get registration info from root domain if this is a subdomain
-                                    root_domain = get_root_domain_info(domain.domain_name, domains)
+                                    root_domain = DomainService.get_root_domain_info(domain.domain_name, domains)
                                     display_domain = root_domain if root_domain else domain
                                     
                                     if root_domain:
@@ -297,7 +285,7 @@ def render_domain_list(engine):
                                 # Display info for virtual domains as before
                                 col1, col2 = st.columns(2)
                                 with col1:
-                                    root_domain = get_root_domain_info(domain.domain_name, domains)
+                                    root_domain = DomainService.get_root_domain_info(domain.domain_name, domains)
                                     display_domain = root_domain if root_domain else domain
                                     
                                     if root_domain:
@@ -371,37 +359,21 @@ def render_domain_list(engine):
                             }
                             
                             def delete_domain(session):
-                                try:
-                                    session.delete(domain)
-                                    session.commit()
+                                result = DomainService.delete_domain(session, domain)
+                                if result['success']:
                                     return True
-                                except Exception as e:  # Only Exception is possible here due to DB errors
-                                    session.rollback()
-                                    logger.exception(f"Error deleting domain: {str(e)}")
+                                else:
+                                    logger.exception(f"Error deleting domain: {result['error']}")
                                     return False
                             
                             def add_to_ignore_list(session):
-                                try:
-                                    # Check if already ignored
-                                    existing = session.query(IgnoredDomain).filter_by(pattern=domain.domain_name).first()
-                                    if existing:
-                                        notify(f"Domain '{domain.domain_name}' is already in the ignore list", "warning")
-                                    else:
-                                        # Add to ignore list
-                                        ignored = IgnoredDomain(
-                                            pattern=domain.domain_name,
-                                            reason=f"Added from domain view",
-                                            created_at=datetime.now()
-                                        )
-                                        session.add(ignored)
-                                        session.commit()
-                                        notify(f"Added '{domain.domain_name}' to ignore list", "success")
-                                        # Rerun to refresh the view
-                                        st.rerun()
-                                except Exception as e:  # Only Exception is possible here due to DB errors
-                                    session.rollback()
-                                    logger.exception(f"Error adding domain to ignore list: {str(e)}")
-                                    notify(f"Error adding domain to ignore list: {str(e)}", "error")
+                                result = DomainService.add_to_ignore_list(session, domain.domain_name)
+                                if result['success']:
+                                    notify(f"Added '{domain.domain_name}' to ignore list", "success")
+                                    st.rerun()
+                                else:
+                                    notify(result['error'], "warning")
+                                    logger.warning(result['error'])
                             
                             render_danger_zone(
                                 title="Domain Management",

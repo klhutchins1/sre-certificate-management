@@ -34,6 +34,7 @@ from ..db import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 from infra_mgmt.notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import altair as alt
+from ..services.ApplicationService import ApplicationService
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -80,34 +81,22 @@ def handle_add_form():
     
     try:
         with Session(st.session_state.engine) as session:
-            # Check if application name already exists
-            existing_app = session.query(Application).filter(
-                Application.name == st.session_state.app_name
-            ).first()
-            
-            if existing_app:
-                notify(f"An application with the name '{st.session_state.app_name}' already exists", "error")
-                return
-            
-            # Create new application
-            new_app = Application(
-                name=st.session_state.app_name,
-                app_type=st.session_state.app_type,
-                description=st.session_state.app_description,
-                owner=st.session_state.app_owner,
-                created_at=datetime.now()
+            result = ApplicationService.add_application(
+                session,
+                st.session_state.app_name,
+                st.session_state.app_type,
+                st.session_state.app_description,
+                st.session_state.app_owner
             )
-            session.add(new_app)
-            session.commit()
-            st.session_state.show_add_app_form = False
-            notify("✅ Application added successfully!", "success")
-            st.rerun()
-    except Exception as e:  # Only Exception is possible here due to DB/validation errors
+            if result['success']:
+                st.session_state.show_add_app_form = False
+                notify("✅ Application added successfully!", "success")
+                st.rerun()
+            else:
+                notify(result['error'], "error")
+    except Exception as e:
         logger.exception(f"Error adding application: {str(e)}")
-        if "UNIQUE constraint failed" in str(e):
-            notify(f"An application with the name '{st.session_state.app_name}' already exists", "error")
-        else:
-            notify(f"Error adding application: {str(e)}", "error")
+        notify(f"Error adding application: {str(e)}", "error")
 
 def toggle_add_form():
     """Toggle the add application form visibility."""
@@ -134,18 +123,22 @@ def handle_update_form():
         session = st.session_state.get('selection_session')
         application = st.session_state.get('current_app')
         if session and application:
-            # Refresh the application from the database
-            application = session.merge(application)
-            application.name = st.session_state.new_name
-            application.app_type = st.session_state.new_type
-            application.description = st.session_state.new_description
-            application.owner = st.session_state.new_owner
-            session.commit()
-            notify("Application updated successfully!", "success")
-            st.rerun()
+            result = ApplicationService.update_application(
+                session,
+                application,
+                st.session_state.new_name,
+                st.session_state.new_type,
+                st.session_state.new_description,
+                st.session_state.new_owner
+            )
+            if result['success']:
+                notify("Application updated successfully!", "success")
+                st.rerun()
+            else:
+                notify(result['error'], "error")
         else:
             notify("Unable to update application: Session not available", "error")
-    except Exception as e:  # Only Exception is possible here due to DB errors
+    except Exception as e:
         logger.exception(f"Error updating application: {str(e)}")
         notify(f"Error updating application: {str(e)}", "error")
 
@@ -155,12 +148,14 @@ def handle_delete_app():
         session = st.session_state.get('session')
         application = st.session_state.get('current_app')
         if session and application:
-            session.delete(application)
-            session.commit()
-            notify("Application deleted successfully!", "success")
-            st.session_state.current_app = None
-            st.rerun()
-    except Exception as e:  # Only Exception is possible here due to DB errors
+            result = ApplicationService.delete_application(session, application)
+            if result['success']:
+                st.session_state.current_app = None
+                notify("Application deleted successfully!", "success")
+                st.rerun()
+            else:
+                notify(result['error'], "error")
+    except Exception as e:
         session.rollback()
         logger.exception(f"Error deleting application: {str(e)}")
         notify(f"Error deleting application: {str(e)}", "error")
@@ -560,10 +555,12 @@ def render_application_details(application: Application) -> None:
                             if st.button("🗑️", key=f"delete_{binding.id}", help="Remove this binding"):
                                 session = st.session_state.get('selection_session')
                                 if session:
-                                    binding.application_id = None
-                                    session.commit()
-                                    notify("Certificate binding removed", "success")
-                                    st.rerun()
+                                    result = ApplicationService.remove_binding(session, binding)
+                                    if result['success']:
+                                        notify("Certificate binding removed", "success")
+                                        st.rerun()
+                                    else:
+                                        notify(result['error'], "error")
                         
                         st.divider()  # Add visual separation between bindings
             else:
@@ -616,23 +613,18 @@ def render_application_details(application: Application) -> None:
                         if selected_certs:
                             if st.button("Bind Selected Certificates", type="primary"):
                                 try:
-                                    success_count = 0
-                                    for cert_name in selected_certs:
-                                        cert_id = cert_options[cert_name]
-                                        # Create new binding with binding type
-                                        new_binding = CertificateBinding(
-                                            certificate_id=cert_id,
-                                            application_id=application.id,
-                                            binding_type=binding_type_map[binding_type],
-                                            last_seen=datetime.now()
-                                        )
-                                        session.add(new_binding)
-                                        success_count += 1
-                                    
-                                    if success_count > 0:
-                                        session.commit()
-                                        notify(f"{success_count} certificate(s) bound successfully!", "success")
+                                    cert_ids = [cert_options[cert_name] for cert_name in selected_certs]
+                                    result = ApplicationService.bind_certificates(
+                                        session,
+                                        application.id,
+                                        cert_ids,
+                                        binding_type_map[binding_type]
+                                    )
+                                    if result['success']:
+                                        notify(f"{result['count']} certificate(s) bound successfully!", "success")
                                         st.rerun()
+                                    else:
+                                        notify(result['error'], "error")
                                 except Exception as e:
                                     logger.exception(f"Error binding certificates: {str(e)}")
                                     notify(f"Error binding certificates: {str(e)}", "error")
@@ -656,17 +648,13 @@ def render_application_details(application: Application) -> None:
                 }
                 
                 def delete_app(delete_session):
-                    try:
-                        # Use the session passed to the callback
-                        delete_session.delete(application)
-                        delete_session.commit()
+                    result = ApplicationService.delete_application(delete_session, application)
+                    if result['success']:
                         st.session_state.current_app = None
-                        # Force a page refresh after deletion
                         st.rerun()
                         return True
-                    except Exception as e:
-                        delete_session.rollback()
-                        logger.exception(f"Error deleting application: {str(e)}")
+                    else:
+                        logger.exception(f"Error deleting application: {result['error']}")
                         return False
                 
                 # Use render_danger_zone without additional wrappers

@@ -31,6 +31,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from ..models import Certificate, CertificateScan, Host, HostIP, CertificateBinding, CertificateTracking
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
+from ..services.HistoryService import HistoryService
 
 
 def render_history_view(engine) -> None:
@@ -91,46 +92,20 @@ def render_host_certificate_history(engine) -> None:
         - Certificate validity period tracking
     """
     with SessionManager(engine) as session:
-        # Query host data with related certificates
-        hosts = session.query(Host).options(
-            joinedload(Host.ip_addresses),
-            joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate)
-        ).all()
-        
+        hosts, host_options = HistoryService.get_host_certificate_history(session)
         if not hosts:
             st.warning("No host data found")
             return
-        
-        # Create host selection options
-        host_options = {}
-        for host in hosts:
-            for ip in host.ip_addresses:
-                key = f"{host.name} ({ip.ip_address})"
-                host_options[key] = (host.id, ip.id)
-        
-        # Host selection interface
         selected_host = st.selectbox(
             "Select Host",
             options=list(host_options.keys()),
             index=None,
             placeholder="Choose a host to view certificate history..."
         )
-        
         if selected_host:
             host_id, ip_id = host_options[selected_host]
-            
-            # Query certificate bindings for selected host
-            bindings = session.query(CertificateBinding).filter(
-                CertificateBinding.host_id == host_id,
-                CertificateBinding.host_ip_id == ip_id
-            ).join(
-                Certificate
-            ).order_by(
-                CertificateBinding.last_seen.desc()
-            ).all()
-            
+            bindings = HistoryService.get_bindings_for_host(session, host_id, ip_id)
             if bindings:
-                # Prepare certificate history data
                 cert_history = []
                 for binding in bindings:
                     cert = binding.certificate
@@ -144,10 +119,7 @@ def render_host_certificate_history(engine) -> None:
                         "Platform": binding.platform or "Unknown",
                         "Status": "Valid" if cert.valid_until > datetime.now() else "Expired"
                     })
-                
                 df = pd.DataFrame(cert_history)
-                
-                # Display certificate timeline visualization
                 st.subheader("Certificate Timeline")
                 timeline_chart = {
                     "Certificate": df["Certificate"].tolist(),
@@ -155,44 +127,18 @@ def render_host_certificate_history(engine) -> None:
                     "End": df["Valid Until"].tolist()
                 }
                 st.plotly_chart(create_timeline_chart(timeline_chart))
-                
-                # Display detailed certificate history
                 st.subheader("Detailed History")
                 st.dataframe(
                     df,
                     column_config={
-                        "Certificate": st.column_config.TextColumn(
-                            "Certificate",
-                            width="medium"
-                        ),
-                        "Serial Number": st.column_config.TextColumn(
-                            "Serial Number",
-                            width="medium"
-                        ),
-                        "Valid From": st.column_config.DatetimeColumn(
-                            "Valid From",
-                            format="DD/MM/YYYY"
-                        ),
-                        "Valid Until": st.column_config.DatetimeColumn(
-                            "Valid Until",
-                            format="DD/MM/YYYY"
-                        ),
-                        "Last Seen": st.column_config.DatetimeColumn(
-                            "Last Seen",
-                            format="DD/MM/YYYY HH:mm"
-                        ),
-                        "Port": st.column_config.NumberColumn(
-                            "Port",
-                            width="small"
-                        ),
-                        "Platform": st.column_config.TextColumn(
-                            "Platform",
-                            width="small"
-                        ),
-                        "Status": st.column_config.TextColumn(
-                            "Status",
-                            width="small"
-                        )
+                        "Certificate": st.column_config.TextColumn("Certificate", width="medium"),
+                        "Serial Number": st.column_config.TextColumn("Serial Number", width="medium"),
+                        "Valid From": st.column_config.DatetimeColumn("Valid From", format="DD/MM/YYYY"),
+                        "Valid Until": st.column_config.DatetimeColumn("Valid Until", format="DD/MM/YYYY"),
+                        "Last Seen": st.column_config.DatetimeColumn("Last Seen", format="DD/MM/YYYY HH:mm"),
+                        "Port": st.column_config.NumberColumn("Port", width="small"),
+                        "Platform": st.column_config.TextColumn("Platform", width="small"),
+                        "Status": st.column_config.TextColumn("Status", width="small")
                     },
                     hide_index=True,
                     use_container_width=True
@@ -285,43 +231,26 @@ def render_scan_history(engine) -> None:
     track certificate scanning activities and identify potential issues.
     """
     with SessionManager(engine) as session:
-        # Query scan history with related data
-        scans = session.query(CertificateScan)\
-            .outerjoin(Certificate)\
-            .outerjoin(Host)\
-            .options(
-                joinedload(CertificateScan.certificate),
-                joinedload(CertificateScan.host).joinedload(Host.ip_addresses)
-            )\
-            .order_by(desc(CertificateScan.scan_date))\
-            .all()
-        
+        scans = HistoryService.get_scan_history(session)
         if not scans:
             st.warning("No scan history found")
             return
-        
-        # Prepare scan data for display
         scan_data = []
         for scan in scans:
-            # Process host information
             if scan.host:
                 host_display = scan.host.name
-                # Get IP addresses for the host
                 if scan.host.ip_addresses:
                     ip_addresses = [ip.ip_address for ip in scan.host.ip_addresses]
                     if ip_addresses:
                         host_display = f"{host_display} ({', '.join(ip_addresses)})"
             else:
-                host_display = "Unknown Host"  # Fallback if no host information
-            
+                host_display = "Unknown Host"
             data = {
                 "Scan Date": scan.scan_date,
                 "Status": scan.status,
                 "Port": scan.port,
                 "Host": host_display,
             }
-            
-            # Add certificate information if available
             if scan.certificate:
                 data.update({
                     "Certificate": scan.certificate.common_name,
@@ -334,9 +263,7 @@ def render_scan_history(engine) -> None:
                     "Serial Number": "N/A",
                     "Valid Until": None,
                 })
-            
             scan_data.append(data)
-        
         df = pd.DataFrame(scan_data)
         
         # Filtering interface
@@ -551,24 +478,20 @@ def render_certificate_tracking(cert: Certificate, session: Session) -> None:
             # Form submission handling
             submitted = st.form_submit_button("Save Entry")
             if submitted:
-                try:
-                    # Create and save new tracking entry
-                    new_entry = CertificateTracking(
-                        certificate_id=cert.id,
-                        change_number=change_number,
-                        planned_change_date=datetime.combine(planned_date, datetime.min.time()),
-                        notes=notes,
-                        status=status,
-                        created_at=datetime.now(),
-                        updated_at=datetime.now()
-                    )
-                    session.add(new_entry)
-                    session.commit()
+                result = HistoryService.add_certificate_tracking_entry(
+                    session,
+                    cert.id,
+                    change_number,
+                    planned_date,
+                    status,
+                    notes
+                )
+                if result['success']:
                     st.success("Change entry added!")
                     st.session_state.show_tracking_entry = False
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error saving change entry: {str(e)}")
+                else:
+                    st.error(f"Error saving change entry: {result['error']}")
     
     # Display existing tracking entries
     if cert.tracking_entries:
@@ -723,34 +646,18 @@ def render_cn_history(engine) -> None:
             - Subject Alternative Names (SANs)
     """
     with SessionManager(engine) as session:
-        # Query unique common names
-        common_names = session.query(Certificate.common_name)\
-            .distinct()\
-            .order_by(Certificate.common_name)\
-            .all()
-        
-        if not common_names:
+        cn_options = HistoryService.get_cn_history(session)
+        if not cn_options:
             st.warning("No certificate data found")
             return
-        
-        # Prepare common name selection options
-        cn_options = [cn[0] for cn in common_names if cn[0]]  # Filter out None values
-        
-        # Common name selection interface
         selected_cn = st.selectbox(
             "Select Common Name",
             options=cn_options,
             index=None,
             placeholder="Choose a common name to view certificate history..."
         )
-        
         if selected_cn:
-            # Query certificates for selected common name
-            certificates = session.query(Certificate)\
-                .filter(Certificate.common_name == selected_cn)\
-                .order_by(Certificate.valid_from.desc())\
-                .all()
-            
+            certificates = HistoryService.get_certificates_by_cn(session, selected_cn)
             if certificates:
                 # Prepare certificate history data
                 cert_history = []

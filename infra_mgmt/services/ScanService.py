@@ -1,0 +1,155 @@
+from sqlalchemy.orm import sessionmaker
+
+from infra_mgmt.models import CertificateBinding, Domain, Host
+from ..scanner.scan_manager import ScanManager
+from typing import List, Tuple, Dict, Any
+
+class ScanService:
+    """
+    Service layer for orchestrating domain/certificate scans.
+    Handles input validation, scan session management, progress, and result aggregation.
+    Delegates scanning to ScanManager and exposes a clean interface for the view/UI.
+    """
+    def __init__(self, engine):
+        """
+        Initialize ScanService with a SQLAlchemy engine and ScanManager.
+        Args:
+            engine: SQLAlchemy engine instance
+        """
+        self.engine = engine
+        self.scan_manager = ScanManager()
+        self.scan_results = {
+            "success": [],
+            "error": [],
+            "warning": [],
+            "no_cert": []
+        }
+        self.session_factory = sessionmaker(bind=engine)
+
+    def validate_and_prepare_targets(self, scan_input: str) -> Tuple[List[Tuple[str, int]], List[str]]:
+        """
+        Parse and validate scan input, returning a list of (hostname, port) tuples and a list of validation errors.
+        Args:
+            scan_input (str): Raw user input (one target per line)
+        Returns:
+            Tuple[List[Tuple[str, int]], List[str]]: (valid_targets, errors)
+        """
+        valid_targets = []
+        errors = []
+        entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
+        with self.session_factory() as session:
+            for entry in entries:
+                is_valid, hostname, port, error = self.scan_manager.process_scan_target(entry, session)
+                if is_valid:
+                    valid_targets.append((hostname, port))
+                else:
+                    errors.append(f"Invalid entry '{entry}': {error}")
+        return valid_targets, errors
+
+    def run_scan(self, targets: List[Tuple[str, int]], options: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Orchestrate the scan process for the given targets and options.
+        Args:
+            targets: List of (hostname, port) tuples
+            options: Dict of scan options (e.g., check_whois, check_dns, etc.)
+        Returns:
+            Dict[str, Any]: Aggregated scan results
+        """
+        self.scan_manager.reset_scan_state()
+        self.scan_results = {
+            "success": [],
+            "error": [],
+            "warning": [],
+            "no_cert": []
+        }
+        with self.session_factory() as session:
+            for hostname, port in targets:
+                self.scan_manager.add_to_queue(hostname, port)
+            while self.scan_manager.has_pending_targets():
+                target = self.scan_manager.get_next_target()
+                if not target:
+                    break
+                try:
+                    self.scan_manager.scan_target(
+                        session=session,
+                        domain=target[0],
+                        port=target[1],
+                        **options
+                    )
+                except Exception as e:
+                    self.scan_results["error"].append(f"{target[0]}:{target[1]} - {str(e)}")
+                    session.rollback()
+        # Copy results from scan_manager
+        self.scan_results = dict(self.scan_manager.scan_results)
+        return self.scan_results
+
+    def get_scan_results(self) -> Dict[str, Any]:
+        """
+        Get the latest scan results.
+        Returns:
+            Dict[str, Any]: Scan results (success, error, warning, no_cert)
+        """
+        return self.scan_results
+
+    def get_scan_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the current/last scan session.
+        Returns:
+            Dict[str, Any]: Stats (history size, success count, error count, etc.)
+        """
+        return self.scan_manager.get_scan_stats()
+
+    def get_certificates_for_domain(self, engine, domain_name: str):
+        """
+        Aggregate all certificates for a given domain or host, including direct and binding-based certificates.
+        Args:
+            engine: SQLAlchemy engine
+            domain_name: Domain or host name
+        Returns:
+            List of Certificate objects (deduplicated)
+        """
+        from sqlalchemy.orm import sessionmaker
+        Session = sessionmaker(bind=engine)
+        with Session() as session:
+            certificates = []
+            # Try domain first
+            domain_obj = session.query(Domain).filter_by(domain_name=domain_name).first()
+            if domain_obj:
+                certificates.extend(domain_obj.certificates)
+                # Also get certificates from bindings via host
+                host = session.query(Host).filter_by(name=domain_name).first()
+                if host:
+                    bindings = session.query(CertificateBinding).filter_by(host=host).all()
+                    cert_from_bindings = [b.certificate for b in bindings if b.certificate]
+                    certificates.extend(cert_from_bindings)
+            else:
+                # Try as host
+                host = session.query(Host).filter_by(name=domain_name).first()
+                if host:
+                    bindings = session.query(CertificateBinding).filter_by(host=host).all()
+                    certificates = [b.certificate for b in bindings if b.certificate]
+            # Deduplicate while preserving order
+            seen = set()
+            deduped = []
+            for cert in certificates:
+                if cert and cert.id not in seen:
+                    deduped.append(cert)
+                    seen.add(cert.id)
+            return deduped
+
+    def get_dns_records_for_domain(self, engine, domain_name: str):
+        """
+        Aggregate all DNS records for a given domain.
+        Args:
+            engine: SQLAlchemy engine
+            domain_name: Domain name
+        Returns:
+            List of DomainDNSRecord objects
+        """
+        from sqlalchemy.orm import sessionmaker
+        Session = sessionmaker(bind=engine)
+        with Session() as session:
+            domain_obj = session.query(Domain).filter_by(domain_name=domain_name).first()
+            if domain_obj:
+                return list(domain_obj.dns_records)
+            return []

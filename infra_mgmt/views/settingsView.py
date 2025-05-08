@@ -52,7 +52,7 @@ from ..exports import (
 from ..static.styles import load_warning_suppression, load_css
 from sqlalchemy.engine import Engine
 from ..backup import create_backup
-from ..models import IgnoredDomain, IgnoredCertificate
+from ..models import Certificate, IgnoredDomain, IgnoredCertificate
 from sqlalchemy.orm import Session
 import re
 from infra_mgmt.notifications import initialize_notifications, show_notifications, notify

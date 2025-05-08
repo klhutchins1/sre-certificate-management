@@ -35,6 +35,7 @@ from ..monitoring import monitor_rendering, monitor_query, performance_metrics
 import functools
 from typing import Dict, Any, Optional
 import logging
+from ..services.DashboardService import DashboardService
 
 # Cache for dashboard data
 _dashboard_cache: Dict[str, Any] = {}
@@ -306,55 +307,41 @@ def render_dashboard(engine) -> None:
     initialize_notifications()
     clear_notifications()
     notification_placeholder = st.empty()
-    
     st.title("Dashboard")
     st.divider()
-    
     try:
         with monitor_query("dashboard_data"), SessionManager(engine) as session:
             if not session:
                 notify("Database connection failed. \n", "error")
                 show_notifications()
                 return
-            
             try:
                 # Get all metrics in one optimized query
                 with monitor_query("dashboard_metrics"):
-                    metrics = get_dashboard_metrics(session)
-                
+                    metrics = DashboardService.get_dashboard_metrics(session)
                 # Display metrics in two rows
                 st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
                 col1, col2, col3, col4 = st.columns(4)
-                
                 # First row - Totals
                 col1.metric("Total Certificates", metrics['total_certs'])
                 col2.metric("Total Root Domains", metrics['total_root_domains'])
                 col3.metric("Total Applications", metrics['total_apps'])
                 col4.metric("Total Hosts", metrics['total_hosts'])
-                
                 # Second row - Expiring items
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Certificates Expiring (30d)", metrics['expiring_certs'])
                 col2.metric("Root Domains Expiring (30d)", metrics['expiring_domains'])
                 col3.metric("Total Subdomains", metrics['total_subdomains'])
                 st.markdown('</div>', unsafe_allow_html=True)
-                
                 st.divider()
-                
                 # Create certificate timeline with optimized query
                 with monitor_query("certificate_timeline"):
-                    certs = session.query(
-                        Certificate.common_name.label('Name'),
-                        Certificate.valid_from.label('Start'),
-                        Certificate.valid_until.label('End')
-                    ).order_by(Certificate.valid_until).limit(100).all()
+                    certs = DashboardService.get_certificate_timeline_data(session)
                     certs_df = pd.DataFrame(certs) if certs else pd.DataFrame()
-                
                 if not certs_df.empty:
                     min_height = 500
                     height_per_cert = 30
                     cert_chart_height = max(min_height, len(certs_df) * height_per_cert)
-                    
                     fig_certs = create_timeline(
                         certs_df,
                         'Certificate Validity Periods (Top 100)',
@@ -364,27 +351,15 @@ def render_dashboard(engine) -> None:
                     st.plotly_chart(fig_certs, use_container_width=True)
                 else:
                     notify("No certificates found in database. \n", "info")
-                
                 st.divider()
-                
                 # Create root domain timeline with optimized data handling
                 with monitor_query("domain_timeline"):
-                    domain_data = [
-                        {
-                            'Name': d.domain_name,
-                            'Start': d.registration_date,
-                            'End': d.expiration_date
-                        }
-                        for d in metrics['root_domains']
-                        if d.registration_date and d.expiration_date
-                    ]
+                    domain_data = DashboardService.get_domain_timeline_data(metrics['root_domains'])
                     df_domains = pd.DataFrame(domain_data) if domain_data else pd.DataFrame()
-                
                 if not df_domains.empty:
                     min_height = 500
                     height_per_domain = 30
                     domain_chart_height = max(min_height, len(df_domains) * height_per_domain)
-                    
                     fig_domains = create_timeline(
                         df_domains,
                         'Domain Registration Periods',
@@ -395,21 +370,17 @@ def render_dashboard(engine) -> None:
                     st.plotly_chart(fig_domains, use_container_width=True)
                 else:
                     notify("No root domain registration information found in database. \n", "info")
-                    
             except Exception as e:  # Only Exception is possible here due to DB/UI/unknown errors
                 logger.exception(f"Error querying database: {str(e)}")
                 notify(f"Error querying database: {str(e)} \n", "error")
-                
             # Show all notifications at the end
             with notification_placeholder:
                 show_notifications()
-                
     except Exception as e:  # Only Exception is possible here due to DB/UI/unknown errors
         logger.exception(f"Error connecting to database: {str(e)}")
         notify(f"Error connecting to database: {str(e)} \n", "error")
         with notification_placeholder:
             show_notifications()
-    
     # Show performance metrics at the bottom
     render_performance_metrics()
 

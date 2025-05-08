@@ -40,6 +40,7 @@ from ..models import Certificate, Host, HostIP, CertificateBinding
 from ..db import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 import logging
+from ..services.SearchService import SearchService
 
 # Add logger setup at the top
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def render_search_view(engine) -> None:
     if search_query:
         try:
             with SessionManager(engine) as session:
-                results = perform_search(session, search_query, search_type, status_filter, platform_filter)
+                results = SearchService.perform_search(session, search_query, search_type, status_filter, platform_filter)
                 
                 # Handle no results case
                 if not results or (
@@ -193,119 +194,3 @@ def render_search_view(engine) -> None:
         except Exception as e:  # Only Exception is possible here due to DB/UI/unknown errors
             logger.exception(f"Error in search view: {str(e)}")
             notify(f"Error in search view: {str(e)}", "error")
-
-def perform_search(session: Session, query: str, search_type: str, status_filter: str, platform_filter: str) -> dict:
-    """
-    Perform a comprehensive search across the database based on user criteria.
-
-    This function executes a search across certificates, hosts, and IP addresses
-    based on the provided search criteria. It handles multiple entity types and
-    applies filters for certificate status and platform.
-
-    Args:
-        session: SQLAlchemy session for database operations
-        query: Search string to match against various fields
-        search_type: Type of entities to search (All/Certificates/Hosts/IP Addresses)
-        status_filter: Certificate validity filter (All/Valid/Expired)
-        platform_filter: Platform filter for certificate bindings
-
-    Returns:
-        dict: Dictionary containing search results with keys:
-            - 'certificates': List of matching Certificate objects
-            - 'hosts': List of matching Host objects
-
-    Features:
-        - Certificate search across:
-            - Common Name
-            - Serial Number
-            - Subject
-            - Subject Alternative Names (SAN)
-        - Host search across:
-            - Hostname
-            - IP Addresses
-        - Advanced filtering:
-            - Certificate validity status
-            - Platform-specific bindings
-            - Date-based filtering
-        - Relationship handling:
-            - Certificate-Host relationships
-            - IP address bindings
-            - Platform configurations
-
-    The function uses SQLAlchemy's query builder to construct efficient
-    database queries with appropriate joins and filters.
-    """
-    results = {}
-    now = datetime.now()
-    
-    # Build base certificate query with relationships
-    cert_query = session.query(Certificate).options(
-        joinedload(Certificate.certificate_bindings)
-        .joinedload(CertificateBinding.host)
-        .joinedload(Host.ip_addresses)
-    )
-    
-    # Apply certificate status filter
-    if status_filter != "All":
-        is_valid = status_filter == "Valid"
-        cert_query = cert_query.filter(
-            Certificate.valid_until > now if is_valid else Certificate.valid_until <= now
-        )
-    
-    # Apply platform filter to certificate bindings
-    if platform_filter != "All":
-        cert_query = cert_query.join(CertificateBinding).filter(
-            CertificateBinding.platform == platform_filter
-        )
-    
-    # Search certificates if requested
-    if search_type in ['All', 'Certificates']:
-        results['certificates'] = cert_query.filter(
-            or_(
-                Certificate.common_name.ilike(f"%{query}%"),
-                Certificate.serial_number.ilike(f"%{query}%"),
-                Certificate._subject.ilike(f"%{query}%"),
-                Certificate._san.ilike(f"%{query}%")
-            )
-        ).all()
-    
-    # Search hosts and IPs if requested
-    if search_type in ['All', 'Hosts', 'IP Addresses']:
-        # Build base host query with relationships
-        host_query = session.query(Host).options(
-            joinedload(Host.ip_addresses),
-            joinedload(Host.certificate_bindings)
-            .joinedload(CertificateBinding.certificate)
-        )
-        
-        # Apply platform filter if specified
-        if platform_filter != "All":
-            host_query = host_query.join(
-                CertificateBinding,
-                Host.certificate_bindings
-            ).filter(
-                CertificateBinding.platform == platform_filter
-            )
-        
-        # Apply certificate status filter
-        if status_filter != "All":
-            is_valid = status_filter == "Valid"
-            host_query = host_query.join(
-                CertificateBinding,
-                Host.certificate_bindings
-            ).join(
-                Certificate,
-                CertificateBinding.certificate
-            ).filter(
-                Certificate.valid_until > now if is_valid else Certificate.valid_until <= now
-            )
-        
-        # Execute host search query
-        results['hosts'] = host_query.filter(
-            or_(
-                Host.name.ilike(f"%{query}%"),
-                Host.ip_addresses.any(HostIP.ip_address.ilike(f"%{query}%"))
-            )
-        ).all()
-    
-    return results

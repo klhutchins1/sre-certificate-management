@@ -30,6 +30,7 @@ from ..static.styles import load_warning_suppression, load_css
 from ..db import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 import logging
+from ..services.HostService import HostService
 
 logger = logging.getLogger(__name__)
 
@@ -120,34 +121,14 @@ def render_hosts_view(engine) -> None:
             if submitted:
                 try:
                     with Session(engine) as session:
-                        # Create new host
-                        new_host = Host(
-                            name=hostname,
-                            host_type=host_type,
-                            environment=environment,
-                            description=description,
-                            last_seen=datetime.now()
-                        )
-                        session.add(new_host)
-                        session.flush()  # Get the new host ID
-                        
-                        # Add IP addresses
-                        if ip_addresses.strip():
-                            for ip in ip_addresses.strip().split('\n'):
-                                ip = ip.strip()
-                                if ip:  # Skip empty lines
-                                    new_ip = HostIP(
-                                        host_id=new_host.id,
-                                        ip_address=ip,
-                                        is_active=True,
-                                        last_seen=datetime.now()
-                                    )
-                                    session.add(new_ip)
-                        
-                        session.commit()
-                        st.success("✅ Host added successfully!")
-                        st.session_state['show_add_host_form'] = False  # Hide the form
-                        st.rerun()  # Refresh the page
+                        ip_list = [ip.strip() for ip in ip_addresses.strip().split('\n') if ip.strip()]
+                        result = HostService.add_host_with_ips(session, hostname, host_type, environment, description, ip_list)
+                        if result['success']:
+                            st.success("✅ Host added successfully!")
+                            st.session_state['show_add_host_form'] = False
+                            st.rerun()
+                        else:
+                            st.error(f"Error adding host: {result['error']}")
                 except Exception as e:
                     st.error(f"Error adding host: {str(e)}")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -182,15 +163,13 @@ def render_hosts_view(engine) -> None:
         update_data = st.session_state.platform_update
         try:
             with Session(engine) as session:
-                binding = session.query(CertificateBinding).get(update_data['binding_id'])
-                if binding:
-                    binding.platform = update_data['platform']
-                    session.commit()
-                    # Store success message in session state
-                    st.session_state.success_message = f"Platform updated successfully for {binding.host.name}"
-                    # Clear the update data
+                result = HostService.update_binding_platform(session, update_data['binding_id'], update_data['platform'])
+                if result['success']:
+                    st.session_state.success_message = f"Platform updated successfully for {update_data['binding_id']}"
                     del st.session_state.platform_update
                     st.rerun()
+                else:
+                    st.error(f"Error updating platform: {result['error']}")
         except Exception as e:
             st.error(f"Error updating platform: {str(e)}")
     
@@ -655,10 +634,12 @@ def render_details(selected_host: Host, binding: CertificateBinding = None, sess
                             # Add remove binding button
                             if st.button("Remove Binding", key=f"remove_{b.id}", type="secondary"):
                                 try:
-                                    session.delete(b)
-                                    session.commit()
-                                    st.success("Binding removed successfully!")
-                                    st.rerun()
+                                    result = HostService.delete_binding(session, b.id)
+                                    if result['success']:
+                                        st.success("Binding removed successfully!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Error removing binding: {result['error']}")
                                 except Exception as e:
                                     st.error(f"Error removing binding: {str(e)}")
             else:

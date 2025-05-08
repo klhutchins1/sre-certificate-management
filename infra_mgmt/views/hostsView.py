@@ -31,6 +31,7 @@ from ..db import SessionManager
 from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
 import logging
 from ..services.HostService import HostService
+from ..services.ViewDataService import ViewDataService
 
 logger = logging.getLogger(__name__)
 
@@ -135,24 +136,23 @@ def render_hosts_view(engine) -> None:
     
     st.divider()
     
+    # Use ViewDataService for hosts, binding_data, and metrics
+    view_data_service = ViewDataService()
+    result = view_data_service.get_hosts_list_view_data(engine)
+    if not result['success']:
+        st.error(result['error'])
+        return
+    hosts = result['data']['hosts']
+    binding_data = result['data']['binding_data']
+    metrics = result['data']['metrics']
+    
     # Create metrics columns with standardized styling
     st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
     
-    with SessionManager(engine) as session:
-        if not session:
-            st.error("Database connection failed")
-            return
-        
-        # Calculate metrics
-        total_hosts = session.query(Host).count()
-        total_ips = session.query(HostIP).count()
-        total_certs = session.query(Certificate).count()
-        
-        # Display metrics
-        col1.metric("Total Hosts", total_hosts)
-        col2.metric("Total IPs", total_ips)
-        col3.metric("Total Certificates", total_certs)
+    col1.metric("Total Hosts", metrics["total_hosts"])
+    col2.metric("Total IPs", metrics["total_ips"])
+    col3.metric("Total Certificates", metrics["total_certs"])
     
     st.markdown('</div>', unsafe_allow_html=True)
     
@@ -219,328 +219,144 @@ def render_hosts_view(engine) -> None:
         </script>
     """, unsafe_allow_html=True)
     
-    with Session(engine) as session:
-        # Store session in session state for use in binding details
-        st.session_state['session'] = session
-        
-        # Get all hosts with their bindings and related data
-        hosts = session.query(Host).options(
-            joinedload(Host.ip_addresses),
-            joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate)
-        ).all()
-        
-        if not hosts:
-            st.warning("No hosts found in database")
-            return
-        
-        # View type selector
+    # AG Grid and selection logic using only service data
+    if binding_data:
+        df = pd.DataFrame(binding_data)
+        gb = GridOptionsBuilder.from_dataframe(df)
+        gb.configure_default_column(
+            resizable=True,
+            sortable=True,
+            filter=True,
+            editable=False
+        )
         view_type = st.radio(
             "View By",
             ["Hostname", "IP Address"],
             horizontal=True
         )
-        
-        # Convert to DataFrame for display
-        binding_data = []
-        for host in hosts:
-            if view_type == "Hostname":
-                # For hostname view, show all certificates regardless of IP
-                if host.certificate_bindings:  # If host has any certificates
-                    for binding in host.certificate_bindings:
-                        binding_data.append({
-                            'Hostname': host.name,
-                            'IP Address': binding.host_ip.ip_address if binding.host_ip else 'No IP',
-                            'Port': binding.port,
-                            'Certificate': binding.certificate.common_name,
-                            'Platform': binding.platform or 'Unknown',
-                            'Status': 'Valid' if binding.certificate.valid_until > datetime.now() else 'Expired',
-                            'Expires': binding.certificate.valid_until,
-                            'Last Seen': binding.last_seen,
-                            '_id': binding.id,
-                            'Source': '🔒 Manual' if binding.manually_added else '🔍 Scanned'
-                        })
-                else:  # No certificates for this host
-                    binding_data.append({
-                        'Hostname': host.name,
-                        'IP Address': host.ip_addresses[0].ip_address if host.ip_addresses else 'No IP',
-                        'Port': None,
-                        'Certificate': 'No Certificate',
-                        'Platform': 'Unknown',
-                        'Status': 'No Certificate',
-                        'Expires': None,
-                        'Last Seen': None,
-                        '_id': None,
-                        'Source': ''
-                    })
-            else:  # IP Address view
-                if host.ip_addresses:  # If host has IP addresses
-                    for ip in host.ip_addresses:
-                        # Get all bindings for this host/IP combination
-                        host_bindings = [b for b in host.certificate_bindings if b.host_ip_id == ip.id]
-                        
-                        if host_bindings:  # If there are any bindings (manual or scanned)
-                            for binding in host_bindings:
-                                binding_data.append({
-                                    'Hostname': host.name,
-                                    'IP Address': ip.ip_address,
-                                    'Port': binding.port,
-                                    'Certificate': binding.certificate.common_name,
-                                    'Platform': binding.platform or 'Unknown',
-                                    'Status': 'Valid' if binding.certificate.valid_until > datetime.now() else 'Expired',
-                                    'Expires': binding.certificate.valid_until,
-                                    'Last Seen': binding.last_seen,
-                                    '_id': binding.id,
-                                    'Source': '🔒 Manual' if binding.manually_added else '🔍 Scanned'
-                                })
-                        else:  # No certificates for this IP
-                            binding_data.append({
-                                'Hostname': host.name,
-                                'IP Address': ip.ip_address,
-                                'Port': None,
-                                'Certificate': 'No Certificate',
-                                'Platform': 'Unknown',
-                                'Status': 'No Certificate',
-                                'Expires': None,
-                                'Last Seen': None,
-                                '_id': None,
-                                'Source': ''
-                            })
-                else:  # Host without IP addresses
-                    binding_data.append({
-                        'Hostname': host.name,
-                        'IP Address': 'No IP',
-                        'Port': None,
-                        'Certificate': 'No Certificate',
-                        'Platform': 'Unknown',
-                        'Status': 'No Certificate',
-                        'Expires': None,
-                        'Last Seen': None,
-                        '_id': None,
-                        'Source': ''
-                    })
-        
-        if binding_data:
-            df = pd.DataFrame(binding_data)
-            
-            # Configure AG Grid
-            gb = GridOptionsBuilder.from_dataframe(df)
-            
-            # Configure default settings
-            gb.configure_default_column(
-                resizable=True,
-                sortable=True,
-                filter=True,
-                editable=False
-            )
-            
-            # Configure specific columns based on view type
-            if view_type == "Hostname":
-                gb.configure_column(
-                    "Hostname",
-                    minWidth=200,
-                    flex=2,
-                    rowGroup=True
-                )
-                gb.configure_column(
-                    "IP Address",
-                    minWidth=150,
-                    flex=1
-                )
-            else:  # IP Address view
-                gb.configure_column(
-                    "IP Address",
-                    minWidth=150,
-                    flex=1,
-                    sort="asc"
-                )
-                gb.configure_column(
-                    "Hostname",
-                    minWidth=200,
-                    flex=2
-                )
-            
-            # Configure source column
-            gb.configure_column(
-                "Source",
-                minWidth=100,
-                flex=1
-            )
-            
-            gb.configure_column(
-                "Port",
-                type=["numericColumn"],
-                minWidth=100
-            )
-            
-            gb.configure_column(
-                "Certificate",
-                minWidth=200,
-                flex=2,
-                cellClass=JsCode("""
-                function(params) {
-                    if (!params.data) return [];
-                    if (params.data.Status === 'No Certificate') {
-                        return ['ag-cert-cell-none'];
-                    }
-                    return [];
-                }
-                """)
-            )
-            
-            # Configure platform column
-            gb.configure_column(
-                "Platform",
-                minWidth=120,
-                editable=True,
-                cellEditor='agSelectCellEditor',
-                cellEditorParams={
-                    'values': [''] + list(platform_options.keys())
-                },
-                valueFormatter="value === '' ? 'Unknown' : value",
-                cellClass=JsCode("""
-                function(params) {
-                    if (!params.value) return ['ag-platform-cell-unknown'];
-                    return [];
-                }
-                """)
-            )
-            
-            # Configure status column
-            gb.configure_column(
-                "Status",
-                minWidth=100,
-                cellClass=JsCode("""
-                function(params) {
-                    if (!params.data) return [];
-                    if (params.value === 'Expired') return ['ag-status-expired'];
-                    if (params.value === 'Valid') return ['ag-status-valid'];
-                    return [];
-                }
-                """)
-            )
-            
-            # Configure date columns
-            gb.configure_column(
-                "Expires",
-                type=["dateColumnFilter"],
-                minWidth=120,
-                valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
-                cellClass=JsCode("""
-                function(params) {
-                    if (!params.data) return ['ag-date-cell'];
-                    if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
-                    return ['ag-date-cell'];
-                }
-                """)
-            )
-            gb.configure_column(
-                "Last Seen",
-                type=["dateColumnFilter"],
-                minWidth=150,
-                valueFormatter="value ? new Date(value).toLocaleString() : ''",
-                cellClass='ag-date-cell'
-            )
-            
-            # Hide ID column
-            gb.configure_column("_id", hide=True)
-            
-            # Configure selection
-            gb.configure_selection(
-                selection_mode="single",
-                use_checkbox=False,
-                pre_selected_rows=[]
-            )
-            
-            # Configure grid options based on view type
-            grid_options = {
-                'animateRows': True,
-                'enableRangeSelection': True,
-                'suppressAggFuncInHeader': True,
-                'suppressMovableColumns': True,
-                'rowHeight': 35,
-                'headerHeight': 40
-            }
-            
-            if view_type == "Hostname":
-                grid_options.update({
-                    'groupDefaultExpanded': 1,
-                    'groupDisplayType': 'groupRows',
-                    'groupTotalRow': True,
-                    'groupSelectsChildren': True,
-                    'suppressGroupClickSelection': True
-                })
-            
-            gb.configure_grid_options(**grid_options)
-            
-            gridOptions = gb.build()
-            
-            # Display the AG Grid
-            grid_response = AgGrid(
-                df,
-                gridOptions=gridOptions,
-                update_mode=GridUpdateMode.SELECTION_CHANGED,
-                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                fit_columns_on_grid_load=True,
-                theme="streamlit",
-                allow_unsafe_jscode=True,
-                key=f"host_grid_{view_type}",
-                height=600
-            )
-            
-            # Handle selection
-            try:
-                selected_rows = grid_response.get('selected_rows', [])
-                
-                # Convert DataFrame to list of dicts if needed
-                if isinstance(selected_rows, pd.DataFrame):
-                    selected_rows = selected_rows.to_dict('records')
-                
-                # Handle selection for both views
-                if selected_rows and len(selected_rows) > 0:
-                    selected_row = selected_rows[0]
-                    
-                    # Skip group rows in hostname view (rows without hostname)
-                    if view_type == "Hostname" and not selected_row.get('Hostname'):
-                        return
-                    
-                    # Get the host with all relationships
-                    selected_host = session.query(Host).options(
-                        joinedload(Host.ip_addresses),
-                        joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate),
-                        joinedload(Host.scans)
-                    ).filter_by(name=selected_row['Hostname']).first()
-                    
-                    if selected_host:
-                        st.divider()
-                        if selected_row.get('_id'):
-                            # If there's a binding ID, show binding details
-                            binding = session.query(CertificateBinding).options(
-                                joinedload(CertificateBinding.host),
-                                joinedload(CertificateBinding.host_ip),
-                                joinedload(CertificateBinding.certificate)
-                            ).get(selected_row['_id'])
-                            if binding:
-                                render_details(selected_host, binding, session)
-                        else:
-                            # If no binding, show host details
-                            render_details(selected_host, None, session)
-            except Exception as e:  # Only Exception is possible here due to UI/DB/unknown errors
-                st.error(f"Error handling selection: {str(e)}")
-                logger.exception(f"Selection error: {str(e)}")  # Add detailed logging
-                
-            # Add spacing after grid
-            st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
+        if view_type == "Hostname":
+            gb.configure_column("Hostname", minWidth=200, flex=2, rowGroup=True)
+            gb.configure_column("IP Address", minWidth=150, flex=1)
         else:
-            st.warning("No host data available")
+            gb.configure_column("IP Address", minWidth=150, flex=1, sort="asc")
+            gb.configure_column("Hostname", minWidth=200, flex=2)
+        gb.configure_column("Source", minWidth=100, flex=1)
+        gb.configure_column("Port", type=["numericColumn"], minWidth=100)
+        gb.configure_column(
+            "Certificate", minWidth=200, flex=2,
+            cellClass=JsCode("""
+            function(params) {
+                if (!params.data) return [];
+                if (params.data.Status === 'No Certificate') {
+                    return ['ag-cert-cell-none'];
+                }
+                return [];
+            }
+            """))
+        gb.configure_column(
+            "Platform", minWidth=120, editable=True,
+            cellEditor='agSelectCellEditor',
+            cellEditorParams={'values': [''] + list(platform_options.keys())},
+            valueFormatter="value === '' ? 'Unknown' : value",
+            cellClass=JsCode("""
+            function(params) {
+                if (!params.value) return ['ag-platform-cell-unknown'];
+                return [];
+            }
+            """))
+        gb.configure_column(
+            "Status", minWidth=100,
+            cellClass=JsCode("""
+            function(params) {
+                if (!params.data) return [];
+                if (params.value === 'Expired') return ['ag-status-expired'];
+                if (params.value === 'Valid') return ['ag-status-valid'];
+                return [];
+            }
+            """))
+        gb.configure_column(
+            "Expires", type=["dateColumnFilter"], minWidth=120,
+            valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
+            cellClass=JsCode("""
+            function(params) {
+                if (!params.data) return ['ag-date-cell'];
+                if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
+                return ['ag-date-cell'];
+            }
+            """))
+        gb.configure_column(
+            "Last Seen", type=["dateColumnFilter"], minWidth=150,
+            valueFormatter="value ? new Date(value).toLocaleString() : ''",
+            cellClass='ag-date-cell'
+        )
+        gb.configure_column("_id", hide=True)
+        gb.configure_selection(
+            selection_mode="single",
+            use_checkbox=False,
+            pre_selected_rows=[]
+        )
+        grid_options = {
+            'animateRows': True,
+            'enableRangeSelection': True,
+            'suppressAggFuncInHeader': True,
+            'suppressMovableColumns': True,
+            'rowHeight': 35,
+            'headerHeight': 40
+        }
+        if view_type == "Hostname":
+            grid_options.update({
+                'groupDefaultExpanded': 1,
+                'groupDisplayType': 'groupRows',
+                'groupTotalRow': True,
+                'groupSelectsChildren': True,
+                'suppressGroupClickSelection': True
+            })
+        gb.configure_grid_options(**grid_options)
+        gridOptions = gb.build()
+        grid_response = AgGrid(
+            df,
+            gridOptions=gridOptions,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            fit_columns_on_grid_load=True,
+            theme="streamlit",
+            allow_unsafe_jscode=True,
+            key=f"host_grid_{view_type}",
+            height=600
+        )
+        # Handle selection
+        try:
+            selected_rows = grid_response.get('selected_rows', [])
+            if isinstance(selected_rows, pd.DataFrame):
+                selected_rows = selected_rows.to_dict('records')
+            if selected_rows and len(selected_rows) > 0:
+                selected_row = selected_rows[0]
+                if view_type == "Hostname" and not selected_row.get('Hostname'):
+                    return
+                # Find the selected host from the hosts list
+                selected_host = next((h for h in hosts if h.name == selected_row['Hostname']), None)
+                selected_binding = None
+                if selected_row.get('_id'):
+                    # Find the binding from the host's certificate_bindings
+                    if selected_host:
+                        selected_binding = next((b for b in selected_host.certificate_bindings if b.id == selected_row['_id']), None)
+                if selected_host:
+                    st.divider()
+                    render_details(selected_host, selected_binding)
+        except Exception as e:
+            st.error(f"Error handling selection: {str(e)}")
+            logger.exception(f"Selection error: {str(e)}")
+        st.markdown("<div class='mb-5'></div>", unsafe_allow_html=True)
+    else:
+        st.warning("No host data available")
 
-def render_details(selected_host: Host, binding: CertificateBinding = None, session: Session = None) -> None:
+def render_details(selected_host: Host, binding: CertificateBinding = None) -> None:
     """
     Unified details view for both host and binding details.
     
     Args:
         selected_host: Host model instance
         binding: Optional CertificateBinding instance for binding-specific view
-        session: SQLAlchemy session for database operations
     """
     # Create header with title
     col1, col2 = st.columns([3, 1])
@@ -618,7 +434,7 @@ def render_details(selected_host: Host, binding: CertificateBinding = None, sess
                     )
         else:
             # Show all certificates bound to this host
-            bindings = session.query(CertificateBinding).filter_by(host_id=selected_host.id).all()
+            bindings = selected_host.certificate_bindings
             if bindings:
                 for b in bindings:
                     cert = b.certificate
@@ -634,7 +450,7 @@ def render_details(selected_host: Host, binding: CertificateBinding = None, sess
                             # Add remove binding button
                             if st.button("Remove Binding", key=f"remove_{b.id}", type="secondary"):
                                 try:
-                                    result = HostService.delete_binding(session, b.id)
+                                    result = HostService.delete_binding(selected_host.id, b.id)
                                     if result['success']:
                                         st.success("Binding removed successfully!")
                                         st.rerun()
@@ -659,7 +475,6 @@ def render_details(selected_host: Host, binding: CertificateBinding = None, sess
     
     with tab4:
         st.markdown("### ⚠️ Danger Zone")
-        
         # Gather dependencies
         dependencies = {
             "IP Addresses": [ip.ip_address for ip in selected_host.ip_addresses],
@@ -672,25 +487,19 @@ def render_details(selected_host: Host, binding: CertificateBinding = None, sess
                 for s in selected_host.scans
             ]
         }
-        
-        def delete_host(session):
-            try:
-                # Delete the host and all related records
-                session.delete(selected_host)
-                session.commit()
-                # Clear the selection and rerun to refresh the view
+        def delete_host():
+            result = HostService.delete_host_by_id(selected_host.id)
+            if result['success']:
                 if 'selected_host_id' in st.session_state:
                     del st.session_state.selected_host_id
                 return True
-            except Exception as e:
-                session.rollback()
+            else:
                 return False
-        
         render_danger_zone(
             title="Delete Host",
             entity_name=selected_host.name,
             entity_type="host",
             dependencies=dependencies,
             on_delete=delete_host,
-            session=session
+            session=None
         )

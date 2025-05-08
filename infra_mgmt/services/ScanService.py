@@ -1,6 +1,6 @@
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, joinedload
 
-from infra_mgmt.models import CertificateBinding, Domain, Host
+from infra_mgmt.models import Certificate, CertificateBinding, Domain, Host
 from ..scanner.scan_manager import ScanManager
 from typing import List, Tuple, Dict, Any
 
@@ -108,25 +108,27 @@ class ScanService:
         Returns:
             List of Certificate objects (deduplicated)
         """
-        from sqlalchemy.orm import sessionmaker
         Session = sessionmaker(bind=engine)
         with Session() as session:
             certificates = []
             # Try domain first
             domain_obj = session.query(Domain).filter_by(domain_name=domain_name).first()
             if domain_obj:
-                certificates.extend(domain_obj.certificates)
+                # Eagerly load certificate_bindings for each certificate
+                cert_ids = [c.id for c in domain_obj.certificates]
+                certs = session.query(Certificate).options(joinedload(Certificate.certificate_bindings)).filter(Certificate.id.in_(cert_ids)).all() if cert_ids else []
+                certificates.extend(certs)
                 # Also get certificates from bindings via host
                 host = session.query(Host).filter_by(name=domain_name).first()
                 if host:
-                    bindings = session.query(CertificateBinding).filter_by(host=host).all()
+                    bindings = session.query(CertificateBinding).options(joinedload(CertificateBinding.certificate).joinedload(Certificate.certificate_bindings)).filter_by(host=host).all()
                     cert_from_bindings = [b.certificate for b in bindings if b.certificate]
                     certificates.extend(cert_from_bindings)
             else:
                 # Try as host
                 host = session.query(Host).filter_by(name=domain_name).first()
                 if host:
-                    bindings = session.query(CertificateBinding).filter_by(host=host).all()
+                    bindings = session.query(CertificateBinding).options(joinedload(CertificateBinding.certificate).joinedload(Certificate.certificate_bindings)).filter_by(host=host).all()
                     certificates = [b.certificate for b in bindings if b.certificate]
             # Deduplicate while preserving order
             seen = set()

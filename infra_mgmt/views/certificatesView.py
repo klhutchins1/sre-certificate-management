@@ -40,6 +40,7 @@ from ..notifications import initialize_notifications, show_notifications, notify
 import json
 import logging
 from ..services.CertificateService import CertificateService
+from ..services.ViewDataService import ViewDataService
 
 logger = logging.getLogger(__name__)
 
@@ -93,193 +94,141 @@ def render_certificate_list(engine):
     
     st.divider()
     
+    # Use ViewDataService for metrics and table data
+    view_data_service = ViewDataService()
+    result = view_data_service.get_certificate_list_view_data(engine)
+    if not result['success']:
+        notify(result['error'], "error")
+        with notification_placeholder:
+            show_notifications()
+        return
+    metrics = result['data']['metrics']
+    certs_data = result['data']['table_data']
+    
     # Create metrics columns with minimal spacing
     st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
-    
-    with SessionManager(engine) as session:
-        if not session:
-            notify("Database connection failed", "error")
-            show_notifications()
-            return
-        
-        # Calculate metrics
-        total_certs = session.query(Certificate).count()
-        valid_certs = session.query(Certificate).filter(
-            Certificate.valid_until > datetime.now()
-        ).count()
-        total_bindings = session.query(CertificateBinding).count()
-        
-        # Display metrics
-        col1.metric("Total Certificates", total_certs)
-        col2.metric("Valid Certificates", valid_certs)
-        col3.metric("Total Bindings", total_bindings)
-    
+    col1.metric("Total Certificates", metrics["total_certs"])
+    col2.metric("Valid Certificates", metrics["valid_certs"])
+    col3.metric("Total Bindings", metrics["total_bindings"])
     st.markdown('</div>', unsafe_allow_html=True)
-    
     st.divider()
     
-    with SessionManager(engine) as session:
-        if not session:
-            notify("Database connection failed", "error")
+    if not certs_data:
+        notify("No certificates found in database", "info")
+        with notification_placeholder:
             show_notifications()
-            return
-        
-        # Fetch certificates for the table view
-        certs_data = []
-        certificates_dict = {}  # Store certificates for quick lookup
-        
-        # Query all certificates without joins first
-        certificates = session.query(Certificate).options(
-            joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.application),
-            joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host),
-            joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host_ip)
-        ).all()
-        
-        if not certificates:
-            notify("No certificates found in database", "info")
+        return
+    
+    # Create DataFrame with explicit data types and clean data
+    df = pd.DataFrame(certs_data)
+    certificates_dict = {row['_id']: row for row in certs_data}
+    
+    # Configure AG Grid
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(
+        resizable=True,
+        sortable=True,
+        filter=True,
+        editable=False
+    )
+    gb.configure_column("Common Name", minWidth=200, flex=2)
+    gb.configure_column("Serial Number", minWidth=150, flex=1)
+    gb.configure_column(
+        "Valid From",
+        type=["dateColumnFilter"],
+        minWidth=120,
+        valueFormatter="value ? new Date(value).toLocaleDateString() : ''"
+    )
+    gb.configure_column(
+        "Valid Until",
+        type=["dateColumnFilter"],
+        minWidth=120,
+        valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
+        cellClass=JsCode("""
+        function(params) {
+            if (!params.data) return ['ag-date-cell'];
+            if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
+            return ['ag-date-cell'];
+        }
+        """)
+    )
+    gb.configure_column(
+        "Status",
+        minWidth=100,
+        cellClass=JsCode("""
+        function(params) {
+            if (!params.data) return [];
+            if (params.value === 'Expired') return ['ag-status-expired'];
+            if (params.value === 'Valid') return ['ag-status-valid'];
+            return [];
+        }
+        """)
+    )
+    gb.configure_column(
+        "Bindings",
+        type=["numericColumn"],
+        minWidth=100,
+        cellClass='ag-numeric-cell'
+    )
+    gb.configure_column("_id", hide=True)
+    gb.configure_selection(
+        selection_mode="single",
+        use_checkbox=False,
+        pre_selected_rows=[]
+    )
+    grid_options = {
+        'animateRows': True,
+        'enableRangeSelection': True,
+        'suppressAggFuncInHeader': True,
+        'suppressMovableColumns': True,
+        'rowHeight': 35,
+        'headerHeight': 40,
+        'domLayout': 'normal',
+        'pagination': True,
+        'paginationPageSize': 15,
+        'paginationAutoPageSize': False
+    }
+    gb.configure_grid_options(**grid_options)
+    gridOptions = gb.build()
+    grid_response = AgGrid(
+        df,
+        gridOptions=gridOptions,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        fit_columns_on_grid_load=True,
+        theme="streamlit",
+        allow_unsafe_jscode=True,
+        key="cert_grid",
+        reload_data=False,
+        height=600
+    )
+    # Handle selection without extra spacing
+    try:
+        selected_rows = grid_response['selected_rows']
+        if isinstance(selected_rows, pd.DataFrame):
+            if not selected_rows.empty:
+                selected_row = selected_rows.iloc[0].to_dict()
+                selected_cert_id = int(selected_row['_id'])
+                if selected_cert_id in certificates_dict:
+                    selected_cert = certificates_dict[selected_cert_id]
+                    # You may need to fetch the full ORM object for details
+                    with SessionManager(engine) as session:
+                        cert_obj = session.query(Certificate).get(selected_cert_id)
+                        render_certificate_card(cert_obj, session)
+        elif isinstance(selected_rows, list) and selected_rows:
+            selected_row = selected_rows[0]
+            if isinstance(selected_row, dict) and '_id' in selected_row:
+                selected_cert_id = int(selected_row['_id'])
+                if selected_cert_id in certificates_dict:
+                    selected_cert = certificates_dict[selected_cert_id]
+                    with SessionManager(engine) as session:
+                        cert_obj = session.query(Certificate).get(selected_cert_id)
+                        render_certificate_card(cert_obj, session)
+    except Exception as e:
+        notify(f"Error handling selection: {str(e)}", "error")
+        with notification_placeholder:
             show_notifications()
-            return
-        
-        for cert in certificates:
-            # Remove the refresh as we've already eager loaded the relationships
-            certs_data.append({
-                "Common Name": str(cert.common_name),
-                "Serial Number": str(cert.serial_number),
-                "Valid From": cert.valid_from.strftime("%Y-%m-%d"),
-                "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
-                "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
-                "Bindings": int(len(cert.certificate_bindings)),
-                "_id": int(cert.id)  # Ensure ID is integer
-            })
-            certificates_dict[cert.id] = cert
-        
-        if certs_data:
-            # Create DataFrame with explicit data types and clean data
-            df = pd.DataFrame(certs_data)
-                       
-            # Configure AG Grid
-            gb = GridOptionsBuilder.from_dataframe(df)
-            
-            # Configure default settings for all columns
-            gb.configure_default_column(
-                resizable=True,
-                sortable=True,
-                filter=True,
-                editable=False
-            )
-            
-            # Configure specific columns
-            gb.configure_column(
-                "Common Name",
-                minWidth=200,
-                flex=2
-            )
-            gb.configure_column(
-                "Serial Number",
-                minWidth=150,
-                flex=1
-            )
-            gb.configure_column(
-                "Valid From",
-                type=["dateColumnFilter"],
-                minWidth=120,
-                valueFormatter="value ? new Date(value).toLocaleDateString() : ''"
-            )
-            gb.configure_column(
-                "Valid Until",
-                type=["dateColumnFilter"],
-                minWidth=120,
-                valueFormatter="value ? new Date(value).toLocaleDateString() : ''",
-                cellClass=JsCode("""
-                function(params) {
-                    if (!params.data) return ['ag-date-cell'];
-                    if (params.data.Status === 'Expired') return ['ag-date-cell', 'ag-date-cell-expired'];
-                    return ['ag-date-cell'];
-                }
-                """)
-            )
-            gb.configure_column(
-                "Status",
-                minWidth=100,
-                cellClass=JsCode("""
-                function(params) {
-                    if (!params.data) return [];
-                    if (params.value === 'Expired') return ['ag-status-expired'];
-                    if (params.value === 'Valid') return ['ag-status-valid'];
-                    return [];
-                }
-                """)
-            )
-            gb.configure_column(
-                "Bindings",
-                type=["numericColumn"],
-                minWidth=100,
-                cellClass='ag-numeric-cell'
-            )
-            gb.configure_column("_id", hide=True)
-            
-            # Configure selection
-            gb.configure_selection(
-                selection_mode="single",
-                use_checkbox=False,
-                pre_selected_rows=[]
-            )
-            
-            # Configure grid options
-            grid_options = {
-                'animateRows': True,
-                'enableRangeSelection': True,
-                'suppressAggFuncInHeader': True,
-                'suppressMovableColumns': True,
-                'rowHeight': 35,
-                'headerHeight': 40,
-                'domLayout': 'normal',
-                'pagination': True,
-                'paginationPageSize': 15,
-                'paginationAutoPageSize': False
-            }
-            
-            gb.configure_grid_options(**grid_options)
-            
-            gridOptions = gb.build()
-            
-            # Display the AG Grid
-            grid_response = AgGrid(
-                df,
-                gridOptions=gridOptions,
-                update_mode=GridUpdateMode.SELECTION_CHANGED,
-                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                fit_columns_on_grid_load=True,
-                theme="streamlit",
-                allow_unsafe_jscode=True,
-                key="cert_grid",
-                reload_data=False,
-                height=600
-            )
-            
-            # Handle selection without extra spacing
-            try:
-                selected_rows = grid_response['selected_rows']
-                
-                if isinstance(selected_rows, pd.DataFrame):
-                    if not selected_rows.empty:
-                        selected_row = selected_rows.iloc[0].to_dict()
-                        selected_cert_id = int(selected_row['_id'])
-                        if selected_cert_id in certificates_dict:
-                            selected_cert = certificates_dict[selected_cert_id]
-                            render_certificate_card(selected_cert, session)
-                elif isinstance(selected_rows, list) and selected_rows:
-                    selected_row = selected_rows[0]
-                    if isinstance(selected_row, dict) and '_id' in selected_row:
-                        selected_cert_id = int(selected_row['_id'])
-                        if selected_cert_id in certificates_dict:
-                            selected_cert = certificates_dict[selected_cert_id]
-                            render_certificate_card(selected_cert, session)
-            except Exception as e:
-                notify(f"Error handling selection: {str(e)}", "error")
-                show_notifications()
-
     # Show all notifications at the end
     with notification_placeholder:
         show_notifications()

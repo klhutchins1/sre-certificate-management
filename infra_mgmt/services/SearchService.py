@@ -24,8 +24,15 @@ class SearchService:
         # Build base certificate query with relationships
         cert_query = session.query(Certificate).options(
             joinedload(Certificate.certificate_bindings)
-            .joinedload(CertificateBinding.host)
-            .joinedload(Host.ip_addresses)
+                .joinedload(CertificateBinding.host)
+                .joinedload(Host.ip_addresses),
+            joinedload(Certificate.certificate_bindings)
+                .joinedload(CertificateBinding.certificate),
+            joinedload(Certificate.certificate_bindings)
+                .joinedload(CertificateBinding.host_ip),
+            joinedload(Certificate.certificate_bindings)
+                .joinedload(CertificateBinding.certificate)
+                .joinedload(Certificate.certificate_bindings)
         )
         # Apply certificate status filter
         if status_filter != "All":
@@ -54,7 +61,10 @@ class SearchService:
             host_query = session.query(Host).options(
                 joinedload(Host.ip_addresses),
                 joinedload(Host.certificate_bindings)
-                .joinedload(CertificateBinding.certificate)
+                    .joinedload(CertificateBinding.certificate)
+                    .joinedload(Certificate.certificate_bindings),
+                joinedload(Host.certificate_bindings)
+                    .joinedload(CertificateBinding.host_ip)
             )
             # Apply platform filter if specified
             if platform_filter != "All":

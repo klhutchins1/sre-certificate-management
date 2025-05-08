@@ -1,6 +1,7 @@
 from datetime import datetime
 from ..models import Host, HostIP, CertificateBinding
 from sqlalchemy.exc import SQLAlchemyError
+from ..db.session import SessionManager
 
 class HostService:
     @staticmethod
@@ -84,4 +85,17 @@ class HostService:
             return {'success': True}
         except SQLAlchemyError as e:
             session.rollback()
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def delete_host_by_id(engine, host_id):
+        try:
+            with SessionManager(engine) as session:
+                host = session.query(Host).get(host_id)
+                if not host:
+                    return {'success': False, 'error': 'Host not found'}
+                session.delete(host)
+                session.commit()
+                return {'success': True}
+        except Exception as e:
             return {'success': False, 'error': str(e)}

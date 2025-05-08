@@ -2,6 +2,7 @@ from datetime import datetime
 from collections import defaultdict
 from ..models import Domain, IgnoredDomain
 from sqlalchemy.exc import SQLAlchemyError
+from ..db.session import SessionManager
 
 class VirtualDomain:
     def __init__(self, domain_name):
@@ -94,4 +95,31 @@ class DomainService:
             return {'success': True}
         except SQLAlchemyError as e:
             session.rollback()
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def delete_domain_by_id(engine, domain_id):
+        try:
+            with SessionManager(engine) as session:
+                domain = session.query(Domain).get(domain_id)
+                if not domain:
+                    return {'success': False, 'error': 'Domain not found'}
+                session.delete(domain)
+                session.commit()
+                return {'success': True}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def add_to_ignore_list_by_name(engine, domain_name):
+        try:
+            with SessionManager(engine) as session:
+                existing = session.query(IgnoredDomain).filter_by(pattern=domain_name).first()
+                if existing:
+                    return {'success': False, 'error': f"'{domain_name}' is already in the ignore list"}
+                ignore = IgnoredDomain(pattern=domain_name)
+                session.add(ignore)
+                session.commit()
+                return {'success': True}
+        except Exception as e:
             return {'success': False, 'error': str(e)}

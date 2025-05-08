@@ -95,7 +95,7 @@ def load_domain_data(engine, domain_name: str):
                 # This is an IP address, handle it differently
                 host = session.query(Host).options(
                     joinedload(Host.ip_addresses),
-                    joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate)
+                    joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate).joinedload(Certificate.certificate_bindings)
                 ).filter_by(name=domain_name).first()
                 if not host:
                     # Create a new host for the IP
@@ -118,9 +118,8 @@ def load_domain_data(engine, domain_name: str):
                 return host
             # Not an IP address, proceed with domain lookup
             return session.query(Domain).options(
-                joinedload(Domain.certificates),
-                joinedload(Domain.dns_records),
-                joinedload(Domain.certificates).joinedload(Certificate.certificate_bindings)
+                joinedload(Domain.certificates).joinedload(Certificate.certificate_bindings),
+                joinedload(Domain.dns_records)
             ).filter_by(domain_name=domain_name).first()
         except ImportError as e:
             logger.error(f"Import error loading domain data for {domain_name}: {str(e)}")

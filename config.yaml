@@ -74,11 +74,11 @@ scanning:
   external:
     delay: 0
     domains: []
-    rate_limit: 60
+    rate_limit: 120
   internal:
     delay: 0
     domains: []
-    rate_limit: 60
+    rate_limit: 120
   timeouts:
     dns: 5.0
     request: 15

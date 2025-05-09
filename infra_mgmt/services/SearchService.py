@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy.orm import joinedload
-from sqlalchemy import or_, and_
+from sqlalchemy import or_
 from ..models import Certificate, Host, HostIP, CertificateBinding
 
 class SearchService:

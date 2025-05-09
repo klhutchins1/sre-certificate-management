@@ -46,7 +46,7 @@ from .models import (
     Domain
 )
 from .constants import platform_options
-from .db import init_database, get_session
+from .db import init_database
 # View imports
 from .views.dashboardView import render_dashboard
 from .views.certificatesView import render_certificate_list

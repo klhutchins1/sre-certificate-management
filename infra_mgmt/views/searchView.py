@@ -33,7 +33,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, and_, String
+from sqlalchemy import or_
+from sqlalchemy import String
 
 from infra_mgmt.notifications import notify
 from ..models import Certificate, Host, HostIP, CertificateBinding

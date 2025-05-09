@@ -6,7 +6,6 @@ from infra_mgmt.models import Certificate, CertificateBinding, Domain, Host, Hos
 from ..scanner.scan_manager import ScanManager
 from ..scanner.utils import is_ip_address
 from typing import List, Tuple, Dict, Any
-from infra_mgmt.db.session import get_session
 
 class ScanService:
     """

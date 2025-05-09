@@ -13,7 +13,6 @@ import logging
 import sys
 
 from sqlalchemy import inspect, text
-from .engine import get_engine
 from ..models import Base
 from ..settings import Settings
 

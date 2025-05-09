@@ -21,17 +21,17 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import func, not_, select, case, Index
+from sqlalchemy import func, select, case
 from ..models import (
     Certificate, Host, Domain, Application,
-    CertificateBinding, domain_certificates
+    CertificateBinding
 )
 import plotly.express as px
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from collections import defaultdict
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
-from ..monitoring import monitor_rendering, monitor_query, performance_metrics
+from ..monitoring import monitor_rendering, performance_metrics
 import functools
 from typing import Dict, Any, Optional
 import logging

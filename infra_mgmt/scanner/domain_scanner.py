@@ -20,8 +20,6 @@ import socket
 import time
 from sqlalchemy.orm import Session
 from ..models import IgnoredDomain, Domain, DomainDNSRecord
-from ..db import get_session
-import ipaddress
 from ..constants import INTERNAL_TLDS, EXTERNAL_TLDS
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
 from infra_mgmt.utils.domain_validation import DomainValidationUtil

@@ -2,7 +2,6 @@ from .BaseService import BaseService
 from .CertificateService import CertificateService
 from .DashboardService import DashboardService
 from .DomainService import DomainService
-from .SearchService import SearchService
 from ..models import Certificate, CertificateBinding, Domain, IgnoredDomain, Host, HostIP, Application
 from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload

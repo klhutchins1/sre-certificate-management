@@ -31,7 +31,7 @@ from ..models import Application, CertificateBinding, Certificate, Host, HostIP
 from ..constants import APP_TYPES, app_types, HOST_TYPE_VIRTUAL, ENV_PRODUCTION
 from ..static.styles import load_warning_suppression, load_css
 from infra_mgmt.utils.SessionManager import SessionManager
-from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
+from ..components.deletion_dialog import render_danger_zone
 from infra_mgmt.notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import altair as alt
 from ..services.ApplicationService import ApplicationService

@@ -27,7 +27,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from ..models import Host, HostIP, CertificateBinding, Application, Certificate
 from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
 from ..static.styles import load_warning_suppression, load_css
-from ..components.deletion_dialog import render_deletion_dialog, render_danger_zone
+from ..components.deletion_dialog import render_danger_zone
 import logging
 from ..services.HostService import HostService
 from ..services.ViewDataService import ViewDataService

@@ -30,7 +30,6 @@ from sqlalchemy.orm import sessionmaker
 from ..settings import settings
 from ..models import Certificate, Domain
 from ..notifications import notify
-from infra_mgmt.exceptions import ScannerError, CertificateError
 
 # Suppress only the specific InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

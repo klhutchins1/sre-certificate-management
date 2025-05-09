@@ -1,4 +1,5 @@
 from sqlalchemy.orm import sessionmaker
+import sys
 
 class SessionManager:
     """
@@ -22,7 +23,7 @@ class SessionManager:
         self.session = sessionmaker(bind=self.engine, expire_on_commit=False)()
         return self.session
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, *_):
         if self.session:
             if exc_type is not None:
                 self.session.rollback()

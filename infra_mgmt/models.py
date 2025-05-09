@@ -25,8 +25,7 @@ constraints, and cascading behaviors for maintaining data integrity.
 #------------------------------------------------------------------------------
 
 # SQLAlchemy imports
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table
-from sqlalchemy import UniqueConstraint, Boolean, Text, event
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text
 from sqlalchemy.orm import relationship, declarative_base, validates
 from sqlalchemy.ext.hybrid import hybrid_property
 
@@ -40,8 +39,7 @@ from .constants import (
     APP_TYPES, HOST_TYPE_SERVER, HOST_TYPE_LOAD_BALANCER, HOST_TYPE_CDN, HOST_TYPE_VIRTUAL,
     ENV_PRODUCTION, ENV_CERT, ENV_DEVELOPMENT, ENV_INTERNAL, ENV_EXTERNAL,
     BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
-    PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION,
-    PLATFORMS
+    PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 )
 
 #------------------------------------------------------------------------------

@@ -22,7 +22,6 @@ The module uses Streamlit for the UI and Plotly for timeline visualizations,
 providing an interactive and user-friendly interface for certificate history analysis.
 """
 
-import plotly
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta

@@ -23,6 +23,7 @@ from ..models import IgnoredDomain, Domain, DomainDNSRecord
 from ..db import get_session
 import ipaddress
 from ..constants import INTERNAL_TLDS, EXTERNAL_TLDS
+from infra_mgmt.utils.ignore_list import IgnoreListUtil
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -296,12 +297,13 @@ class DomainScanner:
             for external_domain in self.external_domains
         )
     
-    def _get_whois_info(self, domain: str) -> Dict:
+    def _get_whois_info(self, domain: str, session: Session) -> Dict:
         """
         Get WHOIS information for a domain, with rate limiting and ignore list checks.
         
         Args:
             domain (str): Domain name
+            session (Session): SQLAlchemy session
         
         Returns:
             dict: WHOIS information fields (registrar, registrant, creation/expiration, status, nameservers)
@@ -311,7 +313,7 @@ class DomainScanner:
         """
         try:
             # Check if domain should be ignored before doing WHOIS query
-            is_ignored, reason = self._is_domain_ignored(domain)
+            is_ignored, reason = IgnoreListUtil.is_domain_ignored(session, domain)
             if is_ignored:
                 self.logger.info(f"[WHOIS] Skipping WHOIS query for {domain} - Domain is in ignore list" + 
                                (f" ({reason})" if reason else ""))
@@ -405,12 +407,13 @@ class DomainScanner:
             self.logger.exception(f"[WHOIS] Unexpected error retrieving information for {domain}: {str(e)}")
             return {}
     
-    def _get_dns_records(self, domain: str) -> List[Dict[str, Any]]:
+    def _get_dns_records(self, domain: str, session: Session) -> List[Dict[str, Any]]:
         """
         Get DNS records for a domain, with rate limiting and ignore list checks.
         
         Args:
             domain (str): Domain name to query
+            session (Session): SQLAlchemy session
         
         Returns:
             list: List of DNS records (dicts)
@@ -419,7 +422,7 @@ class DomainScanner:
             - Handles timeouts, NXDOMAIN, and missing records gracefully.
         """
         # Check if domain should be ignored before doing DNS lookup
-        is_ignored, reason = self._is_domain_ignored(domain)
+        is_ignored, reason = IgnoreListUtil.is_domain_ignored(session, domain)
         if is_ignored:
             self.logger.info(f"[DNS] Skipping DNS lookup for {domain} - Domain is in ignore list" + 
                            (f" ({reason})" if reason else ""))
@@ -585,70 +588,13 @@ class DomainScanner:
                 expanded.add(domain)
         return list(expanded)
     
-    def _is_domain_ignored(self, domain: str) -> Tuple[bool, Optional[str]]:
-        """
-        Check if a domain is in the ignore list (DB-backed, supports wildcards and patterns).
-        
-        Args:
-            domain (str): Domain to check
-        
-        Returns:
-            Tuple[bool, Optional[str]]: (is_ignored, reason)
-        """
-        try:
-            # Create database session
-            from sqlalchemy import create_engine
-            from sqlalchemy.orm import Session
-            from ..settings import settings
-            from ..models import IgnoredDomain
-            
-            # Get database path from settings
-            db_path = settings.get("paths.database", "data/certificates.db")
-            engine = create_engine(f"sqlite:///{db_path}")
-            session = Session(engine)
-            
-            try:
-                # First check exact matches
-                ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
-                if ignored:
-                    return True, ignored.reason
-                
-                # Then check all patterns
-                patterns = session.query(IgnoredDomain).all()
-                for pattern in patterns:
-                    # Handle wildcard prefix (*.example.com)
-                    if pattern.pattern.startswith('*.'):
-                        suffix = pattern.pattern[2:]  # Remove *. from pattern
-                        if domain.endswith(suffix):
-                            return True, pattern.reason
-                    # Handle suffix match (example.com)
-                    elif domain.endswith(pattern.pattern):
-                        return True, pattern.reason
-                    # Handle contains pattern (*test*)
-                    elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
-                        search_term = pattern.pattern.strip('*')
-                        if search_term in domain:
-                            return True, pattern.reason
-                
-                return False, None
-                
-            finally:
-                session.close()
-                engine.dispose()
-                
-        except ImportError as e:
-            self.logger.error(f"Import error checking ignore list for {domain}: {str(e)}")
-            return False, None
-        except Exception as e:
-            self.logger.exception(f"Unexpected error checking ignore list for {domain}: {str(e)}")
-            return False, None
-
-    def _find_related_domains(self, whois_info: Dict) -> Set[str]:
+    def _find_related_domains(self, whois_info: Dict, session: Session) -> Set[str]:
         """
         Find related domains based on WHOIS information (registrant-based search).
         
         Args:
             whois_info (dict): WHOIS information dictionary
+            session (Session): SQLAlchemy session
         
         Returns:
             Set[str]: Set of related domain names
@@ -774,10 +720,10 @@ class DomainScanner:
                 
                 # Get WHOIS information if requested
                 if get_whois:
-                    whois_info = self._get_whois_info(domain)
+                    whois_info = self._get_whois_info(domain, session)
                     # Find related domains based on WHOIS info
                     if whois_info:  # Only try to find related domains if we got WHOIS info
-                        related_domains = self._find_related_domains(whois_info)
+                        related_domains = self._find_related_domains(whois_info, session)
                 
                 # Get or create domain object
                 domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
@@ -802,7 +748,7 @@ class DomainScanner:
                 # Get DNS records if requested
                 if get_dns:
                     try:
-                        dns_records = self._get_dns_records(domain)
+                        dns_records = self._get_dns_records(domain, session)
                         if dns_records:
                             # Get existing DNS records
                             existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()

@@ -1,6 +1,7 @@
 from datetime import datetime
 import json
 import logging
+import socket
 from .domain_scanner import DomainScanner
 from .subdomain_scanner import SubdomainScanner
 from urllib.parse import urlparse
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..models import Certificate, CertificateBinding, Domain, DomainDNSRecord, Host, HOST_TYPE_SERVER, ENV_PRODUCTION, IgnoredCertificate, IgnoredDomain
 from typing import Tuple, Optional
 from ..settings import settings
+from infra_mgmt.utils.ignore_list import IgnoreListUtil
 
 CertificateScanner = None
 
@@ -176,91 +178,6 @@ class ScanManager:
             self.logger.exception(f"Unexpected error processing scan target {entry}: {str(e)}")
             return False, None, None, str(e)
 
-    def _is_domain_ignored(self, session: Session, domain: str) -> Tuple[bool, Optional[str]]:
-        """
-        Check if a domain is in the ignore list, using all supported pattern types.
-
-        This method queries the database for ignore patterns and checks the given domain
-        against exact, wildcard, suffix, and contains patterns. Returns a tuple indicating
-        whether the domain should be ignored and the reason if applicable.
-
-        Args:
-            session (Session): Database session
-            domain (str): Domain to check
-
-        Returns:
-            Tuple[bool, Optional[str]]: (is_ignored, reason)
-                - is_ignored (bool): True if the domain matches an ignore pattern
-                - reason (str or None): The reason for ignoring, if any
-
-        Edge Cases:
-            - Handles wildcard, suffix, exact, and contains patterns.
-            - Returns False, None if no match or on error.
-        
-        Example:
-            >>> _is_domain_ignored(session, 'test.example.com')
-            (True, 'Test domain')
-        """
-        try:
-            ignore_patterns = session.query(IgnoredDomain).all()
-            for pattern in ignore_patterns:
-                pattern_str = pattern.pattern
-                if pattern_str.startswith('*.'):
-                    base_domain = pattern_str[2:]
-                    if domain.endswith(base_domain):
-                        return True, pattern.reason
-                elif pattern_str.startswith('.'):
-                    if domain.endswith(pattern_str):
-                        return True, pattern.reason
-                elif pattern_str == domain:
-                    return True, pattern.reason
-                elif '*' in pattern_str:
-                    parts = pattern_str.split('*')
-                    if len(parts) == 2:
-                        if parts[0] in domain and parts[1] in domain:
-                            return True, pattern.reason
-            return False, None
-        except Exception as e:
-            self.logger.exception(f"Unexpected error checking ignore list for domain {domain}: {str(e)}")
-            return False, None
-
-    def _is_certificate_ignored(self, session: Session, common_name: str) -> Tuple[bool, Optional[str]]:
-        """
-        Check if a certificate should be ignored based on its Common Name.
-
-        This method checks both exact and pattern-based matches in the ignore list.
-        Returns a tuple indicating whether the certificate should be ignored and the reason.
-
-        Args:
-            session (Session): Database session
-            common_name (str): Certificate Common Name to check
-
-        Returns:
-            Tuple[bool, Optional[str]]: (is_ignored, reason)
-                - is_ignored (bool): True if the certificate matches an ignore pattern
-                - reason (str or None): The reason for ignoring, if any
-
-        Edge Cases:
-            - Checks both exact and pattern-based matches.
-            - Returns False, None if no match or on error.
-        
-        Example:
-            >>> _is_certificate_ignored(session, 'test.example.com')
-            (True, 'Test cert')
-        """
-        try:
-            ignored = session.query(IgnoredCertificate).filter_by(pattern=common_name).first()
-            if ignored:
-                return True, ignored.reason
-            patterns = session.query(IgnoredCertificate).all()
-            for pattern in patterns:
-                if pattern.matches(common_name):
-                    return True, pattern.reason
-            return False, None
-        except Exception as e:
-            self.logger.exception(f"Unexpected error checking certificate ignore list for {common_name}: {str(e)}")
-            return False, None
-
     def add_to_queue(self, hostname: str, port: int) -> bool:
         """
         Add a scan target to the queue if not already processed or ignored.
@@ -293,30 +210,7 @@ class ScanManager:
                 self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned or queued")
                 self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (already scanned or queued)")
                 return False
-            is_ignored = False
-            ignore_reason = None
-            patterns = session.query(IgnoredDomain).all()
-            for pattern in patterns:
-                if pattern.pattern == hostname:
-                    is_ignored = True
-                    ignore_reason = pattern.reason
-                    break
-                if pattern.pattern.startswith('*.'):
-                    suffix = pattern.pattern[2:]
-                    if hostname.endswith(suffix):
-                        is_ignored = True
-                        ignore_reason = pattern.reason
-                        break
-                elif hostname.endswith(pattern.pattern):
-                    is_ignored = True
-                    ignore_reason = pattern.reason
-                    break
-                elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
-                    search_term = pattern.pattern.strip('*')
-                    if search_term in hostname:
-                        is_ignored = True
-                        ignore_reason = pattern.reason
-                        break
+            is_ignored, ignore_reason = IgnoreListUtil.is_domain_ignored(session, hostname)
             if is_ignored:
                 self.logger.info(f"[SCAN] Skipping {hostname} - Domain is in ignore list" + (f" ({ignore_reason})" if ignore_reason else ""))
                 self.scan_results["warning"].append(f"{hostname}:{port} - Skipped (domain in ignore list)")
@@ -372,7 +266,6 @@ class ScanManager:
             
             # --- New: Check if domain resolves before scanning certificate ---
             if not is_ip:
-                import socket
                 try:
                     # Try to resolve the domain to an IP address
                     addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
@@ -604,7 +497,6 @@ class ScanManager:
                 
                 # Scan for certificate
                 # Always check DNS resolution before scanning
-                import socket
                 try:
                     addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
                     if not addrinfo:

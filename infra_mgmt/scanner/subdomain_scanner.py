@@ -21,6 +21,7 @@ from ..db import get_session
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from datetime import datetime
+from infra_mgmt.utils.ignore_list import IgnoreListUtil
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -311,9 +312,9 @@ class SubdomainScanner:
         
         try:
             # First check exact matches
-            ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
-            if ignored:
-                logger.info(f"[IGNORE] Skipping {domain} - Domain is in ignore list" + (f" ({ignored.reason})" if ignored.reason else ""))
+            is_ignored, reason = IgnoreListUtil.is_domain_ignored(session, domain)
+            if is_ignored:
+                logger.info(f"[IGNORE] Skipping {domain} - Domain is in ignore list" + (f" ({reason})" if reason else ""))
                 return set()
             
             # Then check wildcard patterns

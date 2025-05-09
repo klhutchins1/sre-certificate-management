@@ -14,6 +14,7 @@ from ..constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATF
 from .certificate_scanner import CertificateInfo
 from ..notifications import notify
 from ..settings import settings
+from infra_mgmt.utils.ignore_list import IgnoreListUtil
 
 class ScanProcessor:
     """
@@ -158,25 +159,10 @@ class ScanProcessor:
                         cname_target = record['value'].rstrip('.')
                         
                         # Check if CNAME target should be ignored
-                        is_ignored = False
-                        patterns = self.session.query(IgnoredDomain).all()
-                        for pattern in patterns:
-                            if pattern.pattern.startswith('*.'):
-                                suffix = pattern.pattern[2:]  # Remove *. from pattern
-                                if cname_target.endswith(suffix):
-                                    self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Matches ignore pattern {pattern.pattern}")
-                                    is_ignored = True
-                                    break
-                            elif pattern.pattern in cname_target:
-                                self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Contains ignored pattern {pattern.pattern}")
-                                is_ignored = True
-                                break
-                            elif cname_target.endswith(pattern.pattern):
-                                self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - Matches ignore pattern {pattern.pattern}")
-                                is_ignored = True
-                                break
-                        
-                        if not is_ignored:
+                        is_ignored, reason = IgnoreListUtil.is_domain_ignored(self.session, cname_target)
+                        if is_ignored:
+                            self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - {reason}")
+                        else:
                             scan_queue.add((cname_target, port))
                             self.logger.info(f"[SCAN] Added CNAME target to queue: {cname_target}:{port}")
                     

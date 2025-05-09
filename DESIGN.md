@@ -134,6 +134,7 @@ The Infrastructure Management System (IMS) is a comprehensive, web-based platfor
 ### 7.1 Exception Hierarchy and Error Handling Standards
 
 IMS uses a custom exception hierarchy defined in `infra_mgmt/exceptions.py` to ensure robust, traceable, and domain-specific error handling across all modules. All domain-specific errors should raise a custom exception, never the base `Exception` class. This enables:
+
 - Consistent error handling and logging
 - Easier debugging and user feedback
 - Clear separation of error types for different subsystems
@@ -151,6 +152,7 @@ IMS uses a custom exception hierarchy defined in `infra_mgmt/exceptions.py` to e
 | PermissionError     | Permission denied                      | `raise PermissionError("No write permission")`      |
 
 **Guidelines:**
+
 - Always raise the most specific exception for the error domain.
 - Catch custom exceptions in business logic and views for user-friendly error reporting.
 - Only catch base `Exception` for truly unexpected errors, and log them as critical.
@@ -490,4 +492,4 @@ BindWeb ||--|| Web : "on"
 
 ---
 
-*This document is a living artifact. Please review, annotate, and update as necessary for your team's needs.* 
+*This document is a living artifact. Please review, annotate, and update as necessary for your team's needs.*

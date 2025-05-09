@@ -1,6 +1,7 @@
 from sqlalchemy.orm import sessionmaker, joinedload
 from datetime import datetime
 
+from infra_mgmt.constants import ENV_PRODUCTION, HOST_TYPE_SERVER
 from infra_mgmt.models import Certificate, CertificateBinding, Domain, Host, HostIP
 from ..scanner.scan_manager import ScanManager
 from ..scanner.utils import is_ip_address
@@ -83,7 +84,7 @@ class ScanService:
                 except Exception as e:
                     self.scan_results["error"].append(f"{target[0]}:{target[1]} - {str(e)}")
                     session.rollback()
-                # Now update progress and status
+                # Now update progress and status (but do NOT set to complete here)
                 completed = len(self.scan_manager.infra_mgmt.tracker.scanned_endpoints)
                 remaining = len(self.scan_manager.infra_mgmt.tracker.scan_queue)
                 total = completed + remaining
@@ -217,3 +218,77 @@ class ScanService:
                 return {'success': True, 'data': domain}
         except Exception as e:
             return {'success': False, 'error': str(e)}
+
+    def get_domain_display_data(self, engine, domain_name: str) -> dict:
+        """
+        Return all display data for a domain or host as a dict of primitives for the UI.
+        Args:
+            engine: SQLAlchemy engine
+            domain_name: Domain or IP to load
+        Returns:
+            dict: {success: bool, data: dict, error: str}
+        """
+        Session = sessionmaker(bind=engine)
+        try:
+            with Session() as session:
+                if is_ip_address(domain_name):
+                    host = session.query(Host).filter_by(name=domain_name).first()
+                    if not host:
+                        return {"success": False, "error": "Host not found"}
+                    # Get hostnames (reverse DNS)
+                    hostnames = []
+                    try:
+                        import dns.resolver
+                        import dns.reversename
+                        addr = dns.reversename.from_address(host.name)
+                        answers = dns.resolver.resolve(addr, "PTR")
+                        hostnames = [str(rdata).rstrip('.') for rdata in answers]
+                    except Exception:
+                        pass
+                    # Get network
+                    network = None
+                    try:
+                        import ipaddress
+                        ip_obj = ipaddress.ip_address(host.name)
+                        if isinstance(ip_obj, ipaddress.IPv4Address):
+                            network = str(ipaddress.ip_network(f"{host.name}/24", strict=False))
+                        else:
+                            network = str(ipaddress.ip_network(f"{host.name}/64", strict=False))
+                    except Exception:
+                        pass
+                    # Get certificate bindings and ports
+                    bindings = session.query(CertificateBinding).filter_by(host_id=host.id).all()
+                    ports = [b.port for b in bindings if b.port]
+                    return {
+                        "success": True,
+                        "data": {
+                            "type": "host",
+                            "name": host.name,
+                            "host_type": host.host_type,
+                            "environment": host.environment,
+                            "last_seen": host.last_seen.strftime("%Y-%m-%d %H:%M:%S") if host.last_seen else None,
+                            "hostnames": hostnames,
+                            "network": network,
+                            "cert_count": len(bindings),
+                            "ports": ports
+                        }
+                    }
+                # Not an IP address, treat as domain
+                domain = session.query(Domain).filter_by(domain_name=domain_name).first()
+                if not domain:
+                    return {"success": False, "error": "Domain not found"}
+                return {
+                    "success": True,
+                    "data": {
+                        "type": "domain",
+                        "domain_name": domain.domain_name,
+                        "registrar": domain.registrar,
+                        "registration_date": domain.registration_date.strftime("%Y-%m-%d") if domain.registration_date else None,
+                        "expiration_date": domain.expiration_date.strftime("%Y-%m-%d") if domain.expiration_date else None,
+                        "owner": domain.owner,
+                        "cert_count": len(domain.certificates),
+                        "dns_count": len(domain.dns_records)
+                    }
+                }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

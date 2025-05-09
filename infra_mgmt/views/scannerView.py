@@ -226,7 +226,11 @@ internal.server.local:444"""
                 "warning": [],
                 "no_cert": []
             }
+            # Only store domain names, not ORM objects
             st.session_state.scanned_domains.clear()
+            # Remove any cached ORM objects from session state
+            if 'cached_orm_objects' in st.session_state:
+                del st.session_state['cached_orm_objects']
             
             # Create progress containers
             progress_bar = st.empty()
@@ -323,69 +327,42 @@ internal.server.local:444"""
             
             # Domains tab
             with tab_domains:
-                with Session() as session:
-                    try:
-                        # Get all scanned domains from session state
-                        scanned_domains = list(st.session_state.scanned_domains)
-                        if not scanned_domains:
-                            st.markdown("No domains or IPs scanned yet.")
-                        else:
-                            for domain in sorted(scanned_domains):
-                                # Load domain with relationships
-                                result = scan_service.load_domain_data(engine, domain)
-                                if result['success']:
-                                    obj = result['data']
-                                    if isinstance(obj, Host):  # IP address
-                                        st.markdown(f"### IP: {obj.name}")
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            st.write("**Type:**", obj.host_type or "N/A")
-                                            st.write("**Environment:**", obj.environment or "N/A")
-                                            st.write("**Last Seen:**", obj.last_seen.strftime("%Y-%m-%d %H:%M:%S") if obj.last_seen else "N/A")
-                                            # Show reverse DNS if available
-                                            try:
-                                                import dns.resolver
-                                                import dns.reversename
-                                                addr = dns.reversename.from_address(obj.name)
-                                                answers = dns.resolver.resolve(addr, "PTR")
-                                                hostnames = [str(rdata).rstrip('.') for rdata in answers]
-                                                if hostnames:
-                                                    st.write("**Hostnames:**", ", ".join(hostnames))
-                                            except Exception:
-                                                pass
-                                        with col2:
-                                            # Show network information
-                                            try:
-                                                import ipaddress
-                                                ip_obj = ipaddress.ip_address(obj.name)
-                                                if isinstance(ip_obj, ipaddress.IPv4Address):
-                                                    network = ipaddress.ip_network(f"{obj.name}/24", strict=False)
-                                                else:
-                                                    network = ipaddress.ip_network(f"{obj.name}/64", strict=False)
-                                                st.write("**Network:**", str(network))
-                                            except Exception:
-                                                pass
-                                            # Show certificate bindings
-                                            bindings = session.query(CertificateBinding).filter_by(host=obj).all()
-                                            st.write("**Certificates:**", len(bindings))
-                                            if bindings:
-                                                st.write("**Ports:**", ", ".join(str(b.port) for b in bindings if b.port))
-                                    else:  # Domain
-                                        st.markdown(f"### Domain: {obj.domain_name}")
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            st.write("**Registrar:**", obj.registrar or "N/A")
-                                            st.write("**Registration Date:**", obj.registration_date.strftime("%Y-%m-%d") if obj.registration_date else "N/A")
-                                            st.write("**Owner:**", obj.owner or "N/A")
-                                        with col2:
-                                            st.write("**Expiration Date:**", obj.expiration_date.strftime("%Y-%m-%d") if obj.expiration_date else "N/A")
-                                            st.write("**Certificates:**", len(obj.certificates))
-                                            st.write("**DNS Records:**", len(obj.dns_records))
-                                else:
-                                    notify(result['error'], "error")
-                    except Exception as e:
-                        logger.error(f"Error displaying domain/IP data: {str(e)}")
-                        st.error(f"Error displaying domain/IP data: {str(e)}")
+                scanned_domains = list(st.session_state.scanned_domains)
+                if not scanned_domains:
+                    st.markdown("No domains or IPs scanned yet.")
+                else:
+                    for domain in sorted(scanned_domains):
+                        # Use scan_service to get all display data as a dict
+                        domain_data = scan_service.get_domain_display_data(engine, domain)
+                        if not domain_data["success"]:
+                            notify(domain_data["error"], "error")
+                            continue
+                        data = domain_data["data"]
+                        if data["type"] == "host":
+                            st.markdown(f"### IP: {data['name']}")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("**Type:**", data.get("host_type", "N/A"))
+                                st.write("**Environment:**", data.get("environment", "N/A"))
+                                st.write("**Last Seen:**", data.get("last_seen", "N/A"))
+                                if data.get("hostnames"):
+                                    st.write("**Hostnames:**", ", ".join(data["hostnames"]))
+                            with col2:
+                                st.write("**Network:**", data.get("network", "N/A"))
+                                st.write("**Certificates:**", data.get("cert_count", 0))
+                                if data.get("ports"):
+                                    st.write("**Ports:**", ", ".join(str(p) for p in data["ports"]))
+                        elif data["type"] == "domain":
+                            st.markdown(f"### Domain: {data['domain_name']}")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("**Registrar:**", data.get("registrar", "N/A"))
+                                st.write("**Registration Date:**", data.get("registration_date", "N/A"))
+                                st.write("**Owner:**", data.get("owner", "N/A"))
+                            with col2:
+                                st.write("**Expiration Date:**", data.get("expiration_date", "N/A"))
+                                st.write("**Certificates:**", data.get("cert_count", 0))
+                                st.write("**DNS Records:**", data.get("dns_count", 0))
             
             # Certificates tab
             with tab_certs:
@@ -393,38 +370,45 @@ internal.server.local:444"""
                 if not scanned_domains:
                     st.markdown("No certificates found yet.")
                 else:
+                    # Collect all certificates across all domains
+                    all_certs = []
                     for domain in sorted(scanned_domains):
                         certificates = scan_service.get_certificates_for_domain(engine, domain)
-                        if certificates:
-                            for cert in certificates:
-                                with st.expander(f"Certificate: {cert.common_name}"):
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        st.write("**Common Name:**", cert.common_name)
-                                        st.write("**Valid From:**", cert.valid_from.strftime("%Y-%m-%d"))
-                                        st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
-                                        st.write("**Serial Number:**", cert.serial_number)
-                                    with col2:
-                                        st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
-                                        st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
-                                        st.write("**SANs:**", ", ".join(cert.san))
-                                        st.write("**Signature Algorithm:**", cert.signature_algorithm)
-                                        platforms = [b.platform for b in cert.certificate_bindings if b.platform]
-                                        if platforms:
-                                            st.write("**Platform:**", ", ".join(set(platforms)))
-                                    # Add button to scan SANs
-                                    if cert.san:
-                                        sans = cert.san
-                                        if sans:
-                                            button_key = f"scan_sans_{domain}_{cert.serial_number}"
-                                            if st.button(f"Scan SANs ({len(sans)} found)", key=button_key):
-                                                st.session_state.scan_targets = sans
-                                                st.rerun()
-                        # Remove from no_cert list since we found certificates
-                        if domain in st.session_state.scan_results["no_cert"]:
-                            st.session_state.scan_results["no_cert"].remove(domain)
-                        else:
-                            st.session_state.scan_results["no_cert"].append(domain)
+                        all_certs.extend(certificates)
+                    # Deduplicate certificates by serial number
+                    unique_certs = []
+                    seen_serials = set()
+                    for cert in all_certs:
+                        if cert.serial_number not in seen_serials:
+                            unique_certs.append(cert)
+                            seen_serials.add(cert.serial_number)
+                    if unique_certs:
+                        for cert in unique_certs:
+                            with st.expander(f"Certificate: {cert.common_name}"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.write("**Common Name:**", cert.common_name)
+                                    st.write("**Valid From:**", cert.valid_from.strftime("%Y-%m-%d"))
+                                    st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
+                                    st.write("**Serial Number:**", cert.serial_number)
+                                with col2:
+                                    st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
+                                    st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
+                                    st.write("**SANs:**", ", ".join(cert.san))
+                                    st.write("**Signature Algorithm:**", cert.signature_algorithm)
+                                    platforms = [b.platform for b in cert.certificate_bindings if b.platform]
+                                    if platforms:
+                                        st.write("**Platform:**", ", ".join(set(platforms)))
+                                # Add button to scan SANs
+                                if cert.san:
+                                    sans = cert.san
+                                    if sans:
+                                        button_key = f"scan_sans_{cert.serial_number}"
+                                        if st.button(f"Scan SANs ({len(sans)} found)", key=button_key):
+                                            st.session_state.scan_targets = sans
+                                            st.rerun()
+                    else:
+                        st.markdown("No certificates found yet.")
             
             # DNS Records tab
             with tab_dns:

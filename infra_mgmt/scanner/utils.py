@@ -116,10 +116,7 @@ def get_ip_info(ip: str) -> Dict[str, Any]:
         logger.exception(f"Unexpected error getting IP information for {ip}: {str(e)}")
         return info
 
-# --- Ignore List Utility ---
-from ..models import IgnoredDomain, IgnoredCertificate
 
-class IgnoreListUtil:
     """
     Utility class for ignore list checks (domains and certificates).
     Provides static methods to check if a domain or certificate CN should be ignored.

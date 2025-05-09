@@ -4,6 +4,7 @@ from datetime import datetime
 from infra_mgmt.scanner import ScanManager, ScanProcessor
 from infra_mgmt.scanner.certificate_scanner import CertificateInfo, ScanResult
 from infra_mgmt.models import Domain, Certificate, Host, HostIP, CertificateBinding, CertificateScan
+from infra_mgmt.db.session import get_session
 
 @pytest.fixture
 def mock_session():

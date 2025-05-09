@@ -6,6 +6,7 @@ from infra_mgmt.models import Certificate, CertificateBinding, Domain, Host, Hos
 from ..scanner.scan_manager import ScanManager
 from ..scanner.utils import is_ip_address
 from typing import List, Tuple, Dict, Any
+from infra_mgmt.db.session import get_session
 
 class ScanService:
     """
@@ -68,7 +69,7 @@ class ScanService:
         with self.session_factory() as session:
             # Add initial targets to the scan queue
             for hostname, port in targets:
-                self.scan_manager.add_to_queue(hostname, port)
+                self.scan_manager.add_to_queue(hostname, port, session)
             while self.scan_manager.has_pending_targets():
                 target = self.scan_manager.get_next_target()
                 if not target:

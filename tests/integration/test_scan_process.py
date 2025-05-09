@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from infra_mgmt.scanner import ScanManager
 from infra_mgmt.models import Base, Domain, Certificate, Host, HostIP, CertificateBinding, CertificateScan
 from infra_mgmt.scanner.certificate_scanner import CertificateInfo, ScanResult
+from infra_mgmt.db.session import get_session
 
 @pytest.fixture
 def test_db():
@@ -17,8 +18,7 @@ def test_db():
 @pytest.fixture
 def test_session(test_db):
     """Create a test database session."""
-    Session = Session(test_db)
-    session = Session()
+    session = get_session()
     yield session
     session.close()
 

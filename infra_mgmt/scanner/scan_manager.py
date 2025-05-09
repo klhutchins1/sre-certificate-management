@@ -11,6 +11,8 @@ from ..models import Certificate, CertificateBinding, Domain, DomainDNSRecord, H
 from typing import Tuple, Optional
 from ..settings import settings
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
+from infra_mgmt.utils.dns_records import DNSRecordUtil
+from infra_mgmt.utils.certificate_db import CertificateDBUtil
 
 CertificateScanner = None
 
@@ -178,7 +180,7 @@ class ScanManager:
             self.logger.exception(f"Unexpected error processing scan target {entry}: {str(e)}")
             return False, None, None, str(e)
 
-    def add_to_queue(self, hostname: str, port: int) -> bool:
+    def add_to_queue(self, hostname: str, port: int, session) -> bool:
         """
         Add a scan target to the queue if not already processed or ignored.
 
@@ -189,6 +191,7 @@ class ScanManager:
         Args:
             hostname (str): Domain to scan
             port (int): Port to scan
+            session: SQLAlchemy session for DB operations
 
         Returns:
             bool: True if target was added, False if already scanned or ignored
@@ -198,13 +201,9 @@ class ScanManager:
             - Adds to scan queue if not ignored or already scanned.
         
         Example:
-            >>> add_to_queue('example.com', 443)
+            >>> add_to_queue('example.com', 443, session)
             True
         """
-        from sqlalchemy import create_engine
-        db_path = settings.get("paths.database", "data/certificates.db")
-        engine = create_engine(f"sqlite:///{db_path}")
-        session = Session(engine)
         try:
             if self.infra_mgmt.tracker.is_endpoint_scanned(hostname, port) or (hostname, port) in self.infra_mgmt.tracker.scan_queue:
                 self.logger.info(f"[SCAN] Skipping {hostname}:{port} - Already scanned or queued")
@@ -222,9 +221,9 @@ class ScanManager:
                 self.logger.info(f"[SCAN] Added target to queue: {hostname}:{port}")
                 return True
             return False
-        finally:
-            session.close()
-            engine.dispose()
+        except Exception as e:
+            self.logger.exception(f"Error adding target to queue: {str(e)}")
+            return False
 
     def scan_target(self, session: Session, domain: str, port: int, **kwargs):
         """
@@ -331,52 +330,7 @@ class ScanManager:
                 if scan_result and scan_result.certificate_info:
                     cert_info = scan_result.certificate_info
                     # Process certificate
-                    cert = session.query(Certificate).filter_by(
-                        serial_number=cert_info.serial_number
-                    ).first()
-                    if not cert:
-                        cert = Certificate(
-                            serial_number=cert_info.serial_number,
-                            thumbprint=cert_info.thumbprint,
-                            common_name=cert_info.common_name,
-                            valid_from=cert_info.valid_from,
-                            valid_until=cert_info.expiration_date,
-                            _issuer=json.dumps(cert_info.issuer),
-                            _subject=json.dumps(cert_info.subject),
-                            _san=json.dumps(cert_info.san),
-                            key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
-                            signature_algorithm=cert_info.signature_algorithm,
-                            chain_valid=kwargs.get('validate_chain', True) and cert_info.chain_valid,
-                            sans_scanned=kwargs.get('check_sans', False),
-                            created_at=datetime.now(),
-                            updated_at=datetime.now()
-                        )
-                        session.add(cert)
-                        session.commit()  # Commit certificate creation
-                    # Host already created above for IPs
-                    # Create or update certificate binding
-                    binding = session.query(CertificateBinding).filter_by(
-                        host=host,
-                        port=port
-                    ).first()
-                    if not binding:
-                        binding = CertificateBinding(
-                            host=host,
-                            certificate=cert,
-                            port=port,
-                            binding_type='IP',
-                            platform=cert_info.platform if kwargs.get('detect_platform', True) else None,
-                            last_seen=datetime.now(),
-                            manually_added=False
-                        )
-                        session.add(binding)
-                    else:
-                        binding.certificate = cert
-                        binding.last_seen = datetime.now()
-                        if kwargs.get('detect_platform', True):
-                            binding.platform = cert_info.platform
-                    session.commit()  # Commit binding changes
-                    self.logger.info(f"[SCAN] Successfully processed certificate for IP {domain}:{port}")
+                    CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
                     # Remove from no_cert list if present
                     if domain in self.scan_results["no_cert"]:
                         self.scan_results["no_cert"].remove(domain)
@@ -414,11 +368,7 @@ class ScanManager:
                             kwargs['status_container'].text(f'Gathering domain information for {domain}...')
                         
                         self.logger.info(f"[SCAN] Domain info gathering for {domain} - WHOIS: {kwargs.get('check_whois', False)}, DNS: {kwargs.get('check_dns', False)}")
-                        domain_info = self.domain_scanner.scan_domain(
-                            domain,
-                            get_whois=kwargs.get('check_whois', False),
-                            get_dns=kwargs.get('check_dns', False)
-                        )
+                        domain_info = self.domain_scanner.scan_domain(domain, session, get_whois=kwargs.get('check_whois', False), get_dns=kwargs.get('check_dns', False))
                         
                         # Process domain information
                         if domain_info:
@@ -513,69 +463,7 @@ class ScanManager:
                     cert_info = scan_result.certificate_info
                     
                     # Process certificate
-                    cert = session.query(Certificate).filter_by(
-                        serial_number=cert_info.serial_number
-                    ).first()
-                    
-                    if not cert:
-                        cert = Certificate(
-                            serial_number=cert_info.serial_number,
-                            thumbprint=cert_info.thumbprint,
-                            common_name=cert_info.common_name,
-                            valid_from=cert_info.valid_from,
-                            valid_until=cert_info.expiration_date,
-                            _issuer=json.dumps(cert_info.issuer),
-                            _subject=json.dumps(cert_info.subject),
-                            _san=json.dumps(cert_info.san),
-                            key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
-                            signature_algorithm=cert_info.signature_algorithm,
-                            chain_valid=kwargs.get('validate_chain', True) and cert_info.chain_valid,
-                            sans_scanned=kwargs.get('check_sans', False),
-                            created_at=datetime.now(),
-                            updated_at=datetime.now()
-                        )
-                        session.add(cert)
-                        session.commit()  # Commit certificate creation
-                    
-                    # Get or create host record if not already created
-                    if not is_ip:  # Only create host for domains, IPs already have one
-                        host = session.query(Host).filter_by(name=domain).first()
-                        if not host:
-                            host = Host(
-                                name=domain,
-                                host_type=HOST_TYPE_SERVER,
-                                environment=ENV_PRODUCTION,
-                                last_seen=datetime.now()
-                            )
-                            session.add(host)
-                            session.commit()  # Commit host creation
-                        else:
-                            host.last_seen = datetime.now()
-                            session.commit()  # Commit host update
-                    
-                    # Create or update certificate binding
-                    binding = session.query(CertificateBinding).filter_by(
-                        host=host,
-                        port=port
-                    ).first()
-                    
-                    if not binding:
-                        binding = CertificateBinding(
-                            host=host,
-                            certificate=cert,
-                            port=port,
-                            binding_type='IP',
-                            platform=cert_info.platform if kwargs.get('detect_platform', True) else None,
-                            last_seen=datetime.now(),
-                            manually_added=False
-                        )
-                        session.add(binding)
-                    else:
-                        binding.certificate = cert
-                        binding.last_seen = datetime.now()
-                        if kwargs.get('detect_platform', True):
-                            binding.platform = cert_info.platform
-                    session.commit()  # Commit binding changes
+                    CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info, domain_obj if domain_obj else None, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
                     
                     # Process subdomains if requested and this is a domain
                     if not is_ip and kwargs.get('check_subdomains'):
@@ -583,13 +471,7 @@ class ScanManager:
                             if kwargs.get('status_container'):
                                 kwargs['status_container'].text(f'Discovering subdomains for {domain}...')
                             self.subdomain_scanner.set_status_container(kwargs.get('status_container'))
-                            subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(
-                                domain=domain,
-                                port=port,
-                                check_whois=kwargs.get('check_whois', False),
-                                check_dns=kwargs.get('check_dns', False),
-                                scanned_domains=self.infra_mgmt.tracker.scanned_domains
-                            )
+                            subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(domain=domain, session=session, port=port, check_whois=kwargs.get('check_whois', False), check_dns=kwargs.get('check_dns', False), scanned_domains=self.infra_mgmt.tracker.scanned_domains)
                             if subdomain_results:
                                 self.logger.info(f"[SCAN] Found {len(subdomain_results)} subdomains for {domain}")
                                 for result in subdomain_results:

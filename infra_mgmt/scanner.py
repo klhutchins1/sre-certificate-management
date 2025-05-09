@@ -25,6 +25,7 @@ from .scanner.scan_processor import ScanProcessor
 from .scanner.domain_scanner import DomainScanner, DomainInfo
 from .scanner.subdomain_scanner import SubdomainScanner
 from .scanner.certificate_scanner import CertificateInfo
-from .scanner.utils import is_ip_address, get_ip_info
+from .utils.is_ip_address import is_ip_address
+from .utils.get_ip_info import get_ip_info
 
 # Add orchestration logic or entry points here if needed. 

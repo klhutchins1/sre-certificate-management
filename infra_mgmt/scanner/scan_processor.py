@@ -15,6 +15,8 @@ from .certificate_scanner import CertificateInfo
 from ..notifications import notify
 from ..settings import settings
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
+from infra_mgmt.utils.dns_records import DNSRecordUtil
+from infra_mgmt.utils.certificate_db import CertificateDBUtil
 
 class ScanProcessor:
     """
@@ -115,98 +117,6 @@ class ScanProcessor:
             self.logger.exception(f"Unexpected error processing domain info for {domain}: {str(e)}")
             raise
     
-    def process_dns_records(self, domain_obj: Domain, dns_records: List[Dict[str, Any]], scan_queue: Optional[Set[Tuple[str, int]]] = None, port: int = 443) -> None:
-        """
-        Process DNS records for a domain and update the database.
-        
-        Args:
-            domain_obj (Domain): SQLAlchemy Domain object
-            dns_records (List[Dict[str, Any]]): List of DNS record dicts
-            scan_queue (Optional[Set[Tuple[str, int]]]): Optional scan queue to add CNAMEs
-            port (int): Port for new scan targets (default 443)
-        
-        Returns:
-            None
-        
-        Raises:
-            ValueError, TypeError, Exception: On DB or data errors
-        
-        Example:
-            >>> processor.process_dns_records(domain_obj, dns_records)
-        """
-        try:
-            if not dns_records:
-                return
-                
-            self.set_status(f'Updating DNS records for {domain_obj.domain_name}...')
-            self.logger.info(f"[DNS] Processing {len(dns_records)} DNS records for {domain_obj.domain_name}")
-            
-            with self.session.no_autoflush:
-                # Get existing DNS records
-                existing_records = self.session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
-                existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
-                
-                # Track which records are updated
-                updated_records = set()
-                
-                # Process new records
-                for record in dns_records:
-                    record_key = (record['type'], record['name'], record['value'])
-                    updated_records.add(record_key)
-                    
-                    # Check for CNAME records that might point to new domains
-                    if record['type'] == 'CNAME' and scan_queue is not None:
-                        cname_target = record['value'].rstrip('.')
-                        
-                        # Check if CNAME target should be ignored
-                        is_ignored, reason = IgnoreListUtil.is_domain_ignored(self.session, cname_target)
-                        if is_ignored:
-                            self.logger.info(f"[SCAN] Skipping CNAME target {cname_target} - {reason}")
-                        else:
-                            scan_queue.add((cname_target, port))
-                            self.logger.info(f"[SCAN] Added CNAME target to queue: {cname_target}:{port}")
-                    
-                    if record_key in existing_map:
-                        # Update existing record
-                        existing_record = existing_map[record_key]
-                        existing_record.ttl = record['ttl']
-                        existing_record.priority = record.get('priority')
-                        existing_record.updated_at = datetime.now()
-                        self.logger.debug(f"[DNS] Updated record: {record_key}")
-                    else:
-                        # Add new record
-                        dns_record = DomainDNSRecord(
-                            domain_id=domain_obj.id,
-                            record_type=record['type'],
-                            name=record['name'],
-                            value=record['value'],
-                            ttl=record['ttl'],
-                            priority=record.get('priority'),
-                            created_at=datetime.now(),
-                            updated_at=datetime.now()
-                        )
-                        self.session.add(dns_record)
-                        self.logger.debug(f"[DNS] Added new record: {record_key}")
-                
-                # Remove old records that no longer exist
-                for key, record in existing_map.items():
-                    if key not in updated_records:
-                        self.session.delete(record)
-                        self.logger.debug(f"[DNS] Removed old record: {key}")
-                
-                self.session.flush()
-                self.logger.info(f"[DNS] Successfully processed {len(dns_records)} records for {domain_obj.domain_name}")
-                
-        except ValueError as e:
-            self.logger.error(f"Value error processing DNS records for {domain_obj.domain_name}: {str(e)}")
-            raise
-        except TypeError as e:
-            self.logger.error(f"Type error processing DNS records for {domain_obj.domain_name}: {str(e)}")
-            raise
-        except Exception as e:
-            self.logger.exception(f"Unexpected error processing DNS records for {domain_obj.domain_name}: {str(e)}")
-            raise
-    
     def process_certificate(self, domain: str, port: int, cert_info: CertificateInfo, domain_obj: Domain, **kwargs) -> None:
         """
         Process certificate information and update or create the corresponding database records.
@@ -235,139 +145,8 @@ class ScanProcessor:
             >>> processor.process_certificate('example.com', 443, cert_info, domain_obj)
         """
         try:
-            # Get or create certificate
-            cert = self.session.query(Certificate).filter_by(
-                serial_number=cert_info.serial_number
-            ).first()
-            
-            if not cert:
-                self.set_status(f'Found new certificate for {domain}...')
-                cert = Certificate(
-                    serial_number=cert_info.serial_number,
-                    thumbprint=cert_info.thumbprint,
-                    common_name=cert_info.common_name,
-                    valid_from=cert_info.valid_from,
-                    valid_until=cert_info.expiration_date,
-                    _issuer=json.dumps(cert_info.issuer),
-                    _subject=json.dumps(cert_info.subject),
-                    _san=json.dumps(cert_info.san),
-                    key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
-                    signature_algorithm=cert_info.signature_algorithm,
-                    chain_valid=kwargs.get('validate_chain', True) and cert_info.chain_valid,
-                    sans_scanned=kwargs.get('check_sans', False),
-                    created_at=datetime.now(),
-                    updated_at=datetime.now()
-                )
-                self.session.add(cert)
-            else:
-                self.set_status(f'Updating existing certificate for {domain}...')
-                cert.thumbprint = cert_info.thumbprint
-                cert.common_name = cert_info.common_name
-                cert.valid_from = cert_info.valid_from
-                cert.valid_until = cert_info.expiration_date
-                cert._issuer = json.dumps(cert_info.issuer)
-                cert._subject = json.dumps(cert_info.subject)
-                cert._san = json.dumps(cert_info.san)
-                cert.key_usage = json.dumps(cert_info.key_usage) if cert_info.key_usage else None
-                cert.signature_algorithm = cert_info.signature_algorithm
-                cert.chain_valid = kwargs.get('validate_chain', True) and cert_info.chain_valid
-                cert.sans_scanned = kwargs.get('check_sans', False)
-                cert.updated_at = datetime.now()
-            
-            # Associate certificate with domain
-            if cert not in domain_obj.certificates:
-                domain_obj.certificates.append(cert)
-            
-            # Create or update host record
-            host = self.session.query(Host).filter_by(name=domain).first()
-            if not host:
-                self.set_status(f'Creating host record for {domain}...')
-                # Set host type based on detected platform
-                host_type = HOST_TYPE_SERVER
-                if cert_info.platform:
-                    if cert_info.platform in [PLATFORM_CLOUDFLARE, PLATFORM_AKAMAI]:
-                        host_type = HOST_TYPE_CDN
-                    elif cert_info.platform == PLATFORM_F5:
-                        host_type = HOST_TYPE_LOAD_BALANCER
-                
-                host = Host(
-                    name=domain,
-                    host_type=host_type,
-                    environment=ENV_PRODUCTION,
-                    last_seen=datetime.now()
-                )
-                self.session.add(host)
-            else:
-                host.last_seen = datetime.now()
-                # Update host type if platform detected
-                if cert_info.platform:
-                    if cert_info.platform in [PLATFORM_CLOUDFLARE, PLATFORM_AKAMAI] and host.host_type != HOST_TYPE_CDN:
-                        host.host_type = HOST_TYPE_CDN
-                    elif cert_info.platform == PLATFORM_F5 and host.host_type != HOST_TYPE_LOAD_BALANCER:
-                        host.host_type = HOST_TYPE_LOAD_BALANCER
-            
-            # Create or update IP addresses
-            if cert_info.ip_addresses:
-                self.set_status(f'Updating IP addresses for {domain}...')
-                existing_ips = {ip.ip_address for ip in host.ip_addresses}
-                for ip_addr in cert_info.ip_addresses:
-                    if ip_addr not in existing_ips:
-                        host_ip = HostIP(
-                            host=host,
-                            ip_address=ip_addr,
-                            is_active=True,
-                            last_seen=datetime.now()
-                        )
-                        self.session.add(host_ip)
-                    else:
-                        # Update last_seen for existing IP
-                        for ip in host.ip_addresses:
-                            if ip.ip_address == ip_addr:
-                                ip.last_seen = datetime.now()
-                                ip.is_active = True
-            
-            # Create or update certificate binding
-            host_ip = None
-            if cert_info.ip_addresses:
-                for ip in host.ip_addresses:
-                    if ip.ip_address in cert_info.ip_addresses:
-                        host_ip = ip
-                        break
-            
-            binding = self.session.query(CertificateBinding).filter_by(
-                host=host,
-                host_ip=host_ip,
-                port=port
-            ).first()
-            
-            if not binding:
-                self.set_status(f'Creating certificate binding for {domain}:{port}...')
-                binding = CertificateBinding(
-                    host=host,
-                    host_ip=host_ip,
-                    certificate=cert,
-                    port=port,
-                    binding_type='IP',
-                    platform=cert_info.platform if kwargs.get('detect_platform', False) else None,
-                    last_seen=datetime.now(),
-                    manually_added=False
-                )
-                self.session.add(binding)
-            else:
-                binding.certificate = cert
-                binding.last_seen = datetime.now()
-                if kwargs.get('detect_platform', False):
-                    binding.platform = cert_info.platform
-            
-            # Create scan history record
-            scan_record = CertificateScan(
-                certificate=cert,
-                host=host,
-                scan_date=datetime.now(),
-                status="Success",
-                port=port
-            )
-            self.session.add(scan_record)
+            # Replace the certificate/host/binding update logic with:
+            CertificateDBUtil.upsert_certificate_and_binding(self.session, domain, port, cert_info, domain_obj, detect_platform=kwargs.get('detect_platform', False), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True), status_callback=self.set_status)
             
             self.session.flush()
             

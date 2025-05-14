@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
 import pandas as pd
 from st_aggrid import JsCode
+from infra_mgmt.services.SearchService import SearchService
+import logging
 
 class ViewDataService(BaseService):
     def get_certificate_list_view_data(self, engine):
@@ -207,32 +209,53 @@ class ViewDataService(BaseService):
                 return self.result(False, error=f"Error fetching application table data: {str(e)}")
 
     def get_search_view_data(self, engine, query, search_type, status_filter, platform_filter):
+        logger = logging.getLogger(__name__)
         with self.session_scope(engine) as session:
             try:
-                # Example: search hosts by name
-                if search_type == 'host':
-                    hosts = session.query(Host).filter(Host.name.ilike(f"%{query}%")).all()
-                    table_data = []
-                    for host in hosts:
-                        table_data.append({
-                            "Hostname": host.name,
-                            "Type": host.host_type,
-                            "Environment": host.environment,
-                            "Description": host.description or "",
-                            "Last Seen": host.last_seen.strftime("%Y-%m-%d %H:%M") if host.last_seen else "",
-                            "_id": int(host.id)
-                        })
-                    df = pd.DataFrame(table_data)
-                    column_config = {
-                        "Hostname": {"minWidth": 200, "flex": 2},
-                        "Type": {"minWidth": 120},
-                        "Environment": {"minWidth": 120},
-                        "Description": {"minWidth": 200},
-                        "Last Seen": {"minWidth": 150, "valueFormatter": "value ? new Date(value).toLocaleString() : ''"},
-                        "_id": {"hide": True}
-                    }
-                    return self.result(True, data={"df": df, "column_config": column_config})
-                # Add more search types as needed
-                return self.result(False, error="Unsupported search type")
+                # Use SearchService for all search types
+                results = SearchService.perform_search(session, query, search_type, status_filter, platform_filter)
+                table_data = []
+                # Certificates
+                for cert in results.get('certificates', []):
+                    table_data.append({
+                        "type": "certificate",
+                        "Common Name": cert.common_name,
+                        "Serial Number": cert.serial_number,
+                        "Valid From": cert.valid_from.strftime("%Y-%m-%d"),
+                        "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
+                        "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
+                        "Bindings": len(cert.certificate_bindings),
+                        "_id": cert.id
+                    })
+                # Hosts
+                for host in results.get('hosts', []):
+                    table_data.append({
+                        "type": "host",
+                        "Hostname": host.name,
+                        "Type": getattr(host, 'host_type', ''),
+                        "Environment": getattr(host, 'environment', ''),
+                        "Description": getattr(host, 'description', ''),
+                        "Last Seen": host.last_seen.strftime("%Y-%m-%d %H:%M") if host.last_seen else "",
+                        "_id": host.id
+                    })
+                df = pd.DataFrame(table_data)
+                # Build column config
+                column_config = {
+                    "Common Name": {"minWidth": 200, "flex": 2},
+                    "Serial Number": {"minWidth": 150, "flex": 1},
+                    "Valid From": {"type": ["dateColumnFilter"], "minWidth": 120, "valueFormatter": "value ? new Date(value).toLocaleDateString() : ''"},
+                    "Valid Until": {"type": ["dateColumnFilter"], "minWidth": 120, "valueFormatter": "value ? new Date(value).toLocaleDateString() : ''"},
+                    "Status": {"minWidth": 100},
+                    "Bindings": {"type": ["numericColumn"], "minWidth": 100},
+                    "Hostname": {"minWidth": 200, "flex": 2},
+                    "Type": {"minWidth": 120},
+                    "Environment": {"minWidth": 120},
+                    "Description": {"minWidth": 200},
+                    "Last Seen": {"minWidth": 150, "valueFormatter": "value ? new Date(value).toLocaleString() : ''"},
+                    "_id": {"hide": True},
+                    "type": {"hide": True}
+                }
+                return self.result(True, data={"df": df, "column_config": column_config})
             except Exception as e:
+                logger.exception(f"Error fetching search results: {str(e)}")
                 return self.result(False, error=f"Error fetching search results: {str(e)}") 

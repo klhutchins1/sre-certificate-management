@@ -347,15 +347,29 @@ def render_details(selected_host: Host, binding: CertificateBinding = None) -> N
                             
                             # Add remove binding button
                             if st.button("Remove Binding", key=f"remove_{b.id}", type="secondary"):
-                                try:
-                                    result = HostService.delete_binding(selected_host.id, b.id)
-                                    if result['success']:
-                                        st.success("Binding removed successfully!")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Error removing binding: {result['error']}")
-                                except Exception as e:
-                                    st.error(f"Error removing binding: {str(e)}")
+                                dialog_key = f"show_delete_host_binding_dialog_{b.id}"
+                                st.session_state[dialog_key] = True
+                            if st.session_state.get(dialog_key, False):
+                                def on_delete_host_binding(_):
+                                    with SessionManager(selected_host.__class__.metadata.bind) as session:
+                                        result = HostService.delete_binding(session, b.id)
+                                        if result['success']:
+                                            st.success("Binding removed successfully!")
+                                            st.session_state[dialog_key] = False
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Error removing binding: {result['error']}")
+                                            st.session_state[dialog_key] = False
+                                    return True
+                                render_danger_zone(
+                                    title="Delete Certificate Binding",
+                                    entity_name=b.certificate.common_name if b.certificate else str(b.id),
+                                    entity_type="certificate binding",
+                                    dependencies={},
+                                    on_delete=on_delete_host_binding,
+                                    session=None,
+                                    custom_warning=f"This will remove the binding for certificate '{b.certificate.common_name if b.certificate else b.id}'."
+                                )
             else:
                 st.info("No certificates bound to this host")
     

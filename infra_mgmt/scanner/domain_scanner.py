@@ -24,6 +24,7 @@ from ..constants import INTERNAL_TLDS, EXTERNAL_TLDS
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
 from infra_mgmt.utils.domain_validation import DomainValidationUtil
 from infra_mgmt.utils.dns_records import DNSRecordUtil
+from infra_mgmt.utils.cache import ScanSessionCache
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -121,7 +122,7 @@ class DomainScanner:
         >>> print(info.to_dict())
     """
     
-    def __init__(self):
+    def __init__(self, session_cache: ScanSessionCache = None):
         """
         Initialize the domain scanner, loading configuration and rate limits.
         
@@ -147,6 +148,8 @@ class DomainScanner:
         self.successful_nameservers = {}
         
         self.logger = logging.getLogger(__name__)
+        
+        self.session_cache = session_cache or ScanSessionCache()
         
         logger.info(f"Initialized DomainScanner with WHOIS rate limit: {self.whois_rate_limit}/min, "
                    f"DNS rate limit: {self.dns_rate_limit}/min")
@@ -260,6 +263,11 @@ class DomainScanner:
             - Handles missing/invalid WHOIS data, multiple date formats, and ignore list skips.
         """
         try:
+            # Use cache if available
+            cached = self.session_cache.get_whois(domain)
+            if cached is not None:
+                return cached
+
             # Check if domain should be ignored before doing WHOIS query
             is_ignored, reason = IgnoreListUtil.is_domain_ignored(session, domain)
             if is_ignored:
@@ -346,6 +354,8 @@ class DomainScanner:
             self.logger.info(f"[WHOIS] - Status: {status}")
             self.logger.info(f"[WHOIS] - Nameservers: {nameservers}")
             
+            # Use cache if available
+            self.session_cache.set_whois(domain, result)
             return result
             
         except whois.parser.PywhoisError as e:
@@ -468,6 +478,14 @@ class DomainScanner:
             self.logger.debug(f"Unexpected error finding related domains: {str(e)}")
             return related_domains
 
+    def _get_dns_records(self, domain: str) -> List[Dict]:
+        cached = self.session_cache.get_dns(domain)
+        if cached is not None:
+            return cached
+        records = DNSRecordUtil.get_dns_records(domain, self.dns_record_types)
+        self.session_cache.set_dns(domain, records)
+        return records
+
     def scan_domain(self, domain: str, session, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
         """
         Scan a domain for all available information (WHOIS, DNS, ignore list, etc.).
@@ -567,7 +585,7 @@ class DomainScanner:
             # Get DNS records if requested
             if get_dns:
                 try:
-                    dns_records = DNSRecordUtil.get_dns_records(domain, self.dns_record_types)
+                    dns_records = self._get_dns_records(domain)
                     if dns_records:
                         # Get existing DNS records
                         existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()

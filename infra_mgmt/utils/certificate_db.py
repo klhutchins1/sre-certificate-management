@@ -76,7 +76,7 @@ class CertificateDBUtil:
             cert.sans_scanned = check_sans
             cert.updated_at = datetime.now()
         # Associate certificate with domain
-        if domain_obj and cert not in domain_obj.certificates:
+        if domain_obj and hasattr(domain_obj, 'certificates') and cert not in domain_obj.certificates:
             domain_obj.certificates.append(cert)
         # Upsert Host
         host = session.query(Host).filter_by(name=domain).first()
@@ -159,6 +159,10 @@ class CertificateDBUtil:
             port=port
         )
         session.add(scan_record)
-        session.flush()
-        logger.info(f"[CERT DB] Upserted certificate and binding for {domain}:{port}")
+        try:
+            session.flush()
+            logger.info(f"[CERT DB] Flushed certificate and binding for {domain}:{port}")
+        except Exception as e:
+            logger.exception(f"Error during session.flush() for {domain}:{port}: {e}")
+            raise
         return cert 

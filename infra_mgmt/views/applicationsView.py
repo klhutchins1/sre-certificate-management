@@ -102,20 +102,6 @@ def toggle_add_form():
     """Toggle the add application form visibility."""
     st.session_state.show_add_app_form = not st.session_state.show_add_app_form
 
-def delete_application(application, session):
-    """Handle application deletion."""
-    try:
-        session.delete(application)
-        session.commit()
-        notify("Application deleted successfully!", "success")
-        st.session_state.deleted_app_id = application.id
-        return True
-    except Exception as e:  # Only Exception is possible here due to DB errors
-        session.rollback()
-        logger.exception(f"Error deleting application: {str(e)}")
-        notify(f"Error deleting application: {str(e)}", "error")
-        return False
-
 def handle_update_form():
     try:
         application = st.session_state.get('current_app')
@@ -387,14 +373,35 @@ def render_application_details(application: Application) -> None:
                                 st.write(f"**Platform:** {binding.platform}")
                             st.write(f"**Usage:** {BINDING_TYPE_DISPLAY.get(binding.binding_type, 'Unknown Type')}")
                         with cols[1]:
+                            # Use a unique key for each dialog state
+                            dialog_key = f"show_delete_binding_dialog_{binding.id}"
                             if st.button("🗑️", key=f"delete_{binding.id}", help="Remove this binding"):
-                                engine = st.session_state.get('engine')
-                                if engine:
-                                    result = ApplicationService.remove_binding(engine, binding.id)
-                                    if result['success']:
-                                        notify("Certificate binding removed", "success")
+                                st.session_state[dialog_key] = True
+                            if st.session_state.get(dialog_key, False):
+                                def on_delete_binding(_):
+                                    engine = st.session_state.get('engine')
+                                    if engine:
+                                        result = ApplicationService.remove_binding(engine, binding.id)
+                                        if result['success']:
+                                            notify("Certificate binding removed", "success")
+                                            st.session_state[dialog_key] = False
+                                            st.rerun()
+                                        else:
+                                            notify(result['error'], "error")
+                                            st.session_state[dialog_key] = False
                                     else:
-                                        notify(result['error'], "error")
+                                        notify("Engine not available", "error")
+                                        st.session_state[dialog_key] = False
+                                    return True
+                                render_danger_zone(
+                                    title="Delete Certificate Binding",
+                                    entity_name=binding.certificate.common_name,
+                                    entity_type="certificate binding",
+                                    dependencies={},
+                                    on_delete=on_delete_binding,
+                                    session=None,
+                                    custom_warning=f"This will remove the binding for certificate '{binding.certificate.common_name}'."
+                                )
                         st.divider()
             else:
                 notify("No certificate bindings found for this application.", "info")

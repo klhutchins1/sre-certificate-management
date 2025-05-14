@@ -2,6 +2,9 @@ from datetime import datetime
 from sqlalchemy.orm import joinedload
 from sqlalchemy import or_
 from ..models import Certificate, Host, HostIP, CertificateBinding
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SearchService:
     @staticmethod
@@ -19,6 +22,7 @@ class SearchService:
                 - 'certificates': List of matching Certificate objects
                 - 'hosts': List of matching Host objects
         """
+        logger.debug(f"perform_search called with query='{query}', search_type='{search_type}', status_filter='{status_filter}', platform_filter='{platform_filter}'")
         results = {}
         now = datetime.now()
         # Build base certificate query with relationships
@@ -55,6 +59,7 @@ class SearchService:
                     Certificate._san.ilike(f"%{query}%")
                 )
             ).all()
+            logger.debug(f"Certificates found: {len(results['certificates'])}")
         # Search hosts and IPs if requested
         if search_type in ['All', 'Hosts', 'IP Addresses']:
             # Build base host query with relationships
@@ -93,4 +98,5 @@ class SearchService:
                     Host.ip_addresses.any(HostIP.ip_address.ilike(f"%{query}%"))
                 )
             ).all()
+            logger.debug(f"Hosts found: {len(results['hosts'])}")
         return results 

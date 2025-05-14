@@ -526,7 +526,7 @@ def test_concurrent_view_changes():
     Base.metadata.create_all(engine)
     
     with patch('infra_mgmt.app.render_sidebar') as mock_sidebar, \
-         patch('streamlit.radio', return_value="📊 Dashboard"), \
+         patch('streamlit.radio', return_value="\U0001f4ca Dashboard"), \
          patch('streamlit.columns') as mock_columns, \
          patch('streamlit.sidebar') as mock_st_sidebar, \
          patch('streamlit.title'), \
@@ -536,7 +536,8 @@ def test_concurrent_view_changes():
          patch('streamlit.empty'), \
          patch('streamlit.divider'), \
          patch('infra_mgmt.app.init_database', return_value=engine), \
-         patch('infra_mgmt.views.certificatesView.SessionManager') as mock_session_manager:
+         patch('infra_mgmt.views.certificatesView.SessionManager') as mock_session_manager, \
+         patch('infra_mgmt.services.CertificateService.CertificateService.add_manual_certificate', return_value={'success': True, 'certificate_id': 1}):
         
         # Mock the sidebar context manager
         mock_st_sidebar.__enter__ = MagicMock(return_value=mock_st_sidebar)

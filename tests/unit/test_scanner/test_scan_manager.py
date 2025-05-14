@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from datetime import datetime
+from datetime import datetime, timezone
 from infra_mgmt.scanner import ScanManager, ScanProcessor
 from infra_mgmt.scanner.certificate_scanner import CertificateInfo, ScanResult
 from infra_mgmt.models import Domain, Certificate, Host, HostIP, CertificateBinding, CertificateScan
@@ -28,8 +28,8 @@ def mock_cert_info():
         serial_number="123456",
         thumbprint="abcdef",
         common_name="test.example.com",
-        valid_from=datetime.now(),
-        expiration_date=datetime.now(),
+        valid_from=datetime.now(timezone.utc),
+        expiration_date=datetime.now(timezone.utc),
         subject={"CN": "test.example.com"},
         issuer={"CN": "Test CA"},
         san=["test.example.com"],
@@ -80,18 +80,25 @@ def test_scan_target_success(scan_manager, mock_session, mock_status_container, 
     # Configure mocks
     scan_manager.infra_mgmt.scan_certificate.return_value = mock_scan_result
     scan_manager.domain_scanner.scan_domain.return_value = MagicMock()
-    
-    # Test the scan
-    result = scan_manager.scan_target(
-        session=mock_session,
-        domain="example.com",
-        port=443,
-        status_container=mock_status_container
-    )
-    
-    assert result is True
-    assert "example.com:443" in scan_manager.scan_results["success"]
-    mock_session.commit.assert_called()
+    # Ensure the query chain returns None so commit() is called
+    mock_session.query.return_value.filter_by.return_value.first.return_value = None
+
+    # Patch upsert_certificate_and_binding to call session.commit()
+    with patch('infra_mgmt.utils.certificate_db.CertificateDBUtil.upsert_certificate_and_binding') as mock_upsert:
+        def upsert_side_effect(session, *args, **kwargs):
+            session.commit()
+        mock_upsert.side_effect = upsert_side_effect
+
+        # Test the scan
+        result = scan_manager.scan_target(
+            session=mock_session,
+            domain="example.com",
+            port=443,
+            status_container=mock_status_container
+        )
+        assert result is True
+        assert "example.com:443" in scan_manager.scan_results["success"]
+        mock_session.commit.assert_called()
 
 def test_scan_target_error(scan_manager, mock_session, mock_status_container):
     """Test error handling during target scanning."""
@@ -150,7 +157,7 @@ def test_get_scan_stats(scan_manager):
     scan_manager.scan_results["success"].append("success.com:443")
     scan_manager.scan_results["error"].append("error.com:443")
     scan_manager.scan_results["warning"].append("warning.com:443")
-    
+    scan_manager.infra_mgmt.get_scan_stats.return_value = {}
     stats = scan_manager.get_scan_stats()
     assert stats["success_count"] == 1
     assert stats["error_count"] == 1

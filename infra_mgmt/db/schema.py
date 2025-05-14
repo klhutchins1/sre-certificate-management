@@ -328,28 +328,20 @@ def sync_default_ignore_patterns(engine):
                 # Sync domain patterns
                 default_domain_patterns = settings.get("ignore_lists.domains.default_patterns", [])
                 for pattern in default_domain_patterns:
-                    # Check if pattern already exists
+                    if not pattern or not isinstance(pattern, str) or not pattern.strip():
+                        continue  # Skip invalid patterns
                     existing = session.query(IgnoredDomain).filter_by(pattern=pattern).first()
                     if not existing:
-                        ignored = IgnoredDomain(
-                            pattern=pattern,
-                            reason="Default configuration pattern",
-                            created_at=datetime.now()
-                        )
-                        session.add(ignored)
+                        session.add(IgnoredDomain(pattern=pattern.strip(), reason="Default configuration pattern"))
                 
                 # Sync certificate patterns
                 default_cert_patterns = settings.get("ignore_lists.certificates.default_patterns", [])
                 for pattern in default_cert_patterns:
-                    # Check if pattern already exists
+                    if not pattern or not isinstance(pattern, str) or not pattern.strip():
+                        continue  # Skip invalid patterns
                     existing = session.query(IgnoredCertificate).filter_by(pattern=pattern).first()
                     if not existing:
-                        ignored = IgnoredCertificate(
-                            pattern=pattern,
-                            reason="Default configuration pattern",
-                            created_at=datetime.now()
-                        )
-                        session.add(ignored)
+                        session.add(IgnoredCertificate(pattern=pattern.strip(), reason="Default configuration pattern"))
                 
                 # Commit the transaction
                 session.commit()

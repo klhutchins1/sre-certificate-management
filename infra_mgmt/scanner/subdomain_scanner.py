@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
 from infra_mgmt.utils.domain_validation import DomainValidationUtil
+from infra_mgmt.utils.cache import ScanSessionCache
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -53,14 +54,16 @@ class SubdomainScanner:
         >>> print(subdomains)
     """
     
-    def __init__(self, methods=None):
+    def __init__(self, methods=None, session_cache: ScanSessionCache = None):
         """
         Initialize the subdomain scanner, loading configuration and rate limits.
         
         Args:
             methods (Optional[List[str]]): List of methods to use ('cert', 'ct'). Defaults to both.
+            session_cache (ScanSessionCache, optional): Session cache for domain lookups. Defaults to None.
         """
-        self.domain_scanner = DomainScanner()
+        self.session_cache = session_cache or ScanSessionCache()
+        self.domain_scanner = DomainScanner(session_cache=self.session_cache)
         self.infra_mgmt = CertificateScanner()
         self.last_ct_query_time = 0
         self.tracker = None  # Will be set by scanner view

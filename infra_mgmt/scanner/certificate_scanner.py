@@ -30,6 +30,7 @@ from sqlalchemy.orm import sessionmaker
 from ..settings import settings
 from ..models import Certificate, Domain
 from ..notifications import notify
+from infra_mgmt.utils.cache import ScanSessionCache
 
 # Suppress only the specific InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -328,7 +329,7 @@ class CertificateScanner:
         >>> if result.has_certificate:
         ...     print(result.certificate_info.to_dict())
     """
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, session_cache: ScanSessionCache = None):
         """
         Initialize the certificate scanner, loading configuration and rate limits.
         
@@ -352,6 +353,8 @@ class CertificateScanner:
         # Initialize scan tracker
         from . import ScanTracker
         self.tracker = ScanTracker()
+        
+        self.session_cache = session_cache
     
     def reset_scan_state(self):
         """
@@ -463,6 +466,23 @@ class CertificateScanner:
             >>> if result.has_certificate:
             ...     print(result.certificate_info.to_dict())
         """
+        # Check certificate cache first
+        if self.session_cache:
+            cached = self.session_cache.get_certificate_meta(address, port)
+            if cached:
+                serial, thumbprint, result = cached
+                # Check if certificate is in the DB
+                from ..models import Certificate
+                from sqlalchemy.orm import sessionmaker
+                db_path = settings.get("paths.database", "data/certificates.db")
+                from sqlalchemy import create_engine
+                engine = create_engine(f"sqlite:///{db_path}")
+                Session = sessionmaker(bind=engine)
+                with Session() as session:
+                    db_cert = session.query(Certificate).filter_by(serial_number=serial).first()
+                    if db_cert is not None:
+                        return result
+                # If not in DB, fall through to scan and upsert
         self._apply_rate_limit()
         self._last_cert_chain = False
         from ..settings import settings
@@ -471,11 +491,14 @@ class CertificateScanner:
         if cert_binary:
             cert_info = self._process_certificate(cert_binary, address, port)
             if cert_info:
-                return ScanResult(certificate_info=cert_info)
+                result = ScanResult(certificate_info=cert_info)
+                # Cache the result if possible
+                if self.session_cache and cert_info.serial_number and cert_info.thumbprint:
+                    self.session_cache.set_certificate(address, port, cert_info.serial_number, cert_info.thumbprint, result)
+                return result
             else:
                 return ScanResult(error="Failed to process certificate.")
         else:
-            # If _last_error is set, use it for user-friendly error reporting
             error_msg = getattr(self, '_last_error', None)
             if error_msg:
                 return ScanResult(error=error_msg)
@@ -512,6 +535,8 @@ class CertificateScanner:
                 )
             else:
                 self._last_error = f"SSL handshake failed for {address}:{port}: {str(e)}"
+            # Optionally, print a user-friendly message to the UI/logs
+            logger.warning(f"Could not retrieve certificate for {address}:{port}: {self._last_error}")
             return None
         except Exception as e:
             import logging

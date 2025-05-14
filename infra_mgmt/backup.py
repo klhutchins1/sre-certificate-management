@@ -11,11 +11,15 @@ from pathlib import Path
 import shutil
 import yaml
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Engine, text
 from sqlalchemy.orm import sessionmaker
 
 from infra_mgmt.settings import Settings
 from infra_mgmt.models import Base
+from infra_mgmt.db.engine import normalize_path
+from infra_mgmt.exceptions import BackupError, DatabaseError
+import random
+import sqlite3
 
 def create_backup(engine=None):
     """
@@ -246,4 +250,103 @@ def list_backups():
         # Log error but return empty list
         return []
     
-    return backups 
+    return backups
+
+# --- Internal low-level DB backup helpers (from infra_mgmt/db/backup.py) ---
+
+def _backup_database_file(engine, backup_dir):
+    """
+    Internal helper to create a backup of the current database file with validation.
+    Args:
+        engine: SQLAlchemy engine instance
+        backup_dir: Directory to store backup file
+    Returns:
+        str: Path to backup file
+    Raises:
+        BackupError: If backup operation fails
+    """
+    try:
+        source_path = engine.url.database
+        if not os.path.exists(source_path):
+            raise BackupError(f"Source database does not exist: {source_path}")
+        backup_path = normalize_path(str(backup_dir)).resolve()
+        if backup_path.exists():
+            if not backup_path.is_dir():
+                raise BackupError(f"Backup path exists but is not a directory: {backup_path}")
+            if not os.access(str(backup_path), os.W_OK):
+                raise BackupError(f"No write permission for backup directory: {backup_path}")
+        else:
+            try:
+                backup_path.mkdir(parents=True, exist_ok=True)
+            except PermissionError:
+                raise BackupError(f"No write permission to create backup directory: {backup_path}")
+            except Exception as e:
+                raise BackupError(f"Failed to create backup directory: {str(e)}")
+            if not backup_path.is_dir():
+                raise BackupError(f"Failed to create backup directory: {backup_path}")
+            if not os.access(str(backup_path), os.W_OK):
+                raise BackupError(f"No write permission for created backup directory: {backup_path}")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        random_suffix = ''.join(random.choices('0123456789abcdef', k=8))
+        backup_file = backup_path / f"database_backup_{timestamp}_{random_suffix}.db"
+        try:
+            with open(str(backup_file), 'wb') as f:
+                pass
+            os.remove(str(backup_file))
+            shutil.copy2(source_path, str(backup_file))
+        except PermissionError:
+            raise BackupError(f"Failed to create backup file")
+        except Exception as e:
+            raise BackupError(f"Failed to create backup file")
+        try:
+            backup_engine = create_engine(f"sqlite:///{backup_file}")
+            with backup_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            backup_engine.dispose()
+        except Exception as e:
+            try:
+                if backup_file.exists():
+                    backup_file.unlink()
+            except Exception:
+                pass
+            raise BackupError(f"Failed to verify backup: {str(e)}")
+        return str(backup_file)
+    except Exception as e:
+        raise BackupError(f"Failed to create database backup: {str(e)}")
+
+def _restore_database_file(backup_path: str, engine: Engine) -> bool:
+    """
+    Internal helper to restore database from backup file with validation and locking.
+    Args:
+        backup_path: Path to backup file
+        engine: SQLAlchemy engine for target database
+    Returns:
+        bool: True if restore was successful
+    Raises:
+        DatabaseError: If backup file is invalid or database is locked
+    """
+    if not os.path.exists(backup_path):
+        raise DatabaseError("unable to open database file")
+    try:
+        with sqlite3.connect(engine.url.database, timeout=0.1) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+    except sqlite3.OperationalError as e:
+        if "database is locked" in str(e).lower():
+            raise DatabaseError("Database is locked")
+        raise
+    try:
+        with sqlite3.connect(backup_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA page_count")
+            cursor.execute("PRAGMA page_size")
+    except sqlite3.DatabaseError:
+        raise DatabaseError("file is not a database")
+    shutil.copy2(backup_path, engine.url.database)
+    return True
+
+def backup_database(engine, backup_dir):
+    return _backup_database_file(engine, backup_dir)
+
+def restore_database(backup_path, engine):
+    return _restore_database_file(backup_path, engine) 

@@ -6,7 +6,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from infra_mgmt.models import Base, Certificate, Host, HostIP, CertificateBinding
-from infra_mgmt.views.searchView import render_search_view, perform_search
+from infra_mgmt.views.searchView import render_search_view
 
 @pytest.fixture(scope="function")
 def engine():

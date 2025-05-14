@@ -13,6 +13,7 @@ from ..settings import settings
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
 from infra_mgmt.utils.dns_records import DNSRecordUtil
 from infra_mgmt.utils.certificate_db import CertificateDBUtil
+from infra_mgmt.utils.cache import ScanSessionCache
 
 CertificateScanner = None
 
@@ -71,9 +72,10 @@ class ScanManager:
         global CertificateScanner
         if CertificateScanner is None:
             from .certificate_scanner import CertificateScanner
-        self.infra_mgmt = CertificateScanner()
-        self.domain_scanner = DomainScanner()
-        self.subdomain_scanner = SubdomainScanner()
+        self.session_cache = ScanSessionCache()
+        self.infra_mgmt = CertificateScanner(session_cache=self.session_cache)
+        self.domain_scanner = DomainScanner(session_cache=self.session_cache)
+        self.subdomain_scanner = SubdomainScanner(session_cache=self.session_cache)
         self.subdomain_scanner.tracker = self.infra_mgmt.tracker
         self.scan_history = []
         self.scan_results = {
@@ -105,6 +107,7 @@ class ScanManager:
             "warning": [],
             "no_cert": []
         }
+        self.session_cache.clear()
     
     def process_scan_target(self, entry: str, session: Session = None) -> tuple:
         """
@@ -270,12 +273,15 @@ class ScanManager:
                     addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
                     if not addrinfo:
                         self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                        self.scan_results["error"].append(f"{domain}:{port} - No A or AAAA record (cannot resolve)")
                         return False
                 except socket.gaierror:
                     self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                    self.scan_results["error"].append(f"{domain}:{port} - No A or AAAA record (cannot resolve)")
                     return False
                 except Exception as e:
                     self.logger.warning(f"[SCAN] Skipping {domain}:{port} - DNS resolution error: {str(e)}")
+                    self.scan_results["error"].append(f"{domain}:{port} - DNS resolution error: {str(e)}")
                     return False
             
             if is_ip:
@@ -319,12 +325,15 @@ class ScanManager:
                     addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
                     if not addrinfo:
                         self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                        self.scan_results["error"].append(f"{domain}:{port} - No A or AAAA record (cannot resolve)")
                         return False
                 except socket.gaierror:
                     self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                    self.scan_results["error"].append(f"{domain}:{port} - No A or AAAA record (cannot resolve)")
                     return False
                 except Exception as e:
                     self.logger.warning(f"[SCAN] Skipping {domain}:{port} - DNS resolution error: {str(e)}")
+                    self.scan_results["error"].append(f"{domain}:{port} - DNS resolution error: {str(e)}")
                     return False
                 scan_result = self.infra_mgmt.scan_certificate(domain, port)
                 if scan_result and scan_result.certificate_info:
@@ -362,6 +371,7 @@ class ScanManager:
                 # Handle domain scanning
                 # Get domain information first
                 domain_info = None
+                domain_obj = None
                 if kwargs.get('check_whois') or kwargs.get('check_dns'):
                     try:
                         if kwargs.get('status_container'):
@@ -451,12 +461,15 @@ class ScanManager:
                     addrinfo = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
                     if not addrinfo:
                         self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                        self.scan_results["error"].append(f"{domain}:{port} - No A or AAAA record (cannot resolve)")
                         return False
                 except socket.gaierror:
                     self.logger.warning(f"[SCAN] Skipping {domain}:{port} - No A or AAAA record (cannot resolve)")
+                    self.scan_results["error"].append(f"{domain}:{port} - No A or AAAA record (cannot resolve)")
                     return False
                 except Exception as e:
                     self.logger.warning(f"[SCAN] Skipping {domain}:{port} - DNS resolution error: {str(e)}")
+                    self.scan_results["error"].append(f"{domain}:{port} - DNS resolution error: {str(e)}")
                     return False
                 scan_result = self.infra_mgmt.scan_certificate(domain, port)
                 if scan_result and scan_result.certificate_info:
@@ -518,7 +531,8 @@ class ScanManager:
             
         except Exception as e:
             self.logger.exception(f"Unexpected error in scan_target for {domain}:{port}: {str(e)}")
-            session.rollback()
+            if session is not None:
+                session.rollback()
             raise
         finally:
             # At the end of the scan loop, if there are no more pending targets, log completion

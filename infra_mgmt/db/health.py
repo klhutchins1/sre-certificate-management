@@ -24,9 +24,23 @@ def check_database():
     try:
         settings = Settings()
         db_path = normalize_path(settings.get("paths.database", "data/certificates.db"))
+        print(f"[DEBUG] Checking database path: {db_path}")
+        print(f"[DEBUG] File exists: {db_path.exists()}")
+        if db_path.exists():
+            print(f"[DEBUG] File size: {db_path.stat().st_size}")
+            with open(db_path, 'rb') as f:
+                header = f.read(16)
+                print(f"[DEBUG] File header: {header}")
         
         if not db_path.exists():
             return False
+        
+        # Check file size and header for valid SQLite format
+        if db_path.stat().st_size < 100:
+            return False
+        with open(db_path, 'rb') as f:
+            if f.read(16) != b'SQLite format 3\x00':
+                return False
         
         # Try to open and validate the database
         try:

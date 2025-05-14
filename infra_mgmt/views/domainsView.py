@@ -309,14 +309,14 @@ def render_domain_list(engine):
                         "DNS Records": [f"{r.record_type} {r.name}" for r in domain.dns_records],
                         "Subdomains": [d.domain_name for d in domain.subdomains]
                     }
-                    def delete_domain():
+                    def delete_domain(_):
                         result = DomainService.delete_domain_by_id(engine, domain.id)
                         if result['success']:
                             return True
                         else:
                             logger.exception(f"Error deleting domain: {result['error']}")
                             return False
-                    def add_to_ignore_list():
+                    def add_to_ignore_list(_):
                         result = DomainService.add_to_ignore_list_by_name(engine, domain.domain_name)
                         if result['success']:
                             notify(f"Added '{domain.domain_name}' to ignore list", "success")

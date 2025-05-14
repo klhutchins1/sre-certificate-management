@@ -99,6 +99,7 @@ class ScanService:
                         f"Scanning {target[0]}:{target[1]} (Completed: {completed}, Remaining: {remaining})"
                     )
             # After all scans, set progress to complete
+            session.commit()
             if options.get("progress_container"):
                 options["progress_container"].progress(1.0)
                 options["progress_container"].text("Scan completed!")
@@ -162,6 +163,7 @@ class ScanService:
                 if cert and cert.id not in seen:
                     deduped.append(cert)
                     seen.add(cert.id)
+            print(f"DEBUG: get_certificates_for_domain({domain_name}) found {len(deduped)} certificates: {[c.serial_number for c in deduped]}")
             return deduped
 
     def get_dns_records_for_domain(self, engine, domain_name: str):

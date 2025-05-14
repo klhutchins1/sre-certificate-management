@@ -114,23 +114,62 @@ def render_search_view(engine) -> None:
     # Process search and display results
     if search_query:
         try:
-            # Fetch data for search results
             result = ViewDataService().get_search_view_data(engine, search_query, search_type, status_filter, platform_filter)
             if not result['success']:
                 notify(result['error'], "error")
                 return
             df = result['data']['df']
             column_config = result['data']['column_config']
-            # Use df and column_config for display
-            if df.empty:
-                st.info("No results found")
-            else:
-                st.dataframe(
-                    df,
-                    column_config=column_config,
-                    hide_index=True,
-                    use_container_width=True
-                )
+
+            # If 'type' column is missing, treat all as the selected type
+            has_type = 'type' in df.columns
+
+            if search_type == "Certificates":
+                st.subheader("Certificates")
+                if df.empty:
+                    st.info("No results found")
+                else:
+                    st.dataframe(
+                        df.drop(columns=['type'], errors='ignore') if has_type else df,
+                        column_config=column_config,
+                        hide_index=True,
+                        use_container_width=True
+                    )
+            elif search_type == "Hosts" or search_type == "IP Addresses":
+                st.subheader("Hosts")
+                if df.empty:
+                    st.info("No results found")
+                else:
+                    st.dataframe(
+                        df.drop(columns=['type'], errors='ignore') if has_type else df,
+                        column_config=column_config,
+                        hide_index=True,
+                        use_container_width=True
+                    )
+            else:  # "All"
+                cert_df = df[df['type'] == 'certificate'] if has_type else pd.DataFrame()
+                host_df = df[df['type'] == 'host'] if has_type else pd.DataFrame()
+                shown = False
+                if not cert_df.empty:
+                    st.subheader("Certificates")
+                    st.dataframe(
+                        cert_df.drop(columns=['type'], errors='ignore'),
+                        column_config=column_config,
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                    shown = True
+                if not host_df.empty:
+                    st.subheader("Hosts")
+                    st.dataframe(
+                        host_df.drop(columns=['type'], errors='ignore'),
+                        column_config=column_config,
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                    shown = True
+                if not shown:
+                    st.info("No results found")
         except Exception as e:
             logger.exception(f"Error in search view: {str(e)}")
             notify(f"Error in search view: {str(e)}", "error")

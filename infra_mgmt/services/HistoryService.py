@@ -28,10 +28,12 @@ class HistoryService:
     def get_bindings_for_host(engine, host_id, ip_id):
         try:
             with SessionManager(engine) as session:
-                bindings = session.query(CertificateBinding).filter(
+                bindings = session.query(CertificateBinding).options(
+                    joinedload(CertificateBinding.certificate)
+                ).filter(
                     CertificateBinding.host_id == host_id,
                     CertificateBinding.host_ip_id == ip_id
-                ).join(Certificate).order_by(CertificateBinding.last_seen.desc()).all()
+                ).order_by(CertificateBinding.last_seen.desc()).all()
                 return bindings
         except Exception as e:
             return []

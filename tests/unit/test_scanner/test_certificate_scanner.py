@@ -151,7 +151,7 @@ def test_scan_certificate(scanner, mock_certificate, caplog):
     mock_cert_info.chain_valid = True
     mock_cert_info.validation_errors = []
     mock_cert_info.ip_addresses = ["1.2.3.4"]
-    def mock_get_certificate(address, port):
+    def mock_get_certificate(address, port, **kwargs):
         mock_logger.info(f"Starting certificate scan for {address}:{port}")
         scanner._last_cert_chain = True
         mock_logger.info(f"Certificate chain validation successful for {address}:{port}")

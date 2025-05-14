@@ -231,3 +231,25 @@ class CertificateService:
             return {'success': True, 'data': form_data}
         except Exception as e:
             return {'success': False, 'error': str(e)}
+
+    def delete_certificate_binding(self, binding_id, session):
+        """
+        Delete a certificate binding (usage record) by its ID.
+        Args:
+            binding_id (int): The ID of the CertificateBinding to delete
+            session: SQLAlchemy session
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            binding = session.query(CertificateBinding).get(binding_id)
+            if not binding:
+                return {'success': False, 'error': 'Binding not found'}
+            session.delete(binding)
+            session.commit()
+            return {'success': True}
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error deleting certificate binding: {str(e)}")
+            return {'success': False, 'error': str(e)}

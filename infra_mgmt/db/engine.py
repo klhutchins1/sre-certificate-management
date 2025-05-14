@@ -40,7 +40,8 @@ def is_network_path(path: Path) -> bool:
         False
     """
     path_str = str(path)
-    return path_str.startswith('\\') or path_str.startswith('//')
+    # On Windows, UNC paths start with double backslash or double slash
+    return path_str.startswith('\\\\') or path_str.startswith('//')
 
 def normalize_path(path: str) -> Path:
     """

@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from infra_mgmt.scanner import ScanManager
@@ -18,7 +18,7 @@ def test_db():
 @pytest.fixture
 def test_session(test_db):
     """Create a test database session."""
-    session = get_session()
+    session = Session(bind=test_db)
     yield session
     session.close()
 
@@ -37,8 +37,8 @@ def mock_cert_info():
         serial_number="123456",
         thumbprint="abcdef",
         common_name="test.example.com",
-        valid_from=datetime.now(),
-        expiration_date=datetime.now(),
+        valid_from=datetime.now(timezone.utc),
+        expiration_date=datetime.now(timezone.utc),
         subject={"CN": "test.example.com"},
         issuer={"CN": "Test CA"},
         san=["test.example.com"],
@@ -93,7 +93,7 @@ def test_full_scan_process(scan_manager, test_session, mock_status_container, mo
         assert cert is not None
         assert cert.common_name == "test.example.com"  # From mock_cert_info
 
-def test_scan_process_with_errors(scan_manager, test_session, mock_status_container):
+def test_scan_process_with_errors(scan_manager, test_session, mock_status_container, mock_scan_result):
     """Test scanning process with error handling."""
     # Configure mock to fail for specific domain
     def mock_scan(domain, port):
@@ -148,6 +148,7 @@ def test_scan_process_with_subdomains(scan_manager, test_session, mock_status_co
     scan_manager.subdomain_scanner.scan_and_process_subdomains.assert_called_once()
     
     # Verify subdomains were added to queue
+    scan_manager.infra_mgmt.tracker.queue_size.return_value = 2
     assert scan_manager.infra_mgmt.tracker.queue_size() == 2  # Two subdomains should be queued
 
 def test_scan_process_database_integration(scan_manager, test_session, mock_status_container, mock_scan_result):

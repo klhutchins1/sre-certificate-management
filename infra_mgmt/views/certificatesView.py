@@ -40,6 +40,7 @@ import json
 import logging
 from ..services.CertificateService import CertificateService
 from ..services.ViewDataService import ViewDataService
+from ..components.deletion_dialog import render_danger_zone
 
 logger = logging.getLogger(__name__)
 
@@ -207,14 +208,16 @@ def render_certificate_list(engine):
                 selected_cert_id = int(selected_row['_id'])
                 with SessionManager(engine) as session:
                     cert_obj = session.query(Certificate).get(selected_cert_id)
-                    render_certificate_card(cert_obj, session)
+                    if cert_obj is not None:
+                        render_certificate_card(cert_obj, session)
         elif isinstance(selected_rows, list) and selected_rows:
             selected_row = selected_rows[0]
             if isinstance(selected_row, dict) and '_id' in selected_row:
                 selected_cert_id = int(selected_row['_id'])
                 with SessionManager(engine) as session:
                     cert_obj = session.query(Certificate).get(selected_cert_id)
-                    render_certificate_card(cert_obj, session)
+                    if cert_obj is not None:
+                        render_certificate_card(cert_obj, session)
     except Exception as e:
         notify(f"Error handling selection: {str(e)}", "error")
         with notification_placeholder:
@@ -227,6 +230,8 @@ def render_certificate_card(cert, session):
     """
     Render a detailed certificate information card.
     """
+    if cert is None:
+        return
     # Ensure relationships are loaded
     if not session.is_active:
         session.begin()
@@ -273,10 +278,15 @@ def render_certificate_card(cert, session):
             ]
         }
         
-        def delete_certificate(session):
-            session.delete(cert)
-            session.commit()
-            return True
+        def delete_certificate(_):
+            from ..services.CertificateService import CertificateService
+            service = CertificateService()
+            result = service.delete_certificate(cert, session)
+            if result['success']:
+                # Clear any selected certificate from session state and rerun to refresh UI
+                st.session_state.pop('selected_cert_id', None)
+                st.rerun()
+            return result['success']
         
         render_danger_zone(
             title="Delete Certificate",
@@ -441,11 +451,38 @@ def render_certificate_bindings(cert, session):
             
             # Column 3: Delete button
             with cols[2]:
+                dialog_key = f"show_delete_usage_dialog_{binding['id']}"
                 if st.button("🗑️", key=f"delete_{binding['id']}", help="Remove this usage record"):
-                    session.delete(binding)
-                    session.commit()
-                    notify("Usage record deleted", "success")
-                    st.rerun()
+                    st.session_state[dialog_key] = True
+                if st.session_state.get(dialog_key, False):
+                    def on_delete_usage(_):
+                        from ..services.CertificateService import CertificateService
+                        service = CertificateService()
+                        # binding['obj'] is expected to be a CertificateBinding ORM object
+                        result = service.delete_certificate_binding(binding['id'], session)
+                        if result['success']:
+                            notify("Usage record deleted", "success")
+                            st.session_state[dialog_key] = False
+                            st.rerun()
+                        else:
+                            notify(result['error'], "error")
+                            st.session_state[dialog_key] = False
+                        session.delete(binding['obj']) if 'obj' in binding else session.execute(
+                            f"DELETE FROM certificate_binding WHERE id = :id", {{'id': binding['id']}})
+                        session.commit()
+                        notify("Usage record deleted", "success")
+                        st.session_state[dialog_key] = False
+                        st.rerun()
+                        return True
+                    render_danger_zone(
+                        title="Delete Usage Record",
+                        entity_name=binding.get('host_name') or binding.get('host_ip') or binding.get('application_id', 'Usage'),
+                        entity_type="usage record",
+                        dependencies={},
+                        on_delete=on_delete_usage,
+                        session=session,
+                        custom_warning="This will permanently remove this usage record from the certificate."
+                    )
             st.divider()  # Add visual separation between bindings
 
 def render_certificate_details(cert):

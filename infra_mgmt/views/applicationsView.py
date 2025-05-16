@@ -406,6 +406,7 @@ def render_application_details(application: Application) -> None:
             else:
                 notify("No certificate bindings found for this application.", "info")
             st.markdown("### Add Certificate Bindings")
+            available_certs = []
             try:
                 # Fetch available certificates for binding
                 engine = st.session_state.get('engine')

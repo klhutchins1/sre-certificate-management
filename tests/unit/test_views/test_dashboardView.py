@@ -31,6 +31,8 @@ def mock_streamlit(monkeypatch):
             pass
     
     def mock_columns(specs):
+        if isinstance(specs, int):
+            return [MockColumn() for _ in range(specs)]
         return [MockColumn() for _ in specs]
     
     monkeypatch.setattr(st, 'columns', mock_columns)
@@ -128,7 +130,7 @@ def test_dashboard_invalid_engine(mock_streamlit, monkeypatch):
     
     # Verify that an error message was displayed
     assert error_message is not None
-    assert "Error querying database" in error_message
+    assert "Error fetching dashboard data" in error_message
     assert "no such table: certificates" in error_message
 
 def test_dashboard_timeline_generation(engine, session, mock_streamlit, sample_data):

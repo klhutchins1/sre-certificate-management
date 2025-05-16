@@ -66,9 +66,24 @@ class ScanService:
             "no_cert": []
         }
         with self.session_factory() as session:
+            # --- Ensure root domains are also scanned ---
+            def get_root_domain(domain_name: str) -> str:
+                parts = domain_name.split('.')
+                if len(parts) >= 2:
+                    return '.'.join(parts[-2:])
+                return domain_name
+
+            # Collect all root domains from targets
+            root_targets = set()
+            for hostname, port in targets:
+                root = get_root_domain(hostname)
+                root_targets.add((root, port))
             # Add initial targets to the scan queue
             for hostname, port in targets:
                 self.scan_manager.add_to_queue(hostname, port, session)
+            # Add root domains to the scan queue (if not already present)
+            for root, port in root_targets:
+                self.scan_manager.add_to_queue(root, port, session)
             while self.scan_manager.has_pending_targets():
                 target = self.scan_manager.get_next_target()
                 if not target:

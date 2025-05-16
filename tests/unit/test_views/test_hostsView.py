@@ -234,7 +234,7 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
     # First test: Select a row without binding ID to trigger host details
     def mock_aggrid_host_selection(*args, **kwargs):
         selected_row = {
-            '_id': None,
+            '_id': host.id,
             'Hostname': host.name,
             'IP Address': host_ip.ip_address,
             'Port': None,
@@ -361,7 +361,10 @@ def test_binding_details_render(mock_streamlit, sample_data):
         sample_data['binding'].certificate.valid_from = fixed_time - timedelta(days=30)
         sample_data['binding'].certificate.valid_until = fixed_time + timedelta(days=335)
         
-        render_details(sample_data['host'], sample_data['binding'])
+        # Patch columns globally for the test, so any call to st.columns returns two MagicMocks
+        with patch('infra_mgmt.components.deletion_dialog.st.columns', return_value=[MagicMock(), MagicMock()]):
+            with patch.object(mock_streamlit, 'columns', return_value=[MagicMock(), MagicMock()]):
+                render_details(sample_data['host'], sample_data['binding'])
         
         # Verify host details were rendered
         mock_streamlit.markdown.assert_has_calls([

@@ -42,6 +42,7 @@ from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 import logging
 from infra_mgmt.services.ViewDataService import ViewDataService
+from infra_mgmt.components.page_header import render_page_header
 
 # Add logger setup at the top
 logger = logging.getLogger(__name__)
@@ -80,12 +81,7 @@ def render_search_view(engine) -> None:
     load_warning_suppression()
     load_css()
     
-    # Create header layout
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("Search")
-    with col2:
-        st.write("")  # Empty space for layout consistency
+    render_page_header(title="Search")
     
     # Main search input field
     search_query = st.text_input(

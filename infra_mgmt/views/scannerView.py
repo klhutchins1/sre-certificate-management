@@ -28,6 +28,7 @@ from ..models import (
 from ..settings import settings  # Import settings for database configuration
 from urllib.parse import urlparse
 from ..services.ScanService import ScanService
+from infra_mgmt.components.page_header import render_page_header
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ def render_scan_interface(engine) -> None:
     if 'scanned_domains' not in st.session_state:
         st.session_state.scanned_domains = set()
     
-    st.title("Domain & Certificate Scanner")
+    render_page_header(title="Domain & Certificate Scanner")
     
     # Create main layout columns
     col1, col2 = st.columns([3, 1])

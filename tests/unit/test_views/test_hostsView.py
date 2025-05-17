@@ -10,6 +10,7 @@ from infra_mgmt.views.hostsView import render_hosts_view, render_details
 from infra_mgmt.constants import platform_options
 import logging
 from unittest.mock import call
+from unittest.mock import ANY
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -49,16 +50,30 @@ def get_column_mocks(spec):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit module"""
-    with patch('infra_mgmt.views.hostsView.st') as mock_st:
+    with patch('infra_mgmt.views.hostsView.st') as mock_st, \
+         patch('infra_mgmt.components.page_header.st') as mock_header_st, \
+         patch('infra_mgmt.components.metrics_row.st') as mock_metrics_st:
         # Mock columns to return the correct number of column objects
-        mock_st.columns = MagicMock(side_effect=get_column_mocks)
-        
+        def get_column_mocks(spec):
+            if isinstance(spec, (list, tuple)):
+                num_cols = len(spec)
+            else:
+                num_cols = spec
+            cols = []
+            for _ in range(num_cols):
+                col = MagicMock()
+                col.__enter__ = MagicMock(return_value=col)
+                col.__exit__ = MagicMock(return_value=None)
+                cols.append(col)
+            return tuple(cols)
+        mock_st.columns.side_effect = get_column_mocks
+        mock_header_st.columns.side_effect = get_column_mocks
+        mock_metrics_st.columns.side_effect = get_column_mocks
         # Mock session state
         mock_st.session_state = MagicMock()
         mock_st.session_state.__getitem__ = MagicMock()
         mock_st.session_state.__setitem__ = MagicMock()
         mock_st.session_state.get = MagicMock()
-        
         # Mock tabs to return list of MagicMocks with context manager methods
         def mock_tabs(*args):
             tabs = [MagicMock() for _ in range(len(args[0]))]
@@ -67,8 +82,7 @@ def mock_streamlit():
                 tab.__exit__ = MagicMock(return_value=None)
             return tabs
         mock_st.tabs.side_effect = mock_tabs
-        
-        yield mock_st
+        yield (mock_st, mock_header_st, mock_metrics_st)
 
 @pytest.fixture
 def sample_data(session):
@@ -119,6 +133,7 @@ def sample_data(session):
 
 def test_render_hosts_view_empty(mock_streamlit, engine):
     """Test rendering hosts view with no data"""
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     # Mock session state
     mock_state = {'session': Session(engine)}
     def mock_setitem(key, value):
@@ -127,26 +142,31 @@ def test_render_hosts_view_empty(mock_streamlit, engine):
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
-
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
     render_hosts_view(engine)
-
-    # Verify title was set
-    mock_streamlit.title.assert_called_once_with("Hosts")
-    
+    # Verify header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Hosts</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+    # Verify metrics were rendered (3 metrics)
+    assert mock_metrics_st.metric.call_count == 3
+    mock_metrics_st.metric.assert_any_call(label=ANY, value=ANY, delta=None, help=None)
     # Verify add host button was created
-    mock_streamlit.button.assert_called_with(
-        "➕ Add Host",
-        type="primary",
-        use_container_width=True
-    )
+    found_button = False
+    for call_args in mock_header_st.button.call_args_list:
+        args, kwargs = call_args
+        if args and args[0] == "➕ Add Host" and kwargs.get('type') == "primary" and kwargs.get('use_container_width') == True:
+            found_button = True
+            break
+    assert found_button, "Expected add host button call not found"
 
 def test_render_hosts_view_with_data(mock_streamlit, mock_aggrid, engine, sample_data):
-    """Test rendering hosts view with sample data"""
-    # Mock session state
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     mock_state = {}
     def mock_setitem(key, value):
         mock_state[key] = value
@@ -154,26 +174,24 @@ def test_render_hosts_view_with_data(mock_streamlit, mock_aggrid, engine, sample
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
-
-    # Mock radio button for view selection
-    mock_streamlit.radio.return_value = "Hostname"
-
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
+    mock_st.radio.return_value = "Hostname"
     render_hosts_view(engine)
-
-    # Verify title was set
-    mock_streamlit.title.assert_called_once_with("Hosts")
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Hosts</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+    assert mock_metrics_st.metric.call_count == 3
+    mock_metrics_st.metric.assert_any_call(label=ANY, value=ANY, delta=None, help=None)
 
 def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
-    """Test handling of host selection in AG Grid"""
-    # Create a session and keep it alive
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     Session = sessionmaker(bind=engine)
     session = Session()
-    
-    # Mock session state with session
     mock_state = {'session': session, 'show_add_host_form': False}
     def mock_setitem(key, value):
         mock_state[key] = value
@@ -181,10 +199,9 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
     
     # Create test data with fixed datetime
     fixed_time = datetime(2024, 1, 1, 12, 0)
@@ -229,7 +246,7 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
     binding_id = binding.id
     
     # Mock radio button for view selection
-    mock_streamlit.radio.return_value = "Hostname"
+    mock_st.radio.return_value = "Hostname"
     
     # First test: Select a row without binding ID to trigger host details
     def mock_aggrid_host_selection(*args, **kwargs):
@@ -267,7 +284,7 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
         # Mock tabs and columns to return our mocks
         def mock_tabs(*args):
             return tab_mocks
-        mock_streamlit.tabs.side_effect = mock_tabs
+        mock_st.tabs.side_effect = mock_tabs
         
         # Store all column mocks for checking markdown calls
         all_column_mocks = []
@@ -288,7 +305,7 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
                 col_mocks.append(col)
             all_column_mocks.extend(col_mocks)  # Store for later checking
             return col_mocks
-        mock_streamlit.columns.side_effect = mock_columns
+        mock_st.columns.side_effect = mock_columns
         
         render_hosts_view(engine)
         
@@ -296,7 +313,7 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
         all_markdown_calls = []
         
         # Add main streamlit markdown calls
-        all_markdown_calls.extend(mock_streamlit.markdown.call_args_list)
+        all_markdown_calls.extend(mock_st.markdown.call_args_list)
         
         # Add tab markdown calls
         for tab in tab_mocks:
@@ -322,11 +339,10 @@ def test_host_selection_handling(mock_streamlit, mock_aggrid, engine):
         assert host_details_found, "Host type not found in any markdown calls"
         
         # Verify tabs were created for details
-        mock_streamlit.tabs.assert_any_call(["Overview", "Certificates", "IP Addresses", "Danger Zone"])
+        mock_st.tabs.assert_any_call(["Overview", "Certificates", "IP Addresses", "Danger Zone"])
 
 def test_binding_details_render(mock_streamlit, sample_data):
-    """Test rendering of binding details"""
-    # Mock session state
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     mock_state = {}
     def mock_setitem(key, value):
         mock_state[key] = value
@@ -334,10 +350,9 @@ def test_binding_details_render(mock_streamlit, sample_data):
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
     
     # Mock current time for validity check
     fixed_time = datetime(2024, 1, 1, 12, 0)
@@ -352,7 +367,7 @@ def test_binding_details_render(mock_streamlit, sample_data):
                 tab.__enter__ = MagicMock(return_value=tab)
                 tab.__exit__ = MagicMock(return_value=None)
             return tabs
-        mock_streamlit.tabs.side_effect = mock_tabs
+        mock_st.tabs.side_effect = mock_tabs
         
         # Update sample data timestamps
         sample_data['host'].last_seen = fixed_time
@@ -363,11 +378,11 @@ def test_binding_details_render(mock_streamlit, sample_data):
         
         # Patch columns globally for the test, so any call to st.columns returns two MagicMocks
         with patch('infra_mgmt.components.deletion_dialog.st.columns', return_value=[MagicMock(), MagicMock()]):
-            with patch.object(mock_streamlit, 'columns', return_value=[MagicMock(), MagicMock()]):
+            with patch.object(mock_st, 'columns', return_value=[MagicMock(), MagicMock()]):
                 render_details(sample_data['host'], sample_data['binding'])
         
         # Verify host details were rendered
-        mock_streamlit.markdown.assert_has_calls([
+        mock_st.markdown.assert_has_calls([
             call('**Host Type:** Server'),
             call('**Environment:** Production'),
             call('**Last Seen:** 2024-01-01 12:00'),
@@ -387,8 +402,7 @@ def test_binding_details_render(mock_streamlit, sample_data):
         ], any_order=True)
 
 def test_ag_grid_configuration(mock_streamlit, mock_aggrid, engine, sample_data):
-    """Test AG Grid configuration"""
-    # Mock session state
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     mock_state = {'session': Session(engine)}
     def mock_setitem(key, value):
         mock_state[key] = value
@@ -396,22 +410,20 @@ def test_ag_grid_configuration(mock_streamlit, mock_aggrid, engine, sample_data)
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
 
     # Mock columns using get_column_mocks
-    mock_streamlit.columns.side_effect = get_column_mocks
+    mock_st.columns.side_effect = get_column_mocks
 
     # Mock radio button for view selection
-    mock_streamlit.radio.return_value = "Hostname"
+    mock_st.radio.return_value = "Hostname"
 
     render_hosts_view(engine)
 
 def test_error_handling_in_selection(mock_streamlit, mock_aggrid, engine, sample_data):
-    """Test error handling in selection processing"""
-    # Mock session state
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     mock_state = {'session': Session(engine)}
     def mock_setitem(key, value):
         mock_state[key] = value
@@ -419,20 +431,18 @@ def test_error_handling_in_selection(mock_streamlit, mock_aggrid, engine, sample
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
 
     # Mock columns using get_column_mocks
-    mock_streamlit.columns.side_effect = get_column_mocks
+    mock_st.columns.side_effect = get_column_mocks
 
     # Mock radio button for view selection
-    mock_streamlit.radio.return_value = "Hostname"
+    mock_st.radio.return_value = "Hostname"
 
 def test_filter_functionality(mock_streamlit, mock_aggrid, engine, sample_data):
-    """Test filter functionality in hosts view"""
-    # Mock session state
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     mock_state = {'session': Session(engine)}
     def mock_setitem(key, value):
         mock_state[key] = value
@@ -440,20 +450,18 @@ def test_filter_functionality(mock_streamlit, mock_aggrid, engine, sample_data):
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
 
     # Mock columns using get_column_mocks
-    mock_streamlit.columns.side_effect = get_column_mocks
+    mock_st.columns.side_effect = get_column_mocks
 
     # Mock radio button for view selection
-    mock_streamlit.radio.return_value = "Hostname"
+    mock_st.radio.return_value = "Hostname"
 
 def test_inline_platform_update(mock_streamlit, mock_aggrid, engine, sample_data):
-    """Test inline platform update functionality in AG Grid"""
-    # Mock session state with session
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     session = Session(engine)
     mock_state = {'session': session}
     def mock_setitem(key, value):
@@ -462,20 +470,18 @@ def test_inline_platform_update(mock_streamlit, mock_aggrid, engine, sample_data
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
 
     # Mock columns using get_column_mocks
-    mock_streamlit.columns.side_effect = get_column_mocks
+    mock_st.columns.side_effect = get_column_mocks
 
     # Mock radio button for view selection
-    mock_streamlit.radio.return_value = "Hostname"
+    mock_st.radio.return_value = "Hostname"
 
 def test_inline_platform_update_error(mock_streamlit, mock_aggrid, engine, sample_data):
-    """Test error handling for inline platform update"""
-    # Mock session state with session
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     session = Session(engine)
     mock_state = {'session': session}
     def mock_setitem(key, value):
@@ -484,16 +490,15 @@ def test_inline_platform_update_error(mock_streamlit, mock_aggrid, engine, sampl
         return mock_state.get(key)
     def mock_get(key, default=None):
         return mock_state.get(key, default)
-
-    mock_streamlit.session_state.__setitem__.side_effect = mock_setitem
-    mock_streamlit.session_state.__getitem__.side_effect = mock_getitem
-    mock_streamlit.session_state.get.side_effect = mock_get
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
 
     # Mock columns using get_column_mocks
-    mock_streamlit.columns.side_effect = get_column_mocks
+    mock_st.columns.side_effect = get_column_mocks
 
     # Mock radio button for view selection
-    mock_streamlit.radio.return_value = "Hostname"
+    mock_st.radio.return_value = "Hostname"
 
 @pytest.fixture(scope="function")
 def mock_aggrid():

@@ -32,6 +32,7 @@ from ..models import Certificate, CertificateScan, Host, HostIP, CertificateBind
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from ..services.HistoryService import HistoryService
+from infra_mgmt.components.page_header import render_page_header
 
 
 def render_history_view(engine) -> None:
@@ -55,7 +56,7 @@ def render_history_view(engine) -> None:
     load_warning_suppression()
     load_css()
     
-    st.title("Certificate History")
+    render_page_header(title="Certificate History")
     
     # Create tabs for different history views
     cn_tab, scan_tab, host_tab = st.tabs(["Common Name History", "Scan History", "Host Certificate History"])
@@ -307,8 +308,12 @@ def render_scan_history(engine) -> None:
         with metric_col1:
             st.metric("Total Scans", len(df))
         with metric_col2:
-            success_rate = (df["Status"] == "Valid").mean() * 100
-            st.metric("Success Rate", f"{success_rate:.1f}%")
+            if len(df) == 0:
+                st.metric("Success Rate", "N/A")
+            else:
+                df["Status"] = df["Status"].astype(str).str.strip().str.lower()
+                success_rate = df["Status"].isin(["success", "valid"]).sum() / len(df) * 100
+                st.metric("Success Rate", f"{success_rate:.1f}%")
         with metric_col3:
             unique_hosts = len(df["Host"].unique())
             st.metric("Unique Hosts", unique_hosts)

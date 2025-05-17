@@ -37,6 +37,8 @@ from typing import Dict, Any, Optional
 import logging
 from ..services.DashboardService import DashboardService
 from ..services.ViewDataService import ViewDataService
+from infra_mgmt.components.page_header import render_page_header
+from infra_mgmt.components.metrics_row import render_metrics_row
 
 # Cache for dashboard data
 _dashboard_cache: Dict[str, Any] = {}
@@ -308,8 +310,7 @@ def render_dashboard(engine) -> None:
     initialize_notifications()
     clear_notifications()
     notification_placeholder = st.empty()
-    st.title("Dashboard")
-    st.divider()
+    render_page_header(title="Dashboard")
     view_data_service = ViewDataService()
     result = view_data_service.get_dashboard_view_data(engine)
     if not result['success']:
@@ -321,20 +322,18 @@ def render_dashboard(engine) -> None:
     cert_timeline = result['data']['cert_timeline']
     domain_timeline = result['data']['domain_timeline']
     # Display metrics in two rows
-    st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
-    col1, col2, col3, col4 = st.columns(4)
-    # First row - Totals
-    col1.metric("Total Certificates", metrics['total_certs'])
-    col2.metric("Total Root Domains", metrics['total_root_domains'])
-    col3.metric("Total Applications", metrics['total_apps'])
-    col4.metric("Total Hosts", metrics['total_hosts'])
-    # Second row - Expiring items
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Certificates Expiring (30d)", metrics['expiring_certs'])
-    col2.metric("Root Domains Expiring (30d)", metrics['expiring_domains'])
-    col3.metric("Total Subdomains", metrics['total_subdomains'])
-    st.markdown('</div>', unsafe_allow_html=True)
-    st.divider()
+    render_metrics_row([
+        {"label": "Total Certificates", "value": metrics['total_certs']},
+        {"label": "Total Root Domains", "value": metrics['total_root_domains']},
+        {"label": "Total Applications", "value": metrics['total_apps']},
+        {"label": "Total Hosts", "value": metrics['total_hosts']},
+    ], columns=4, divider=False)
+    render_metrics_row([
+        {"label": "Certificates Expiring (30d)", "value": metrics['expiring_certs']},
+        {"label": "Root Domains Expiring (30d)", "value": metrics['expiring_domains']},
+        {"label": "Total Subdomains", "value": metrics['total_subdomains']},
+        {"label": "", "value": ""},  # Empty for alignment
+    ], columns=4, divider=True)
     # Create certificate timeline
     certs_df = pd.DataFrame(cert_timeline) if cert_timeline else pd.DataFrame()
     if not certs_df.empty:

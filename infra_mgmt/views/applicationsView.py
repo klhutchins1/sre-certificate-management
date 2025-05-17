@@ -36,6 +36,8 @@ from infra_mgmt.notifications import initialize_notifications, show_notification
 import altair as alt
 from ..services.ApplicationService import ApplicationService
 from ..services.ViewDataService import ViewDataService
+from infra_mgmt.components.page_header import render_page_header
+from infra_mgmt.components.metrics_row import render_metrics_row
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -101,6 +103,7 @@ def handle_add_form():
 def toggle_add_form():
     """Toggle the add application form visibility."""
     st.session_state.show_add_app_form = not st.session_state.show_add_app_form
+    st.rerun()
 
 def handle_update_form():
     try:
@@ -148,25 +151,18 @@ def render_applications_view(engine) -> None:
         # Initialize UI components and styles
         load_warning_suppression()
         load_css()
-        st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
         initialize_notifications()
         clear_notifications()
         st.session_state.engine = engine
         if 'show_add_app_form' not in st.session_state:
             st.session_state.show_add_app_form = False
         show_notifications()
-        st.markdown('<div class="title-row">', unsafe_allow_html=True)
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.title("Applications")
-        with col2:
-            st.button(
-                "❌ Cancel" if st.session_state.show_add_app_form else "➕ Add Application",
-                type="secondary" if st.session_state.show_add_app_form else "primary",
-                on_click=toggle_add_form,
-                use_container_width=True
-            )
-        st.markdown('</div>', unsafe_allow_html=True)
+        render_page_header(
+            title="Applications",
+            button_label="❌ Cancel" if st.session_state.show_add_app_form else "➕ Add Application",
+            button_callback=toggle_add_form,
+            button_type="secondary" if st.session_state.show_add_app_form else "primary"
+        )
         if st.session_state.show_add_app_form:
             with st.form("add_application_form"):
                 st.subheader("Add New Application")
@@ -198,7 +194,7 @@ def render_applications_view(engine) -> None:
                 st.markdown('</div>', unsafe_allow_html=True)
                 if st.form_submit_button("Add Application", type="primary", on_click=handle_add_form):
                     pass
-        st.divider()
+
         st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
         col1, col2, col3 = st.columns(3)
         view_data_service = ViewDataService()
@@ -210,65 +206,31 @@ def render_applications_view(engine) -> None:
         df = result['data']['df']
         column_config = result['data']['column_config']
         view_type = result['data'].get('view_type', 'All Applications')
+        metrics = result['data'].get('metrics', {})
+        render_metrics_row([
+            {"label": "Total Applications", "value": metrics.get("total_apps", "")},
+            {"label": "Total Bindings", "value": metrics.get("total_bindings", "")},
+            {"label": "Active Types", "value": metrics.get("active_types", "")},
+        ], columns=3)
         if not df.empty:
-            gb = GridOptionsBuilder.from_dataframe(df)
+            # Only include columns with data
+            display_columns = [col for col in df.columns if not df[col].isnull().all() and col != '_id']
+            df_display = df[display_columns]
+            gb = GridOptionsBuilder.from_dataframe(df_display)
             gb.configure_default_column(
                 resizable=True,
                 sortable=True,
                 filter=True,
-                editable=False
+                editable=False,
+                minWidth=120,
+                flex=1
             )
             gb.configure_selection(
                 selection_mode='single',
                 use_checkbox=False
             )
-            gb.configure_column(
-                "Application",
-                minWidth=200,
-                flex=2
-            )
-            gb.configure_column(
-                "Type",
-                minWidth=150,
-                flex=1,
-                rowGroup=True if view_type == "Group by Type" else False,
-                hide=True if view_type == "Group by Type" else False
-            )
-            gb.configure_column(
-                "Description",
-                minWidth=200,
-                flex=2
-            )
-            gb.configure_column(
-                "Owner",
-                minWidth=150,
-                flex=1
-            )
-            gb.configure_column(
-                "Certificates",
-                type=["numericColumn"],
-                minWidth=120
-            )
-            gb.configure_column(
-                "Valid Certificates",
-                type=["numericColumn"],
-                minWidth=120
-            )
-            gb.configure_column(
-                "Expired Certificates",
-                type=["numericColumn"],
-                minWidth=120
-            )
-            gb.configure_column(
-                "Created",
-                type=["dateTimeColumn"],
-                minWidth=120,
-                valueFormatter="value ? new Date(value).toLocaleDateString() : ''"
-            )
-            gb.configure_column(
-                "_id",
-                hide=True
-            )
+            for col in display_columns:
+                gb.configure_column(col, minWidth=120, flex=1)
             gb.configure_grid_options(
                 domLayout='normal',
                 enableRangeSelection=True,
@@ -280,7 +242,7 @@ def render_applications_view(engine) -> None:
             )
             grid_options = gb.build()
             grid_response = AgGrid(
-                df,
+                df_display,
                 gridOptions=grid_options,
                 height=400,
                 data_return_mode=DataReturnMode.FILTERED_AND_SORTED,

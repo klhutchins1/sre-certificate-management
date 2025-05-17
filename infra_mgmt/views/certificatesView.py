@@ -41,6 +41,8 @@ import logging
 from ..services.CertificateService import CertificateService
 from ..services.ViewDataService import ViewDataService
 from ..components.deletion_dialog import render_danger_zone
+from infra_mgmt.components.page_header import render_page_header
+from infra_mgmt.components.metrics_row import render_metrics_row
 
 logger = logging.getLogger(__name__)
 
@@ -58,27 +60,18 @@ def render_certificate_list(engine):
     notification_placeholder = st.empty()
     
     # Add custom progress bar color
-    st.markdown("""
-        <style>
-        .stProgress > div > div > div > div {
-            background-color: #0066ff;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+
     
-    # Create title row with columns
-    st.markdown('<div class="title-row">', unsafe_allow_html=True)
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("Certificates")
-    with col2:
-        if st.button("➕ Add Certificate" if not st.session_state.get('show_manual_entry', False) else "❌ Cancel", 
-                    type="primary" if not st.session_state.get('show_manual_entry', False) else "secondary",
-                    use_container_width=True):
-            # Toggle the form visibility
-            st.session_state['show_manual_entry'] = not st.session_state.get('show_manual_entry', False)
-            st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Standardized page header
+    def toggle_manual_entry():
+        st.session_state['show_manual_entry'] = not st.session_state.get('show_manual_entry', False)
+        st.rerun()
+    render_page_header(
+        title="Certificates",
+        button_label="➕ Add Certificate" if not st.session_state.get('show_manual_entry', False) else "❌ Cancel",
+        button_callback=toggle_manual_entry,
+        button_type="primary" if not st.session_state.get('show_manual_entry', False) else "secondary"
+    )
     
     # Show any pending success messages
     if 'success_message' in st.session_state:
@@ -92,7 +85,7 @@ def render_certificate_list(engine):
             render_manual_entry_form(session)
         st.markdown('</div>', unsafe_allow_html=True)
     
-    st.divider()
+
     
     # Use ViewDataService for metrics and table data
     view_data_service = ViewDataService()
@@ -105,15 +98,11 @@ def render_certificate_list(engine):
     metrics = result['data']['metrics']
     df = result['data']['df']
     
-    # Create metrics columns with minimal spacing
-    st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Certificates", metrics["total_certs"])
-    col2.metric("Valid Certificates", metrics["valid_certs"])
-    col3.metric("Total Bindings", metrics["total_bindings"])
-    st.markdown('</div>', unsafe_allow_html=True)
-    st.divider()
-    
+    render_metrics_row([
+        {"label": "Total Certificates", "value": metrics["total_certs"]},
+        {"label": "Valid Certificates", "value": metrics["valid_certs"]},
+        {"label": "Total Bindings", "value": metrics["total_bindings"]},
+    ], columns=3)
     if df.empty:
         notify("No certificates found in database", "info")
         with notification_placeholder:

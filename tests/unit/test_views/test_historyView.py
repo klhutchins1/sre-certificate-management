@@ -13,6 +13,7 @@ from infra_mgmt.views.historyView import (
     create_timeline_chart,
     render_certificate_tracking
 )
+from unittest.mock import ANY
 
 # Add this helper class at the top of the file, after imports
 class SessionStateMock(dict):
@@ -43,13 +44,17 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit module"""
-    with patch('infra_mgmt.views.historyView.st') as mock_st:
-        # Mock columns to return list of MagicMocks
-        def mock_columns(*args):
-            num_cols = len(args[0]) if isinstance(args[0], (list, tuple)) else args[0]
+    with patch('infra_mgmt.views.historyView.st') as mock_st, \
+         patch('infra_mgmt.components.page_header.st') as mock_header_st:
+        def mock_columns(spec):
+            num_cols = len(spec) if isinstance(spec, (list, tuple)) else spec
             return [MagicMock() for _ in range(num_cols)]
         mock_st.columns.side_effect = mock_columns
-        
+        mock_header_st.columns.side_effect = mock_columns
+        mock_st.markdown = MagicMock()
+        mock_header_st.markdown = MagicMock()
+        mock_st.divider = MagicMock()
+        mock_header_st.divider = MagicMock()
         # Mock tabs to return list of MagicMocks with context manager methods
         def mock_tabs(*args):
             tabs = [MagicMock() for _ in range(len(args[0]))]
@@ -58,14 +63,12 @@ def mock_streamlit():
                 tab.__exit__ = MagicMock(return_value=None)
             return tabs
         mock_st.tabs.side_effect = mock_tabs
-        
         # Mock session state
         mock_st.session_state = MagicMock()
         mock_st.session_state.__setitem__ = MagicMock()
         mock_st.session_state.__getitem__ = MagicMock()
         mock_st.session_state.get = MagicMock()
-        
-        yield mock_st
+        yield (mock_st, mock_header_st)
 
 @pytest.fixture
 def sample_data(session):
@@ -110,6 +113,7 @@ def sample_data(session):
 
 def test_render_history_view(mock_streamlit, mock_aggrid, engine, sample_data):
     """Test rendering the main history view"""
+    mock_st, mock_header_st = mock_streamlit
     # Inserted data is already in the database via sample_data fixture
     # Query the host and IP to construct the expected key
     from infra_mgmt.models import Host
@@ -120,7 +124,7 @@ def test_render_history_view(mock_streamlit, mock_aggrid, engine, sample_data):
         host_ip = host.ip_addresses[0]
         host_key = f"{host.name} ({host_ip.ip_address})"
     # Set up selectbox side effects for all tabs
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.selectbox.side_effect = [
         "test.example.com",  # Common Name selection
         "Last 30 Days",      # Time period for scan history
         "All",               # Status filter for scan history
@@ -128,23 +132,31 @@ def test_render_history_view(mock_streamlit, mock_aggrid, engine, sample_data):
         host_key              # Host selection for certificate history
     ]
     render_history_view(engine)
-    mock_streamlit.title.assert_called_once_with("Certificate History")
-    mock_streamlit.tabs.assert_called_once_with(["Common Name History", "Scan History", "Host Certificate History"])
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Certificate History</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+    mock_st.tabs.assert_called_once_with(["Common Name History", "Scan History", "Host Certificate History"])
 
 def test_render_scan_history_empty(mock_streamlit, engine):
     """Test rendering scan history with no data"""
+    mock_st, mock_header_st = mock_streamlit
     render_scan_history(engine)
     
     # Verify empty state warning
-    mock_streamlit.warning.assert_called_once_with("No scan history found")
+    mock_st.warning.assert_called_once_with("No scan history found")
 
 def test_render_scan_history_with_data(mock_streamlit, mock_aggrid, engine, sample_data):
     """Test rendering scan history with sample data"""
+    mock_st, mock_header_st = mock_streamlit
     # Reset any previous mock calls
-    mock_streamlit.metric.reset_mock()
+    mock_st.metric.reset_mock()
     
     # Mock selectbox to return valid values for filters
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.selectbox.side_effect = [
         "Last 30 Days",  # Time period
         "All",          # Status filter
         "All"           # Host filter
@@ -153,28 +165,32 @@ def test_render_scan_history_with_data(mock_streamlit, mock_aggrid, engine, samp
     render_scan_history(engine)
     
     # Get all metric calls
-    metric_calls = mock_streamlit.metric.call_args_list
-    
+    metric_calls = mock_st.metric.call_args_list
     # Verify each metric was called with correct values
     assert any(call.args[0] == "Total Scans" for call in metric_calls), "Total Scans metric not found"
     assert any(call.args[0] == "Success Rate" for call in metric_calls), "Success Rate metric not found"
     assert any(call.args[0] == "Unique Hosts" for call in metric_calls), "Unique Hosts metric not found"
-    
+    # Assert that Success Rate is 100%
+    success_rate_call = next((call for call in metric_calls if call.args[0] == "Success Rate"), None)
+    assert success_rate_call is not None
+    assert "100.0%" in str(success_rate_call.args[1]) or "100%" in str(success_rate_call.args[1])
     # Verify dataframe was created
     mock_aggrid.assert_called()
 
 def test_render_host_certificate_history_empty(mock_streamlit, engine):
     """Test rendering host certificate history with no data"""
+    mock_st, mock_header_st = mock_streamlit
     # Ensure the database is empty and selectbox returns None
-    mock_streamlit.selectbox.return_value = None
+    mock_st.selectbox.return_value = None
     render_host_certificate_history(engine)
     # The view does not call st.warning or st.info in this case
-    mock_streamlit.selectbox.assert_called_once()
-    assert not mock_streamlit.warning.called
-    assert not mock_streamlit.info.called
+    mock_st.selectbox.assert_called_once()
+    assert not mock_st.warning.called
+    assert not mock_st.info.called
 
 def test_render_host_certificate_history_with_data(mock_streamlit, engine, sample_data):
     """Test rendering host certificate history with sample data"""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.models import Host
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=engine)
@@ -182,16 +198,16 @@ def test_render_host_certificate_history_with_data(mock_streamlit, engine, sampl
         host = session.query(Host).first()
         host_ip = host.ip_addresses[0]
         host_key = f"{host.name} ({host_ip.ip_address})"
-    mock_streamlit.selectbox.return_value = host_key
+    mock_st.selectbox.return_value = host_key
     render_host_certificate_history(engine)
-    mock_streamlit.selectbox.assert_called_with(
+    mock_st.selectbox.assert_called_with(
         "Select Host",
         options=[host_key],
         index=None,
         placeholder="Choose a host to view certificate history..."
     )
-    mock_streamlit.subheader.assert_any_call("Certificate Timeline")
-    mock_streamlit.subheader.assert_any_call("Detailed History")
+    mock_st.subheader.assert_any_call("Certificate Timeline")
+    mock_st.subheader.assert_any_call("Detailed History")
 
 @patch('plotly.figure_factory.create_gantt')
 def test_create_timeline_chart(mock_create_gantt):
@@ -224,8 +240,9 @@ def test_create_timeline_chart(mock_create_gantt):
 
 def test_scan_history_filters(mock_streamlit, mock_aggrid, engine, sample_data):
     """Test scan history filters"""
+    mock_st, mock_header_st = mock_streamlit
     # Mock filter selections
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.selectbox.side_effect = [
         "Last 30 Days",  # Time period
         "All",          # Status filter
         "All"           # Host filter
@@ -234,7 +251,7 @@ def test_scan_history_filters(mock_streamlit, mock_aggrid, engine, sample_data):
     render_scan_history(engine)
     
     # Verify filter options were created
-    mock_streamlit.selectbox.assert_any_call(
+    mock_st.selectbox.assert_any_call(
         "Time Period",
         ["Last 24 Hours", "Last 7 Days", "Last 30 Days", "All Time"],
         index=2
@@ -244,11 +261,12 @@ def test_scan_history_filters(mock_streamlit, mock_aggrid, engine, sample_data):
     mock_aggrid.assert_called()
     
     # Verify metrics were displayed
-    metric_calls = mock_streamlit.metric.call_args_list
+    metric_calls = mock_st.metric.call_args_list
     assert len(metric_calls) == 3, "Expected 3 metrics to be displayed"
 
 def test_host_certificate_history_timeline(mock_streamlit, engine, sample_data):
     """Test host certificate history timeline display"""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.models import Host
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=engine)
@@ -256,13 +274,13 @@ def test_host_certificate_history_timeline(mock_streamlit, engine, sample_data):
         host = session.query(Host).first()
         host_ip = host.ip_addresses[0]
         host_key = f"{host.name} ({host_ip.ip_address})"
-    mock_streamlit.selectbox.return_value = host_key
+    mock_st.selectbox.return_value = host_key
     with patch('infra_mgmt.views.historyView.create_timeline_chart') as mock_create_chart:
         mock_fig = MagicMock()
         mock_create_chart.return_value = mock_fig
         render_host_certificate_history(engine)
         mock_create_chart.assert_called_once()
-        mock_streamlit.plotly_chart.assert_called_with(mock_fig)
+        mock_st.plotly_chart.assert_called_with(mock_fig)
 
 @pytest.fixture(scope="function")
 def mock_aggrid():
@@ -331,6 +349,7 @@ def mock_aggrid():
 
 def test_render_host_certificate_history_error(mock_streamlit, engine, monkeypatch):
     """Test error handling in render_host_certificate_history (lines 96-97)"""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views import historyView
     monkeypatch.setattr(
         historyView.HistoryService,
@@ -338,10 +357,11 @@ def test_render_host_certificate_history_error(mock_streamlit, engine, monkeypat
         lambda engine: {'success': False, 'error': 'fail'}
     )
     historyView.render_host_certificate_history(engine)
-    mock_streamlit.warning.assert_called_once_with('fail')
+    mock_st.warning.assert_called_once_with('fail')
 
 def test_render_scan_history_empty_error(mock_streamlit, monkeypatch, engine):
     """Test empty scan history in render_scan_history (line 248)"""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views import historyView
     monkeypatch.setattr(
         historyView.HistoryService,
@@ -349,10 +369,11 @@ def test_render_scan_history_empty_error(mock_streamlit, monkeypatch, engine):
         lambda session: []
     )
     historyView.render_scan_history(engine)
-    mock_streamlit.warning.assert_called_once_with("No scan history found")
+    mock_st.warning.assert_called_once_with("No scan history found")
 
 def test_render_cn_history_empty_cn(mock_streamlit, monkeypatch, engine):
     """Test empty CN history in render_cn_history (get_cn_history returns empty, lines 652-653)"""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views import historyView
     monkeypatch.setattr(
         historyView.HistoryService,
@@ -360,10 +381,11 @@ def test_render_cn_history_empty_cn(mock_streamlit, monkeypatch, engine):
         lambda session: []
     )
     historyView.render_cn_history(engine)
-    mock_streamlit.warning.assert_called_once_with("No certificate data found")
+    mock_st.warning.assert_called_once_with("No certificate data found")
 
 def test_render_cn_history_no_certs_for_cn(mock_streamlit, monkeypatch, engine):
     """Test no certificates for selected CN in render_cn_history (lines 852-880)"""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views import historyView
     # Return a CN, but no certs for it
     monkeypatch.setattr(
@@ -377,21 +399,23 @@ def test_render_cn_history_no_certs_for_cn(mock_streamlit, monkeypatch, engine):
         lambda session, cn: []
     )
     # Patch selectbox to select the CN
-    mock_streamlit.selectbox.return_value = "test.example.com"
+    mock_st.selectbox.return_value = "test.example.com"
     historyView.render_cn_history(engine)
-    mock_streamlit.info.assert_called_once_with("No certificates found with this common name")
+    mock_st.info.assert_called_once_with("No certificates found with this common name")
 
 def test_render_certificate_tracking_no_entries(mock_streamlit):
     """Test info message when no tracking entries exist."""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views.historyView import render_certificate_tracking
     cert = MagicMock()
     cert.tracking_entries = []
     session = MagicMock()
     render_certificate_tracking(cert, session)
-    mock_streamlit.info.assert_called_once_with("No change entries found for this certificate")
+    mock_st.info.assert_called_once_with("No change entries found for this certificate")
 
 def test_render_certificate_tracking_with_entries(mock_streamlit):
     """Test DataFrame/grid display when tracking entries exist."""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views.historyView import render_certificate_tracking
     cert = MagicMock()
     entry = MagicMock()
@@ -406,10 +430,11 @@ def test_render_certificate_tracking_with_entries(mock_streamlit):
     session = MagicMock()
     render_certificate_tracking(cert, session)
     # Should call st.dataframe or AgGrid
-    assert mock_streamlit.info.call_count == 0
+    assert mock_st.info.call_count == 0
 
 def test_render_certificate_tracking_add_button(mock_streamlit, monkeypatch):
     """Test Add Change Entry button shows form."""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views.historyView import render_certificate_tracking
     from datetime import datetime
     cert = MagicMock()
@@ -417,12 +442,12 @@ def test_render_certificate_tracking_add_button(mock_streamlit, monkeypatch):
     cert.tracking_entries = []
     session = MagicMock()
     # Simulate button click
-    mock_streamlit.button.return_value = True
+    mock_st.button.return_value = True
     # Patch form fields to return real values
-    mock_streamlit.text_input.return_value = "CHG123"
-    mock_streamlit.date_input.return_value = datetime.now().date()
-    mock_streamlit.selectbox.return_value = "Completed"
-    mock_streamlit.text_area.return_value = "Test"
+    mock_st.text_input.return_value = "CHG123"
+    mock_st.date_input.return_value = datetime.now().date()
+    mock_st.selectbox.return_value = "Completed"
+    mock_st.text_area.return_value = "Test"
     # Patch add_certificate_tracking_entry to return success
     monkeypatch.setattr(
         "infra_mgmt.views.historyView.HistoryService.add_certificate_tracking_entry",
@@ -430,18 +455,18 @@ def test_render_certificate_tracking_add_button(mock_streamlit, monkeypatch):
     )
     # Use SessionStateMock for session_state
     state = SessionStateMock()
-    mock_streamlit.session_state = state
+    mock_st.session_state = state
     # Patch st.form to check if it is called
     form_ctx = MagicMock()
     form_ctx.__enter__.return_value = form_ctx
     form_ctx.__exit__.return_value = None
-    mock_streamlit.form.return_value = form_ctx
-
+    mock_st.form.return_value = form_ctx
     render_certificate_tracking(cert, session)
-    mock_streamlit.form.assert_called_once_with("tracking_entry_form")
+    mock_st.form.assert_called_once_with("tracking_entry_form")
 
 def test_render_certificate_tracking_form_success(mock_streamlit, monkeypatch):
     """Test form submission success path."""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views.historyView import render_certificate_tracking
     cert = MagicMock()
     cert.id = 1
@@ -449,17 +474,17 @@ def test_render_certificate_tracking_form_success(mock_streamlit, monkeypatch):
     session = MagicMock()
     # Use SessionStateMock for session_state
     state = SessionStateMock({'show_tracking_entry': True, 'editing_cert_id': 1})
-    mock_streamlit.session_state = state
+    mock_st.session_state = state
     # Patch form context manager
     form_ctx = MagicMock()
     form_ctx.__enter__.return_value = form_ctx
     form_ctx.__exit__.return_value = None
-    mock_streamlit.form.return_value = form_ctx
+    mock_st.form.return_value = form_ctx
     # Patch form fields
-    mock_streamlit.text_input.return_value = "CHG123"
-    mock_streamlit.date_input.return_value = "2024-01-01"
-    mock_streamlit.selectbox.return_value = "Completed"
-    mock_streamlit.text_area.return_value = "Test"
+    mock_st.text_input.return_value = "CHG123"
+    mock_st.date_input.return_value = "2024-01-01"
+    mock_st.selectbox.return_value = "Completed"
+    mock_st.text_area.return_value = "Test"
     # Simulate form submit
     form_ctx.form_submit_button.return_value = True
     # Patch add_certificate_tracking_entry
@@ -468,30 +493,31 @@ def test_render_certificate_tracking_form_success(mock_streamlit, monkeypatch):
         lambda session, cert_id, change_number, planned_date, status, notes: {'success': True}
     )
     render_certificate_tracking(cert, session)
-    mock_streamlit.success.assert_called_once_with("Change entry added!")
+    mock_st.success.assert_called_once_with("Change entry added!")
     assert state['show_tracking_entry'] is False
-    mock_streamlit.rerun.assert_called_once()
+    mock_st.rerun.assert_called_once()
 
 def test_render_certificate_tracking_form_failure(mock_streamlit, monkeypatch):
     """Test form submission failure path."""
+    mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views.historyView import render_certificate_tracking
     cert = MagicMock()
     cert.id = 1
     cert.tracking_entries = []
     session = MagicMock()
     # Simulate form shown
-    mock_streamlit.session_state.get.side_effect = lambda k, d=None: True if k == 'show_tracking_entry' or k == 'editing_cert_id' else None
-    mock_streamlit.session_state.__getitem__.side_effect = lambda k: 1 if k == 'editing_cert_id' else None
+    mock_st.session_state.get.side_effect = lambda k, d=None: True if k == 'show_tracking_entry' or k == 'editing_cert_id' else None
+    mock_st.session_state.__getitem__.side_effect = lambda k: 1 if k == 'editing_cert_id' else None
     # Patch form context manager
     form_ctx = MagicMock()
     form_ctx.__enter__.return_value = form_ctx
     form_ctx.__exit__.return_value = None
-    mock_streamlit.form.return_value = form_ctx
+    mock_st.form.return_value = form_ctx
     # Patch form fields
-    mock_streamlit.text_input.return_value = "CHG123"
-    mock_streamlit.date_input.return_value = "2024-01-01"
-    mock_streamlit.selectbox.return_value = "Completed"
-    mock_streamlit.text_area.return_value = "Test"
+    mock_st.text_input.return_value = "CHG123"
+    mock_st.date_input.return_value = "2024-01-01"
+    mock_st.selectbox.return_value = "Completed"
+    mock_st.text_area.return_value = "Test"
     # Simulate form submit
     form_ctx.form_submit_button.return_value = True
     # Patch add_certificate_tracking_entry
@@ -500,4 +526,4 @@ def test_render_certificate_tracking_form_failure(mock_streamlit, monkeypatch):
         lambda session, cert_id, change_number, planned_date, status, notes: {'success': False, 'error': 'fail'}
     )
     render_certificate_tracking(cert, session)
-    mock_streamlit.error.assert_called_once_with("Error saving change entry: fail") 
+    mock_st.error.assert_called_once_with("Error saving change entry: fail") 

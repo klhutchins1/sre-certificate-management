@@ -38,6 +38,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import UnsupportedAlgorithm
 
 from ..constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 
@@ -487,6 +488,8 @@ class CertificateScanner:
         self._last_cert_chain = False
         from ..settings import settings
         socket_timeout = settings.get('scanning.timeouts.socket', 10)
+        # Perform chain validation before retrieving the certificate
+        self._validate_cert_chain(address, port, socket_timeout)
         cert_binary = self._get_certificate(address, port, socket_timeout=socket_timeout)
         if cert_binary:
             cert_info = self._process_certificate(cert_binary, address, port)
@@ -581,6 +584,11 @@ class CertificateScanner:
                     verify_sock.close()
                 except:
                     pass
+        except socket.timeout:
+            self._last_cert_chain = False
+            self.logger.warning(f"Certificate chain validation timed out for {address}:{port}")
+            # Optionally, set a user-friendly error attribute if needed
+            self._last_error = f"Certificate chain validation timed out for {address}:{port}"
         except ssl.SSLError as verify_error:
             self._last_cert_chain = False
             self.logger.warning(f"SSL error during certificate chain validation for {address}:{port}: {str(verify_error)}")
@@ -825,7 +833,7 @@ class CertificateScanner:
                 self.logger.error(f"Error extracting certificate information for {address}:{port}: {str(e)}")
                 return None
 
-        except x509.UnsupportedAlgorithm as e:
+        except UnsupportedAlgorithm as e:
             self.logger.error(f"Unsupported algorithm in certificate for {address}:{port}: {str(e)}")
             return None
         except Exception as e:

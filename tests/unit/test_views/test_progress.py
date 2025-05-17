@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from infra_mgmt.views.scannerView import StreamlitProgressContainer
+from unittest.mock import ANY
 
 @pytest.fixture
 def mock_progress_bar():
@@ -58,10 +59,12 @@ def test_status_text_none(progress_container, mock_status_text):
 
 def test_progress_container_error_handling(progress_container, mock_progress_bar, mock_status_text):
     """Test error handling in progress container."""
-    # Test progress bar error
-    mock_progress_bar.progress.side_effect = Exception("Progress bar error")
-    progress_container.progress(0.5)  # Should not raise exception
+    # Suppress error logging
+    with patch('logging.Logger.error'), patch('logging.Logger.exception'):
+        # Test progress bar error
+        mock_progress_bar.progress.side_effect = Exception("Progress bar error")
+        progress_container.progress(0.5)  # Should not raise exception
 
-    # Test status text error
-    mock_status_text.text.side_effect = Exception("Status text error")
-    progress_container.text("test")  # Should not raise exception 
+        # Test status text error
+        mock_status_text.text.side_effect = Exception("Status text error")
+        progress_container.text("test")  # Should not raise exception 

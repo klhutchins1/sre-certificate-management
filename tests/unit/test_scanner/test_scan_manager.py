@@ -104,7 +104,10 @@ def test_scan_target_error(scan_manager, mock_session, mock_status_container):
     """Test error handling during target scanning."""
     # Configure mock to raise an error
     scan_manager.infra_mgmt.scan_certificate.side_effect = Exception("Scan failed")
-    
+    # Patch the logger attribute directly to suppress noisy output
+    scan_manager.logger.exception = lambda *a, **k: None
+    scan_manager.logger.error = lambda *a, **k: None
+    scan_manager.logger.warning = lambda *a, **k: None
     # Test the scan (should raise Exception)
     with pytest.raises(Exception, match="Scan failed"):
         scan_manager.scan_target(

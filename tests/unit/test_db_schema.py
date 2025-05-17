@@ -120,203 +120,193 @@ def test_update_database_schema_no_changes():
 
 def test_update_database_schema_error_handling():
     """Test error handling in update_database_schema"""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "schema_error.db")
-    
-    try:
-        # Create a test database
-        engine = init_database(db_path)
-        
-        # Mock inspect to raise an exception
-        with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
-            mock_inspect.side_effect = Exception("Inspect error")
-            
-            # Schema update should handle the error gracefully
+    with patch('infra_mgmt.db.schema.logger') as mock_logger:
+        mock_logger.error.side_effect = lambda *a, **k: None
+        mock_logger.info.side_effect = lambda *a, **k: None
+        mock_logger.warning.side_effect = lambda *a, **k: None
+        temp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(temp_dir, "schema_error.db")
+        try:
+            # Create a test database
+            engine = init_database(db_path)
+            # Mock inspect to raise an exception
+            with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
+                mock_inspect.side_effect = Exception("Inspect error")
+                # Schema update should handle the error gracefully
+                result = update_database_schema(engine)
+                assert result is False
+            # Test with invalid column data
+            with engine.connect() as conn:
+                # Create a table with invalid column data
+                conn.execute(text("""
+                    CREATE TABLE test_table (
+                        id INTEGER PRIMARY KEY,
+                        data TEXT
+                    )
+                """))
+                conn.execute(text("INSERT INTO test_table (id, data) VALUES (1, 'invalid data')"))
+                conn.commit()
+            # Schema update should handle invalid data gracefully
             result = update_database_schema(engine)
-            assert result is False
-        
-        # Test with invalid column data
-        with engine.connect() as conn:
-            # Create a table with invalid column data
-            conn.execute(text("""
-                CREATE TABLE test_table (
-                    id INTEGER PRIMARY KEY,
-                    data TEXT
-                )
-            """))
-            conn.execute(text("INSERT INTO test_table (id, data) VALUES (1, 'invalid data')"))
-            conn.commit()
-        
-        # Schema update should handle invalid data gracefully
-        result = update_database_schema(engine)
-        assert result is True
-    
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
+            assert result is True
+        finally:
+            if 'engine' in locals():
+                engine.dispose()
+            cleanup_temp_dir(temp_dir)
 
 def test_update_database_schema_column_errors():
     """Test error handling in update_database_schema when adding columns."""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "schema_error.db")
-    
-    try:
-        # Create initial database
-        engine = init_database(db_path)
-        
-        # Mock inspect to simulate column errors
-        with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
-            mock_inspect.return_value.get_table_names.return_value = ['test_table']
-            mock_inspect.return_value.get_columns.side_effect = Exception("Column error")
-            
-            # Schema update should handle the error gracefully
-            result = update_database_schema(engine)
-            assert result is False
-        
-        # Test with invalid column data type
-        with engine.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE test_table (
-                    id INTEGER PRIMARY KEY,
-                    data TEXT
-                )
-            """))
-            conn.execute(text("INSERT INTO test_table (id, data) VALUES (1, 'test')"))
-            conn.commit()
-        
-        # Mock inspect to simulate invalid column
-        with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
-            mock_inspect.return_value.get_table_names.return_value = ['test_table']
-            mock_inspect.return_value.get_columns.return_value = [{'name': 'invalid_column'}]
-            
-            # Schema update should handle invalid column gracefully
-            result = update_database_schema(engine)
-            assert result is False
-    
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
+    with patch('infra_mgmt.db.schema.logger') as mock_logger:
+        mock_logger.error.side_effect = lambda *a, **k: None
+        mock_logger.info.side_effect = lambda *a, **k: None
+        mock_logger.warning.side_effect = lambda *a, **k: None
+        temp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(temp_dir, "schema_error.db")
+        try:
+            # Create initial database
+            engine = init_database(db_path)
+            # Mock inspect to simulate column errors
+            with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
+                mock_inspect.return_value.get_table_names.return_value = ['test_table']
+                mock_inspect.return_value.get_columns.side_effect = Exception("Column error")
+                # Schema update should handle the error gracefully
+                result = update_database_schema(engine)
+                assert result is False
+            # Test with invalid column data type
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    CREATE TABLE test_table (
+                        id INTEGER PRIMARY KEY,
+                        data TEXT
+                    )
+                """))
+                conn.execute(text("INSERT INTO test_table (id, data) VALUES (1, 'test')"))
+                conn.commit()
+            # Mock inspect to simulate invalid column
+            with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
+                mock_inspect.return_value.get_table_names.return_value = ['test_table']
+                mock_inspect.return_value.get_columns.return_value = [{'name': 'invalid_column'}]
+                # Schema update should handle invalid column gracefully
+                result = update_database_schema(engine)
+                assert result is False
+        finally:
+            if 'engine' in locals():
+                engine.dispose()
+            cleanup_temp_dir(temp_dir)
 
 def test_update_database_schema_invalid_column():
     """Test update_database_schema with invalid column handling."""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test.db")
-    
-    try:
-        # Create initial database
-        engine = init_database(db_path)
-        
-        # Create a table with an invalid column
-        with engine.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE test_table (
-                    id INTEGER PRIMARY KEY,
-                    valid_column TEXT,
-                    invalid_column TEXT
-                )
-            """))
-            conn.commit()
-        
-        # Mock inspect to return our test table with invalid column
-        with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
-            mock_inspect.return_value.get_table_names.return_value = ['test_table']
-            mock_inspect.return_value.get_columns.return_value = [
-                {'name': 'id', 'type': 'INTEGER'},
-                {'name': 'valid_column', 'type': 'TEXT'},
-                {'name': 'invalid_column', 'type': 'TEXT'}
-            ]
-            
-            # Schema update should handle invalid column gracefully
-            result = update_database_schema(engine)
-            assert result is False
-        
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
+    with patch('infra_mgmt.db.schema.logger') as mock_logger:
+        mock_logger.error.side_effect = lambda *a, **k: None
+        mock_logger.info.side_effect = lambda *a, **k: None
+        mock_logger.warning.side_effect = lambda *a, **k: None
+        temp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(temp_dir, "test.db")
+        try:
+            # Create initial database
+            engine = init_database(db_path)
+            # Create a table with an invalid column
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    CREATE TABLE test_table (
+                        id INTEGER PRIMARY KEY,
+                        valid_column TEXT,
+                        invalid_column TEXT
+                    )
+                """))
+                conn.commit()
+            # Mock inspect to return our test table with invalid column
+            with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
+                mock_inspect.return_value.get_table_names.return_value = ['test_table']
+                mock_inspect.return_value.get_columns.return_value = [
+                    {'name': 'id', 'type': 'INTEGER'},
+                    {'name': 'valid_column', 'type': 'TEXT'},
+                    {'name': 'invalid_column', 'type': 'TEXT'}
+                ]
+                # Schema update should handle invalid column gracefully
+                result = update_database_schema(engine)
+                assert result is False
+        finally:
+            if 'engine' in locals():
+                engine.dispose()
+            cleanup_temp_dir(temp_dir)
 
 def test_migrate_database_error_handling():
     """Test error handling in migrate_database"""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "migrate_error.db")
-    
-    try:
-        # Create a test database
-        engine = init_database(db_path)
-        
-        # Mock inspect to raise an exception
-        with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
-            mock_inspect.side_effect = Exception("Inspect error")
-            
-            # Migration should handle the error gracefully
-            with pytest.raises(Exception) as exc_info:
-                migrate_database(engine)
-            assert "Inspect error" in str(exc_info.value)  # Updated to match actual error
-    
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
+    with patch('infra_mgmt.db.schema.logger') as mock_logger:
+        mock_logger.error.side_effect = lambda *a, **k: None
+        mock_logger.info.side_effect = lambda *a, **k: None
+        mock_logger.warning.side_effect = lambda *a, **k: None
+        temp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(temp_dir, "migrate_error.db")
+        try:
+            # Create a test database
+            engine = init_database(db_path)
+            # Mock inspect to raise an exception
+            with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
+                mock_inspect.side_effect = Exception("Inspect error")
+                # Migration should handle the error gracefully
+                with pytest.raises(Exception) as exc_info:
+                    migrate_database(engine)
+                assert "Inspect error" in str(exc_info.value)  # Updated to match actual error
+        finally:
+            if 'engine' in locals():
+                engine.dispose()
+            cleanup_temp_dir(temp_dir)
 
 def test_migrate_database_with_invalid_json():
     """Test database migration with invalid JSON data in certificate fields."""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "migration_test.db")
-    
-    try:
-        # Create initial database with invalid JSON
-        engine = create_engine(f"sqlite:///{db_path}")
-        Base.metadata.create_all(engine)
-        
-        # Insert test data with invalid JSON
-        with engine.connect() as conn:
-            conn.execute(text("""
-                INSERT INTO certificates (
-                    serial_number, thumbprint, common_name, valid_from, valid_until,
-                    issuer, subject, san, chain_valid, sans_scanned
-                ) VALUES (
-                    'test123', 'thumb123', 'test.com', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-                    'invalid json', 'invalid json', 'invalid json', 0, 0
-                )
-            """))
-            conn.commit()
-        
-        # Attempt migration
-        migrate_database(engine)
-        
-        # Verify data was handled gracefully
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT issuer, subject, san FROM certificates")).fetchone()
-            assert result is not None
-            assert isinstance(result.issuer, str)
-            assert isinstance(result.subject, str)
-            assert isinstance(result.san, str)
-            
-            # Verify JSON data was properly formatted
-            try:
-                issuer_data = json.loads(result.issuer)
-                assert isinstance(issuer_data, dict)
-            except json.JSONDecodeError:
-                pytest.fail("issuer is not valid JSON")
-                
-            try:
-                subject_data = json.loads(result.subject)
-                assert isinstance(subject_data, dict)
-            except json.JSONDecodeError:
-                pytest.fail("subject is not valid JSON")
-                
-            try:
-                san_data = json.loads(result.san)
-                assert isinstance(san_data, list)
-            except json.JSONDecodeError:
-                pytest.fail("san is not valid JSON")
-    
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
+    with patch('infra_mgmt.db.schema.logger') as mock_logger:
+        mock_logger.error.side_effect = lambda *a, **k: None
+        mock_logger.info.side_effect = lambda *a, **k: None
+        mock_logger.warning.side_effect = lambda *a, **k: None
+        temp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(temp_dir, "migration_test.db")
+        try:
+            # Create initial database with invalid JSON
+            engine = create_engine(f"sqlite:///{db_path}")
+            Base.metadata.create_all(engine)
+            # Insert test data with invalid JSON
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    INSERT INTO certificates (
+                        serial_number, thumbprint, common_name, valid_from, valid_until,
+                        issuer, subject, san, chain_valid, sans_scanned
+                    ) VALUES (
+                        'test123', 'thumb123', 'test.com', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                        'invalid json', 'invalid json', 'invalid json', 0, 0
+                    )
+                """))
+                conn.commit()
+            # Attempt migration
+            migrate_database(engine)
+            # Verify data was handled gracefully
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT issuer, subject, san FROM certificates")).fetchone()
+                assert result is not None
+                assert isinstance(result.issuer, str)
+                assert isinstance(result.subject, str)
+                assert isinstance(result.san, str)
+                # Verify JSON data was properly formatted
+                try:
+                    issuer_data = json.loads(result.issuer)
+                    assert isinstance(issuer_data, dict)
+                except json.JSONDecodeError:
+                    pytest.fail("issuer is not valid JSON")
+                try:
+                    subject_data = json.loads(result.subject)
+                    assert isinstance(subject_data, dict)
+                except json.JSONDecodeError:
+                    pytest.fail("subject is not valid JSON")
+                try:
+                    san_data = json.loads(result.san)
+                    assert isinstance(san_data, list)
+                except json.JSONDecodeError:
+                    pytest.fail("san is not valid JSON")
+        finally:
+            if 'engine' in locals():
+                engine.dispose()
+            cleanup_temp_dir(temp_dir)
 
 def test_migrate_database_complex_scenarios():
     """Test database migration with complex scenarios."""
@@ -502,52 +492,48 @@ def test_database_migration_edge_cases():
 
 def test_schema_management_error_handling():
     """Test error handling in schema management."""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "schema_error.db")
-    
-    try:
-        # Create initial database
-        engine = init_database(db_path)
-        
-        # Test with invalid table structure
-        with engine.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE test_table (
-                    id INTEGER PRIMARY KEY,
-                    invalid_column TEXT
-                )
-            """))
-            conn.commit()
-        
-        # Mock inspect to simulate table validation error
-        with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
-            mock_inspect.return_value.get_table_names.return_value = ['test_table']
-            mock_inspect.return_value.get_columns.return_value = [
-                {'name': 'id', 'type': 'INTEGER'},
-                {'name': 'invalid_column', 'type': 'TEXT'}
-            ]
-            
-            # Schema update should handle invalid column gracefully
-            result = update_database_schema(engine)
-            assert result is False
-        
-        # Test with column addition error
-        with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
-            mock_inspect.return_value.get_table_names.return_value = ['test_table']
-            mock_inspect.return_value.get_columns.return_value = [{'name': 'id', 'type': 'INTEGER'}]
-            
-            # Mock connection to simulate column addition error
-            with patch('sqlalchemy.engine.base.Connection.execute') as mock_execute:
-                mock_execute.side_effect = Exception("Column addition error")
-                
-                # Schema update should handle column addition error gracefully
+    with patch('infra_mgmt.db.schema.logger') as mock_logger:
+        mock_logger.error.side_effect = lambda *a, **k: None
+        mock_logger.info.side_effect = lambda *a, **k: None
+        mock_logger.warning.side_effect = lambda *a, **k: None
+        temp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(temp_dir, "schema_error.db")
+        try:
+            # Create initial database
+            engine = init_database(db_path)
+            # Test with invalid table structure
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    CREATE TABLE test_table (
+                        id INTEGER PRIMARY KEY,
+                        invalid_column TEXT
+                    )
+                """))
+                conn.commit()
+            # Mock inspect to simulate table validation error
+            with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
+                mock_inspect.return_value.get_table_names.return_value = ['test_table']
+                mock_inspect.return_value.get_columns.return_value = [
+                    {'name': 'id', 'type': 'INTEGER'},
+                    {'name': 'invalid_column', 'type': 'TEXT'}
+                ]
+                # Schema update should handle invalid column gracefully
                 result = update_database_schema(engine)
                 assert result is False
-    
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
+            # Test with column addition error
+            with patch('infra_mgmt.db.schema.inspect') as mock_inspect:
+                mock_inspect.return_value.get_table_names.return_value = ['test_table']
+                mock_inspect.return_value.get_columns.return_value = [{'name': 'id', 'type': 'INTEGER'}]
+                # Mock connection to simulate column addition error
+                with patch('sqlalchemy.engine.base.Connection.execute') as mock_execute:
+                    mock_execute.side_effect = Exception("Column addition error")
+                    # Schema update should handle column addition error gracefully
+                    result = update_database_schema(engine)
+                    assert result is False
+        finally:
+            if 'engine' in locals():
+                engine.dispose()
+            cleanup_temp_dir(temp_dir)
 
 def test_database_schema_validation():
     """Test database schema validation."""

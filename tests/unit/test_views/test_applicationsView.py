@@ -9,6 +9,7 @@ from infra_mgmt.models import Base, Application, CertificateBinding, Certificate
 from infra_mgmt.notifications import notify
 from infra_mgmt.views.applicationsView import render_applications_view, render_application_details, APP_TYPES, app_types
 from infra_mgmt.constants import HOST_TYPE_SERVER, ENV_PRODUCTION
+from unittest.mock import ANY
 
 @pytest.fixture(scope="function")
 def engine():
@@ -29,7 +30,9 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit functionality"""
-    with patch('infra_mgmt.views.applicationsView.st') as mock_st:
+    with patch('infra_mgmt.views.applicationsView.st') as mock_st, \
+         patch('infra_mgmt.components.page_header.st') as mock_header_st, \
+         patch('infra_mgmt.components.metrics_row.st') as mock_metrics_st:
         columns_calls = []
         def mock_columns(spec):
             num_cols = len(spec) if isinstance(spec, (list, tuple)) else spec
@@ -43,6 +46,8 @@ def mock_streamlit():
             columns_calls.append(cols)
             return cols
         mock_st.columns.side_effect = mock_columns
+        mock_header_st.columns.side_effect = mock_columns
+        mock_metrics_st.columns.side_effect = mock_columns
         mock_st._columns_calls = columns_calls
         
         # Mock tabs
@@ -91,7 +96,7 @@ def mock_streamlit():
         
         mock_st.session_state['toggle_add_form'] = toggle_add_form
         
-        yield mock_st
+        yield (mock_st, mock_header_st, mock_metrics_st)
 
 @pytest.fixture
 def mock_aggrid():
@@ -195,23 +200,39 @@ def sample_host_ip(sample_host):
     )
 
 def test_render_applications_view_empty(mock_streamlit, engine):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     with patch('infra_mgmt.views.applicationsView.notify') as mock_notify:
         render_applications_view(engine)
-        mock_streamlit.title.assert_called_with("Applications")
+        # Check that the header was rendered
+        found = False
+        for call in mock_header_st.markdown.call_args_list:
+            if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Applications</h1>" and call.kwargs.get('unsafe_allow_html'):
+                found = True
+                break
+        assert found, "Expected header markdown call not found"
+        # Check that metrics were rendered (3 metrics)
+        assert mock_metrics_st.metric.call_count == 3
+        mock_metrics_st.metric.assert_any_call(label=ANY, value=ANY, delta=None, help=None)
         # The view does not call notify for empty applications, so expect no calls
         assert mock_notify.call_count == 0
 
 def test_render_applications_view_with_data(mock_streamlit, mock_aggrid, engine, sample_application, session):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     session.add(sample_application)
     session.commit()
-    mock_streamlit.radio.return_value = "All Applications"
-    mock_streamlit.session_state['session'] = session
+    mock_st.radio.return_value = "All Applications"
+    mock_st.session_state['session'] = session
     render_applications_view(engine)
-    mock_streamlit.title.assert_called_with("Applications")
-    # The view does not call .metric on columns, so do not assert on .metric
-    # Instead, check that columns were created for metrics
-    metric_cols = next(cols for cols in mock_streamlit._columns_calls if len(cols) == 3)
-    assert len(metric_cols) == 3
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Applications</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+    # Check that metrics were rendered (3 metrics)
+    assert mock_metrics_st.metric.call_count == 3
+    mock_metrics_st.metric.assert_any_call(label=ANY, value=ANY, delta=None, help=None)
 
 def handle_add_form():
     """Handle application form submission"""
@@ -252,35 +273,37 @@ def handle_add_form():
         notify(f"Error adding application: {str(e)}", "error")
 
 def test_add_application_form(mock_streamlit, engine):
-    mock_streamlit.session_state['show_add_app_form'] = True
-    mock_streamlit.session_state['engine'] = engine
-    mock_streamlit.text_input.side_effect = [
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
+    mock_st.session_state['show_add_app_form'] = True
+    mock_st.session_state['engine'] = engine
+    mock_st.text_input.side_effect = [
         "New Test App",
         "Test Description",
         "Test Team"
     ]
-    mock_streamlit.selectbox.return_value = APP_TYPES[0]
+    mock_st.selectbox.return_value = APP_TYPES[0]
     form_mock = MagicMock()
     form_mock.form_submit_button.return_value = True
-    mock_streamlit.form.return_value = form_mock
+    mock_st.form.return_value = form_mock
     with patch('infra_mgmt.views.applicationsView.handle_add_form') as mock_handler:
         render_applications_view(engine)
-        mock_streamlit.form.assert_called_with("add_application_form")
+        mock_st.form.assert_called_with("add_application_form")
         # Do not assert on form_submit_button.called, as the Streamlit form context is not truly executed in the test
         # This test only verifies that the form is rendered
 
 def test_add_application_form_validation(mock_streamlit, engine):
-    mock_streamlit.session_state['show_add_app_form'] = True
-    mock_streamlit.session_state['engine'] = engine
-    mock_streamlit.text_input.side_effect = [
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
+    mock_st.session_state['show_add_app_form'] = True
+    mock_st.session_state['engine'] = engine
+    mock_st.text_input.side_effect = [
         "",
         "Test Description",
         "Test Team"
     ]
-    mock_streamlit.selectbox.return_value = APP_TYPES[0]
+    mock_st.selectbox.return_value = APP_TYPES[0]
     form_mock = MagicMock()
     form_mock.form_submit_button.return_value = True
-    mock_streamlit.form.return_value = form_mock
+    mock_st.form.return_value = form_mock
     with patch('infra_mgmt.views.applicationsView.notify') as mock_notify:
         render_applications_view(engine)
         # The validation is handled in handle_add_form, which is not called in this test
@@ -288,6 +311,7 @@ def test_add_application_form_validation(mock_streamlit, engine):
         assert mock_notify.call_count == 0
 
 def test_view_type_switching(mock_streamlit, mock_aggrid, engine, sample_application, session):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     # Patch the mock_aggrid builder to set rowGroup=True for 'Type' column if view_type is 'Group by Type'
     class MockGridOptionsBuilder:
         def __init__(self):
@@ -300,7 +324,7 @@ def test_view_type_switching(mock_streamlit, mock_aggrid, engine, sample_applica
             col_def = {'field': field}
             col_def.update(kwargs)
             # Simulate the real logic: set rowGroup True for 'Type' column if view_type is 'Group by Type'
-            if field == 'Type' and mock_streamlit.radio.return_value == 'Group by Type':
+            if field == 'Type' and mock_st.radio.return_value == 'Group by Type':
                 col_def['rowGroup'] = True
             self.grid_options['columnDefs'].append(col_def)
             return self
@@ -313,20 +337,21 @@ def test_view_type_switching(mock_streamlit, mock_aggrid, engine, sample_applica
     mock_aggrid.from_dataframe.return_value = MockGridOptionsBuilder()
     session.add(sample_application)
     session.commit()
-    mock_streamlit.radio.return_value = "Group by Type"
-    mock_streamlit.session_state['session'] = session
+    mock_st.radio.return_value = "Group by Type"
+    mock_st.session_state['session'] = session
     render_applications_view(engine)
     builder = mock_aggrid.from_dataframe.return_value
     # Select the last 'Type' column for assertion, since the builder persists columns across renders
     type_columns = [col for col in builder.grid_options['columnDefs'] if col['field'] == 'Type']
     assert type_columns[-1].get('rowGroup', False) is True
-    mock_streamlit.radio.return_value = "All Applications"
+    mock_st.radio.return_value = "All Applications"
     render_applications_view(engine)
     builder = mock_aggrid.from_dataframe.return_value
     type_columns = [col for col in builder.grid_options['columnDefs'] if col['field'] == 'Type']
     assert not type_columns[-1].get('rowGroup', False)
 
 def test_application_metrics(mock_streamlit, mock_aggrid, engine, session):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     app = Application(
         name="Test App",
         app_type=APP_TYPES[0],
@@ -361,28 +386,30 @@ def test_application_metrics(mock_streamlit, mock_aggrid, engine, session):
     app.certificate_bindings.extend([binding1, binding2])
     session.add(app)
     session.commit()
-    mock_streamlit.radio.return_value = "All Applications"
-    mock_streamlit.session_state['session'] = session
+    mock_st.radio.return_value = "All Applications"
+    mock_st.session_state['session'] = session
     render_applications_view(engine)
     # The view does not call .metric on columns, so do not assert on .metric
-    metric_cols = next(cols for cols in mock_streamlit._columns_calls if len(cols) == 3)
+    metric_cols = next(cols for cols in mock_st._columns_calls if len(cols) == 3)
     assert len(metric_cols) == 3
 
 def test_error_handling(mock_streamlit, engine):
-    mock_streamlit.session_state['show_add_app_form'] = True
-    mock_streamlit.text_input.side_effect = [
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
+    mock_st.session_state['show_add_app_form'] = True
+    mock_st.text_input.side_effect = [
         "Test App" * 1000,
         "Test Description",
         "Test Team"
     ]
-    mock_streamlit.selectbox.return_value = APP_TYPES[0]
-    mock_streamlit.form.return_value.form_submit_button.return_value = True
+    mock_st.selectbox.return_value = APP_TYPES[0]
+    mock_st.form.return_value.form_submit_button.return_value = True
     with patch('infra_mgmt.views.applicationsView.notify') as mock_notify:
         render_applications_view(engine)
         # The error is handled in handle_add_form, which is not called in this test
         assert mock_notify.call_count == 0
 
 def test_render_application_details(mock_streamlit, sample_application, sample_host, sample_host_ip, session):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     """Test rendering application details"""
     # Add certificate bindings to the application
     valid_cert = Certificate(
@@ -392,7 +419,6 @@ def test_render_application_details(mock_streamlit, sample_application, sample_h
         valid_from=datetime.now(),
         valid_until=datetime.now() + timedelta(days=30)
     )
-    
     binding = CertificateBinding(
         certificate=valid_cert,
         host=sample_host,
@@ -400,75 +426,69 @@ def test_render_application_details(mock_streamlit, sample_application, sample_h
         port=443,
         last_seen=datetime.now()
     )
-    
     sample_application.certificate_bindings.append(binding)
     session.add_all([sample_application, sample_host, sample_host_ip])
     session.commit()
-    
     # Mock session state
-    mock_streamlit.session_state['session'] = session
-    
+    mock_st.session_state['session'] = session
     # Mock form context for edit form
     edit_form_mock = MagicMock()
-    mock_streamlit.form.return_value.__enter__.return_value = edit_form_mock
-    
+    mock_st.form.return_value.__enter__.return_value = edit_form_mock
     # Configure form inputs for edit form
-    mock_streamlit.text_input.return_value = sample_application.name
-    mock_streamlit.selectbox.return_value = sample_application.app_type
-    
+    mock_st.text_input.return_value = sample_application.name
+    mock_st.selectbox.return_value = sample_application.app_type
     render_application_details(sample_application)
-    
     # Verify subheader was set
-    mock_streamlit.subheader.assert_called_with(f"📱 {sample_application.name}")
-    
+    mock_st.subheader.assert_called_with(f"📱 {sample_application.name}")
     # Verify tabs were created with correct names
-    mock_streamlit.tabs.assert_called_with(["Overview", "Certificate Bindings", "⚠️ Danger Zone"])
-    
+    mock_st.tabs.assert_called_with(["Overview", "Certificate Bindings", "⚠️ Danger Zone"])
     # Get the tabs
-    tabs = mock_streamlit.tabs.return_value
+    tabs = mock_st.tabs.return_value
     assert len(tabs) == 3
 
 def test_success_message_handling(mock_streamlit, engine):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     with patch('infra_mgmt.views.applicationsView.notify') as mock_notify:
         message = "✅ Application added successfully!"
-        mock_streamlit.session_state['success_message'] = message
+        mock_st.session_state['success_message'] = message
         render_applications_view(engine)
         # The view does not call notify for success_message in session state
         assert mock_notify.call_count == 0
 
 def test_add_application_cancel(mock_streamlit, engine):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     """Test canceling application addition"""
     # Initial state: form not shown
-    mock_streamlit.session_state['show_add_app_form'] = False
-    
+    mock_st.session_state['show_add_app_form'] = False
     # Mock the add/cancel button
-    mock_streamlit.button.return_value = True
-    
+    mock_header_st.button.return_value = True
     render_applications_view(engine)
-    
-    # Verify button was shown with correct text
-    mock_streamlit.button.assert_any_call(
-        "➕ Add Application",
-        type="primary",
-        on_click=ANY,
-        use_container_width=True
-    )
+    # Verify button was shown with correct text (allow extra kwargs)
+    found = False
+    for call in mock_header_st.button.call_args_list:
+        args, kwargs = call
+        if (
+            args and args[0] == "➕ Add Application" and
+            kwargs.get('type') == "primary" and
+            kwargs.get('on_click') is not None and
+            kwargs.get('use_container_width') is True
+        ):
+            found = True
+            break
+    assert found, "Add Application button call not found with required arguments"
 
 def test_application_grid_configuration(mock_streamlit, mock_aggrid, engine, sample_application, session):
+    mock_st, mock_header_st, mock_metrics_st = mock_streamlit
     """Test AG Grid configuration for applications view"""
     # Add sample application
     session.add(sample_application)
     session.commit()
-    
     # Mock radio button
-    mock_streamlit.radio.return_value = "All Applications"
-    mock_streamlit.session_state['session'] = session
-    
+    mock_st.radio.return_value = "All Applications"
+    mock_st.session_state['session'] = session
     render_applications_view(engine)
-    
     # Verify grid builder was created
     mock_aggrid.from_dataframe.assert_called()
-    
     # Verify grid options were configured
     builder = mock_aggrid.from_dataframe.return_value
     assert builder.grid_options['defaultColDef']['resizable'] is True

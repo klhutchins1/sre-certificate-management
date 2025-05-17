@@ -32,6 +32,8 @@ import logging
 from ..services.HostService import HostService
 from ..services.ViewDataService import ViewDataService
 from infra_mgmt.utils.SessionManager import SessionManager
+from infra_mgmt.components.page_header import render_page_header
+from infra_mgmt.components.metrics_row import render_metrics_row
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +70,15 @@ def render_hosts_view(engine) -> None:
     load_warning_suppression()
     load_css()
     
-    # Create a row for title and button
-    st.markdown('<div class="title-row">', unsafe_allow_html=True)
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("Hosts")
-    with col2:
-        if st.button("➕ Add Host" if not st.session_state.get('show_add_host_form', False) else "❌ Cancel", 
-                    type="primary" if not st.session_state.get('show_add_host_form', False) else "secondary", 
-                    use_container_width=True):
-            # Toggle the form visibility
-            st.session_state['show_add_host_form'] = not st.session_state.get('show_add_host_form', False)
-            st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+    def toggle_add_host_form():
+        st.session_state['show_add_host_form'] = not st.session_state.get('show_add_host_form', False)
+        st.rerun()
+    render_page_header(
+        title="Hosts",
+        button_label="➕ Add Host" if not st.session_state.get('show_add_host_form', False) else "❌ Cancel",
+        button_callback=toggle_add_host_form,
+        button_type="primary" if not st.session_state.get('show_add_host_form', False) else "secondary"
+    )
     
     # Show any pending success messages
     if 'success_message' in st.session_state:
@@ -134,7 +132,7 @@ def render_hosts_view(engine) -> None:
                     st.error(f"Error adding host: {str(e)}")
         st.markdown('</div>', unsafe_allow_html=True)
     
-    st.divider()
+
     
     # Use ViewDataService for metrics and table data
     view_data_service = ViewDataService()
@@ -146,14 +144,11 @@ def render_hosts_view(engine) -> None:
     df = result['data']['df']
     column_config = result['data']['column_config']
 
-    # Create metrics columns with minimal spacing
-    st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Hosts", metrics["total_hosts"])
-    col2.metric("Total IPs", metrics["total_ips"])
-    col3.metric("Total Certificates", metrics["total_certs"])
-    st.markdown('</div>', unsafe_allow_html=True)
-    st.divider()
+    render_metrics_row([
+        {"label": "Total Hosts", "value": metrics["total_hosts"]},
+        {"label": "Total IPs", "value": metrics["total_ips"]},
+        {"label": "Total Certificates", "value": metrics["total_certs"]},
+    ], columns=3)
 
     if df.empty:
         st.warning("No host data available")

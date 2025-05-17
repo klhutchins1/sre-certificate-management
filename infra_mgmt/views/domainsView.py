@@ -18,10 +18,13 @@ import logging
 
 from ..models import Domain, DomainDNSRecord, Certificate, IgnoredDomain
 from ..components.deletion_dialog import render_danger_zone
-from ..notifications import notify, show_notifications, initialize_notifications
+from ..notifications import notify, show_notifications, initialize_notifications, clear_notifications
 from ..services.DomainService import DomainService, VirtualDomain
 from ..services.ViewDataService import ViewDataService
 from infra_mgmt.utils.SessionManager import SessionManager
+from ..static.styles import load_warning_suppression, load_css
+from infra_mgmt.components.page_header import render_page_header
+from infra_mgmt.components.metrics_row import render_metrics_row
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,28 @@ def get_root_domain_info(domain_name, domains):
         return root_domain
     return None
 
+def any_descendant_has_cert(domain, domain_hierarchy, visited=None):
+    if visited is None:
+        visited = set()
+    if domain.domain_name in visited:
+        return False  # Prevent infinite recursion
+    visited.add(domain.domain_name)
+    subdomains = domain_hierarchy.get(domain.domain_name, [])
+    for sub in subdomains:
+        if sub.certificates and len(sub.certificates) > 0:
+            return True
+        if any_descendant_has_cert(sub, domain_hierarchy, visited):
+            return True
+    return False
+
+def should_notify_no_certificates(domain, domain_hierarchy):
+    has_certs = bool(domain.certificates and len(domain.certificates) > 0)
+    if has_certs:
+        return False
+    if domain.domain_name in domain_hierarchy and len(domain_hierarchy[domain.domain_name]) > 0:
+        return not any_descendant_has_cert(domain, domain_hierarchy)
+    return True
+
 def render_domain_list(engine):
     """
     Render the main domain management interface.
@@ -122,11 +147,16 @@ def render_domain_list(engine):
     - List of domains with key information
     - Domain details view
     """
-    # Initialize notifications at the start
+    load_warning_suppression()
+    load_css()
+    
+    render_page_header(title="Domain Management")
+    # Initialize and clear notifications
     initialize_notifications()
-    # Show any existing notifications at the top
-    show_notifications()
-    st.title("Domain Management")
+    clear_notifications()
+    
+    # Create notification placeholder at the top
+    notification_placeholder = st.empty()
     view_data_service = ViewDataService()
     result = view_data_service.get_domain_list_view_data(engine)
     if not result['success']:
@@ -140,16 +170,12 @@ def render_domain_list(engine):
         notify("No domains found in the database.", "info")
         show_notifications()
         return
-    # Display metrics in columns
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Domains", metrics["total_domains"])
-    with col2:
-        st.metric("Active Domains", metrics["active_domains"])
-    with col3:
-        st.metric("Expiring Soon", metrics["expiring_soon"])
-    with col4:
-        st.metric("Expired", metrics["expired"])
+    render_metrics_row([
+        {"label": "Total Domains", "value": metrics["total_domains"]},
+        {"label": "Active Domains", "value": metrics["active_domains"]},
+        {"label": "Expiring Soon", "value": metrics["expiring_soon"]},
+        {"label": "Expired", "value": metrics["expired"]},
+    ], columns=4)
     # Create a search box
     search = st.text_input("Search Domains", placeholder="Enter domain name...")
     # Use service to get filtered domains and hierarchy
@@ -214,6 +240,12 @@ def render_domain_list(engine):
             return
     
     with col_details:
+        # Session-state-based fix for notification reset
+        if 'last_selected_domain' not in st.session_state:
+            st.session_state['last_selected_domain'] = None
+        if selected_domain != st.session_state['last_selected_domain']:
+            clear_notifications()
+            st.session_state['last_selected_domain'] = selected_domain
         if selected_domain:
             # Find the selected domain, handling both real and virtual domains
             try:
@@ -263,8 +295,10 @@ def render_domain_list(engine):
                         st.markdown(f"- `{subdomain.domain_name}`")
                 # Only show certificates and DNS records for real domains
                 if not isinstance(domain, VirtualDomain):
-                    # Certificates
-                    if domain.certificates:
+                    # --- Robust notification logic ---
+                    if should_notify_no_certificates(domain, domain_hierarchy):
+                        notify("No certificates found for this domain.", "info")
+                    else:
                         st.markdown("### \U0001F510 Certificates")
                         for cert in domain.certificates:
                             st.markdown(f"#### Certificate: `{cert.common_name}`")
@@ -280,8 +314,7 @@ def render_domain_list(engine):
                                 st.markdown("**SANs:** {}".format(", ".join(f"`{san}`" for san in cert.san)))
                                 st.markdown("**Signature Algorithm:** {}".format(cert.signature_algorithm))
                             st.markdown("---")
-                    else:
-                        notify("No certificates found for this domain.", "info")
+                    show_notifications()
                     # DNS Records
                     if domain.dns_records:
                         st.markdown("### \U0001F4DD DNS Records")

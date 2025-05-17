@@ -68,6 +68,8 @@ class ScanService:
         with self.session_factory() as session:
             # --- Ensure root domains are also scanned ---
             def get_root_domain(domain_name: str) -> str:
+                if not domain_name or not isinstance(domain_name, str):
+                    return ""
                 parts = domain_name.split('.')
                 if len(parts) >= 2:
                     return '.'.join(parts[-2:])

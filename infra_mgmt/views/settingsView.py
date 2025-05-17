@@ -41,6 +41,7 @@ from ..static.styles import load_warning_suppression, load_css
 from sqlalchemy.engine import Engine
 from datetime import datetime
 import re
+from infra_mgmt.components.page_header import render_page_header
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +100,9 @@ def render_settings_view(engine) -> None:
     load_warning_suppression()
     load_css()
     initialize_notifications()
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("Settings")
+    render_page_header(title="Settings")
+ 
+
     settings = Settings()
     tabs = st.tabs(["Paths", "Scanning", "Alerts", "Exports", "Ignore Lists"])
 

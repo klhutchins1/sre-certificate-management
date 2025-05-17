@@ -14,6 +14,7 @@ import shutil
 import os
 import tempfile
 import inspect
+from unittest.mock import ANY
 
 @pytest.fixture(autouse=True)
 def setup_test_mode():
@@ -41,106 +42,104 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit(mocker):
     """Mock streamlit module with improved tab and column handling"""
-    mock_st = mocker.MagicMock()
-    
-    # Mock columns to return list of MagicMocks with proper context manager
-    def mock_columns(spec):
-        # Handle both list/tuple specs and integer specs
-        num_cols = len(spec) if isinstance(spec, (list, tuple)) else spec
-        cols = []
-        for _ in range(num_cols):
-            col = mocker.MagicMock()
-            # Add context manager methods
-            col.__enter__ = mocker.MagicMock(return_value=col)
-            col.__exit__ = mocker.MagicMock(return_value=None)
-            cols.append(col)
-        return cols
-    
-    mock_st.columns.side_effect = mock_columns
-    
-    # Mock tabs to return list of MagicMocks with proper context manager
-    def mock_tabs(labels):
-        tabs = []
-        for label in labels:
-            tab = mocker.MagicMock()
-            tab_context = mocker.MagicMock()
-            def enter_context(tab_label=label):
-                return tab_context
-            tab.__enter__ = mocker.MagicMock(side_effect=enter_context)
-            tab.__exit__ = mocker.MagicMock(return_value=None)
-            tab_context.button = mock_st.button
-            tab_context.number_input = mock_st.number_input
-            tab_context.text_area = mock_st.text_area
-            tab_context.markdown = mock_st.markdown
-            tab_context.header = mock_st.header
-            tab_context.subheader = mock_st.subheader
-            tab_context.divider = mock_st.divider
-            tab_context.success = mock_st.success
-            tab_context.error = mock_st.error
-            tab_context.warning = mock_st.warning
-            tab_context.columns = mock_st.columns
-            tabs.append(tab)
-        return tabs
-    mock_st.tabs.side_effect = mock_tabs
-    
-    # Mock session state with proper dict-like behavior
-    class MockSessionState(dict):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._dict = {}
+    with patch('infra_mgmt.views.settingsView.st') as mock_st, \
+         patch('infra_mgmt.components.page_header.st') as mock_header_st:
+        # Mock columns to return list of MagicMocks with proper context manager
+        def mock_columns(spec):
+            num_cols = len(spec) if isinstance(spec, (list, tuple)) else spec
+            cols = []
+            for _ in range(num_cols):
+                col = mocker.MagicMock()
+                col.__enter__ = mocker.MagicMock(return_value=col)
+                col.__exit__ = mocker.MagicMock(return_value=None)
+                cols.append(col)
+            return cols
+        mock_st.columns.side_effect = mock_columns
+        mock_header_st.columns.side_effect = mock_columns
         
-        def __getitem__(self, key):
-            return self._dict.get(key)
+        # Mock tabs to return list of MagicMocks with proper context manager
+        def mock_tabs(labels):
+            tabs = []
+            for label in labels:
+                tab = mocker.MagicMock()
+                tab_context = mocker.MagicMock()
+                def enter_context(tab_label=label):
+                    return tab_context
+                tab.__enter__ = mocker.MagicMock(side_effect=enter_context)
+                tab.__exit__ = mocker.MagicMock(return_value=None)
+                tab_context.button = mock_st.button
+                tab_context.number_input = mock_st.number_input
+                tab_context.text_area = mock_st.text_area
+                tab_context.markdown = mock_st.markdown
+                tab_context.header = mock_st.header
+                tab_context.subheader = mock_st.subheader
+                tab_context.divider = mock_st.divider
+                tab_context.success = mock_st.success
+                tab_context.error = mock_st.error
+                tab_context.warning = mock_st.warning
+                tab_context.columns = mock_st.columns
+                tabs.append(tab)
+            return tabs
+        mock_st.tabs.side_effect = mock_tabs
         
-        def __setitem__(self, key, value):
-            self._dict[key] = value
+        # Mock session state with proper dict-like behavior
+        class MockSessionState(dict):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._dict = {}
+            
+            def __getitem__(self, key):
+                return self._dict.get(key)
+            
+            def __setitem__(self, key, value):
+                self._dict[key] = value
+            
+            def get(self, key, default=None):
+                return self._dict.get(key, default)
         
-        def get(self, key, default=None):
-            return self._dict.get(key, default)
-    
-    mock_st.session_state = MockSessionState()
-    
-    # Add commonly used streamlit methods to the main mock
-    mock_st.text_input = mocker.MagicMock()
-    mock_st.number_input = mocker.MagicMock()
-    mock_st.selectbox = mocker.MagicMock()
-    mock_st.button = mocker.MagicMock()
-    mock_st.text_area = mocker.MagicMock()
-    mock_st.error = mocker.MagicMock()
-    mock_st.success = mocker.MagicMock()
-    mock_st.warning = mocker.MagicMock()
-    mock_st.title = mocker.MagicMock()
-    mock_st.header = mocker.MagicMock()
-    mock_st.subheader = mocker.MagicMock()
-    mock_st.markdown = mocker.MagicMock()
-    mock_st.divider = mocker.MagicMock()
-    mock_st.write = mocker.MagicMock()
-    
-    # Default button always returns False unless overridden in a test
-    def default_mock_button(*args, **kwargs):
-        return False
-    mock_st.button.side_effect = default_mock_button
-    
-    # Patch streamlit module
-    mocker.patch('streamlit.text_input', mock_st.text_input)
-    mocker.patch('streamlit.number_input', mock_st.number_input)
-    mocker.patch('streamlit.selectbox', mock_st.selectbox)
-    mocker.patch('streamlit.button', mock_st.button)
-    mocker.patch('streamlit.text_area', mock_st.text_area)
-    mocker.patch('streamlit.error', mock_st.error)
-    mocker.patch('streamlit.success', mock_st.success)
-    mocker.patch('streamlit.warning', mock_st.warning)
-    mocker.patch('streamlit.title', mock_st.title)
-    mocker.patch('streamlit.header', mock_st.header)
-    mocker.patch('streamlit.subheader', mock_st.subheader)
-    mocker.patch('streamlit.markdown', mock_st.markdown)
-    mocker.patch('streamlit.divider', mock_st.divider)
-    mocker.patch('streamlit.write', mock_st.write)
-    mocker.patch('streamlit.columns', mock_st.columns)
-    mocker.patch('streamlit.tabs', mock_st.tabs)
-    mocker.patch('streamlit.session_state', mock_st.session_state)
-    
-    return mock_st
+        mock_st.session_state = MockSessionState()
+        
+        # Add commonly used streamlit methods to the main mock
+        mock_st.text_input = mocker.MagicMock()
+        mock_st.number_input = mocker.MagicMock()
+        mock_st.selectbox = mocker.MagicMock()
+        mock_st.button = mocker.MagicMock()
+        mock_st.text_area = mocker.MagicMock()
+        mock_st.error = mocker.MagicMock()
+        mock_st.success = mocker.MagicMock()
+        mock_st.warning = mocker.MagicMock()
+        mock_st.title = mocker.MagicMock()
+        mock_st.header = mocker.MagicMock()
+        mock_st.subheader = mocker.MagicMock()
+        mock_st.markdown = mocker.MagicMock()
+        mock_st.divider = mocker.MagicMock()
+        mock_st.write = mocker.MagicMock()
+        
+        # Default button always returns False unless overridden in a test
+        def default_mock_button(*args, **kwargs):
+            return False
+        mock_st.button.side_effect = default_mock_button
+        
+        # Patch streamlit module
+        mocker.patch('streamlit.text_input', mock_st.text_input)
+        mocker.patch('streamlit.number_input', mock_st.number_input)
+        mocker.patch('streamlit.selectbox', mock_st.selectbox)
+        mocker.patch('streamlit.button', mock_st.button)
+        mocker.patch('streamlit.text_area', mock_st.text_area)
+        mocker.patch('streamlit.error', mock_st.error)
+        mocker.patch('streamlit.success', mock_st.success)
+        mocker.patch('streamlit.warning', mock_st.warning)
+        mocker.patch('streamlit.title', mock_st.title)
+        mocker.patch('streamlit.header', mock_st.header)
+        mocker.patch('streamlit.subheader', mock_st.subheader)
+        mocker.patch('streamlit.markdown', mock_st.markdown)
+        mocker.patch('streamlit.divider', mock_st.divider)
+        mocker.patch('streamlit.write', mock_st.write)
+        mocker.patch('streamlit.columns', mock_st.columns)
+        mocker.patch('streamlit.tabs', mock_st.tabs)
+        mocker.patch('streamlit.session_state', mock_st.session_state)
+        
+        yield (mock_st, mock_header_st)
 
 @pytest.fixture
 def mock_settings(mocker):
@@ -202,6 +201,7 @@ def mock_settings(mocker):
     Settings._reset()
 
 def test_render_settings_view_paths(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
     """Test rendering path settings view with improved validation"""
     # Mock input values for paths tab
     db_path = "new/database/path.db"
@@ -215,13 +215,13 @@ def test_render_settings_view_paths(mock_streamlit, mock_settings, engine):
             return backup_path
         return ""
     
-    mock_streamlit.text_input.side_effect = mock_text_input
+    mock_st.text_input.side_effect = mock_text_input
     
     # Mock button clicks - only paths tab save button should be True
     def mock_button(*args, **kwargs):
         return "Save Path Settings" in str(args)
     
-    mock_streamlit.button.side_effect = mock_button
+    mock_st.button.side_effect = mock_button
     
     # Render settings view
     render_settings_view(engine)
@@ -231,13 +231,24 @@ def test_render_settings_view_paths(mock_streamlit, mock_settings, engine):
     assert mock_settings.get("paths.backups") == backup_path
     
     # Verify success message
-    mock_streamlit.success.assert_called_with("Path settings updated successfully!")
+    mock_st.success.assert_called_with("Path settings updated successfully!")
     
     # Verify save was called
     mock_settings.save.assert_called_once()
 
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+
 def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
     """Test rendering scanning settings view with improved validation"""
+    from infra_mgmt.models import Base
+    Base.metadata.create_all(engine)
     # Set up scanning tab inputs
     default_rate = 120
     internal_rate = 90
@@ -251,13 +262,13 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
     scanning_tab_context = MagicMock()
     tab_mocks[1].__enter__.return_value = scanning_tab_context
     tab_mocks[1].__exit__.return_value = None
-    mock_streamlit.tabs.side_effect = lambda labels: tab_mocks
+    mock_st.tabs.side_effect = lambda labels: tab_mocks
 
     # Simplify button mock for debugging
     def mock_button(label, **kwargs):
         print(f"BUTTON CALLED: {label}")
         return label == "Save Scanning Settings"
-    mock_streamlit.button.side_effect = mock_button
+    mock_st.button.side_effect = mock_button
     
     # Create mock number input function that returns the correct values
     def mock_number_input(*args, **kwargs):
@@ -281,7 +292,7 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
             return 5.0
         return 0
     
-    mock_streamlit.number_input.side_effect = mock_number_input
+    mock_st.number_input.side_effect = mock_number_input
     
     # Mock text area inputs with proper line splitting
     internal_domains = "internal1.com\ninternal2.com"
@@ -294,7 +305,7 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
             return external_domains
         return ""
     
-    mock_streamlit.text_area.side_effect = mock_text_area
+    mock_st.text_area.side_effect = mock_text_area
     
     # Track settings updates
     original_update = mock_settings.update
@@ -326,8 +337,8 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
     def debug_notify(msg, level):
         print(f"NOTIFY CALLED: {msg}, {level}")
         if level == "success":
-            print("Calling mock_streamlit.success")
-            return mock_streamlit.success(msg)
+            print("Calling mock_st.success")
+            return mock_st.success(msg)
         return None
 
     with patch('infra_mgmt.services.SettingsService.SettingsService.save_scanning_settings') as mock_save, \
@@ -343,7 +354,7 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
         # Render settings view
         render_settings_view(engine)
 
-    print("mock_streamlit.success call args list:", mock_streamlit.success.call_args_list)
+    print("mock_st.success call args list:", mock_st.success.call_args_list)
     # Use the actual singleton for assertion
     settings_instance = Settings()
     assert settings_instance.get("scanning.default_rate_limit") == default_rate
@@ -352,11 +363,20 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
     assert settings_instance.get("scanning.external.rate_limit") == external_rate
     assert settings_instance.get("scanning.external.domains") == external_domains.split('\n')
     # Verify success message
-    mock_streamlit.success.assert_any_call("Scanning settings updated successfully!")
+    mock_st.success.assert_any_call("Scanning settings updated successfully!")
     # Verify save was called
     mock_settings.save.assert_called_once()
 
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+
 def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
     """Test rendering alert settings view with improved validation"""
     # Mock input values for expiry warnings
     critical_days = 90
@@ -380,7 +400,7 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
             return consecutive_failures
         return 0
     
-    mock_streamlit.number_input.side_effect = mock_number_input
+    mock_st.number_input.side_effect = mock_number_input
     
     # Create mock selectbox function that returns the correct values
     def mock_selectbox(*args, **kwargs):
@@ -399,7 +419,7 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
         # Default to the value at the specified index
         return options[index]
     
-    mock_streamlit.selectbox.side_effect = mock_selectbox
+    mock_st.selectbox.side_effect = mock_selectbox
     
     # Mock button clicks - only alerts tab save button should be True
     def mock_button(*args, **kwargs):
@@ -411,7 +431,7 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
             return True
         return False
     
-    mock_streamlit.button.side_effect = mock_button
+    mock_st.button.side_effect = mock_button
     
     # Render settings view
     render_settings_view(engine)
@@ -424,12 +444,21 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
     assert mock_settings.get("alerts.failed_scans.consecutive_failures") == consecutive_failures
     
     # Verify success message
-    mock_streamlit.success.assert_called_with("Alert settings updated successfully!")
+    mock_st.success.assert_called_with("Alert settings updated successfully!")
     
     # Verify save was called
     mock_settings.save.assert_called_once()
 
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+
 def test_render_settings_view_exports(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
     """Test rendering export settings view with improved validation"""
     # Mock input values
     delimiter = ";"
@@ -443,7 +472,7 @@ def test_render_settings_view_exports(mock_streamlit, mock_settings, engine):
             return encoding
         return ""
     
-    mock_streamlit.text_input.side_effect = mock_text_input
+    mock_st.text_input.side_effect = mock_text_input
     
     # Mock button clicks - only exports tab buttons should be active
     def mock_button(*args, **kwargs):
@@ -451,7 +480,7 @@ def test_render_settings_view_exports(mock_streamlit, mock_settings, engine):
             return True
         return False
     
-    mock_streamlit.button.side_effect = mock_button
+    mock_st.button.side_effect = mock_button
     
     # Render settings view
     render_settings_view(engine)
@@ -461,14 +490,22 @@ def test_render_settings_view_exports(mock_streamlit, mock_settings, engine):
     assert mock_settings.get("exports.csv.encoding") == encoding
     
     # Verify success message
-    mock_streamlit.success.assert_called_with("Export settings updated successfully!")
+    mock_st.success.assert_called_with("Export settings updated successfully!")
     
     # Verify save was called
     mock_settings.save.assert_called_once()
 
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
+
 def test_create_backup_success(engine):
     """Test successful database backup creation."""
-    # Set up test mode with specific configuration
+    from unittest.mock import patch
     test_config = {
         "paths": {
             "database": "test.db",
@@ -476,76 +513,52 @@ def test_create_backup_success(engine):
         }
     }
     Settings.set_test_mode(test_config)
-    
     try:
-        with patch('streamlit.button') as mock_button, \
+        with patch('infra_mgmt.views.settingsView.st') as mock_st, \
+             patch('infra_mgmt.components.page_header.st') as mock_header_st, \
+             patch('streamlit.button') as mock_button, \
              patch('streamlit.success') as mock_success, \
              patch('streamlit.error') as mock_error:
-            
-            # Configure mock button to trigger backup
             mock_button.return_value = True
-            
-            # Create some test data
             with Session(engine) as session:
                 domain = Domain(domain_name="test.com")
                 session.add(domain)
                 session.commit()
-            
-            # Create the test.db file
             test_db = Path("test.db")
             if test_db.exists():
                 test_db.unlink()
-            
-            # Copy the in-memory database to test.db
             with engine.connect() as conn:
                 conn.execute(text("ATTACH DATABASE 'test.db' AS test"))
                 conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table'"))
                 conn.execute(text("DETACH DATABASE test"))
-            
-            # Call the backup function
             success, message = create_backup(engine)
-            
-            # Verify backup was successful
             assert success, f"Backup failed: {message}"
             assert "successfully" in message.lower()
-            
-            # Verify backup files were created
             backup_dir = Path("backups")
             assert backup_dir.exists()
-            
-            # Verify manifest file exists
             manifest_files = list(backup_dir.glob("backup_*.json"))
             assert len(manifest_files) == 1, "Expected one manifest file"
-            
-            # Verify manifest contents
             with open(manifest_files[0], 'r') as f:
                 manifest = json.load(f)
                 assert 'timestamp' in manifest
                 assert 'database' in manifest
                 assert 'config' in manifest
                 assert 'created' in manifest
-                
-                # Verify database backup exists
                 db_backup = Path(manifest['database'])
                 assert db_backup.exists()
-                
-                # Verify config backup exists
                 config_backup = Path(manifest['config'])
                 assert config_backup.exists()
-            
-            # Clean up
             for file in backup_dir.glob("*"):
                 file.unlink()
             backup_dir.rmdir()
             if test_db.exists():
                 test_db.unlink()
-    
     finally:
         Settings._reset()
 
 def test_backup_with_missing_database(engine):
     """Test backup handling when database is missing or inaccessible."""
-    # Set up test mode with specific configuration
+    from unittest.mock import patch
     test_config = {
         "paths": {
             "database": "nonexistent.db",
@@ -553,44 +566,30 @@ def test_backup_with_missing_database(engine):
         }
     }
     Settings.set_test_mode(test_config)
-    
     try:
-        with patch('streamlit.button') as mock_button, \
+        with patch('infra_mgmt.views.settingsView.st') as mock_st, \
+             patch('infra_mgmt.components.page_header.st') as mock_header_st, \
+             patch('streamlit.button') as mock_button, \
              patch('streamlit.error') as mock_error:
-            
-            # Configure mock button to trigger backup
             mock_button.return_value = True
-            
-            # Ensure the database file doesn't exist
             db_path = Path("nonexistent.db")
             if db_path.exists():
                 db_path.unlink()
-            
-            # Create backup directory if it doesn't exist
             backup_dir = Path("backups")
             backup_dir.mkdir(exist_ok=True)
-            
-            # Attempt backup
             success, message = create_backup(engine)
-            
-            # Verify error handling
             assert success is False, "Backup should fail when database is missing"
             assert "database file" in message.lower(), f"Expected 'database file' in message, got: {message}"
             assert "not found" in message.lower() or "does not exist" in message.lower(), f"Expected 'not found' or 'does not exist' in message, got: {message}"
-            
-            # Verify no backup files were created
             assert len(list(backup_dir.glob("*"))) == 0, "No backup files should be created"
-            
-            # Clean up
             if backup_dir.exists():
                 backup_dir.rmdir()
-    
     finally:
         Settings._reset()
 
 def test_restore_backup_success(tmp_path):
     """Test successful backup restoration"""
-    # Set up test mode with specific configuration
+    from unittest.mock import patch
     test_config = {
         "paths": {
             "database": str(tmp_path / "restored.db"),
@@ -598,62 +597,47 @@ def test_restore_backup_success(tmp_path):
         }
     }
     Settings.set_test_mode(test_config)
-    
     try:
-        # Set up test paths
-        src_db_path = tmp_path / "source.db"
-        backup_dir = tmp_path / "backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create source database with test data
-        src_engine = create_engine(f'sqlite:///{src_db_path}')
-        Base.metadata.create_all(src_engine)
-        with src_engine.connect() as conn:
-            conn.execute(text("CREATE TABLE test (id INTEGER PRIMARY KEY)"))
-            conn.execute(text("INSERT INTO test (id) VALUES (1)"))
-            conn.commit()
-        
-        # Create backup files
-        timestamp = "20240101_120000"
-        config_backup = backup_dir / f"config_{timestamp}.yaml"
-        db_backup = backup_dir / f"certificates_{timestamp}.db"
-        manifest_file = backup_dir / f"backup_{timestamp}.json"
-        
-        # Create test config backup
-        test_config = {"test": "config"}
-        with open(config_backup, "w") as f:
-            yaml.dump(test_config, f)
-        
-        # Copy source database to backup
-        shutil.copy2(src_db_path, db_backup)
-        
-        # Create manifest
-        manifest = {
-            "timestamp": timestamp,
-            "database": str(db_backup),
-            "config": str(config_backup),
-            "created": "2024-01-01T12:00:00"
-        }
-        with open(manifest_file, "w") as f:
-            json.dump(manifest, f)
-        
-        # Test restore
-        success, message = restore_backup(str(manifest_file))
-        assert success
-        assert "successfully" in message.lower()
-        
-        # Verify restored database
-        engine = create_engine(f'sqlite:///{tmp_path}/restored.db')
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT * FROM test")).fetchone()
-            assert result[0] == 1
-    
+        with patch('infra_mgmt.views.settingsView.st') as mock_st, \
+             patch('infra_mgmt.components.page_header.st') as mock_header_st:
+            src_db_path = tmp_path / "source.db"
+            backup_dir = tmp_path / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            src_engine = create_engine(f'sqlite:///{src_db_path}')
+            Base.metadata.create_all(src_engine)
+            with src_engine.connect() as conn:
+                conn.execute(text("CREATE TABLE test (id INTEGER PRIMARY KEY)"))
+                conn.execute(text("INSERT INTO test (id) VALUES (1)"))
+                conn.commit()
+            timestamp = "20240101_120000"
+            config_backup = backup_dir / f"config_{timestamp}.yaml"
+            db_backup = backup_dir / f"certificates_{timestamp}.db"
+            manifest_file = backup_dir / f"backup_{timestamp}.json"
+            test_config_yaml = {"test": "config"}
+            with open(config_backup, "w") as f:
+                yaml.dump(test_config_yaml, f)
+            shutil.copy2(src_db_path, db_backup)
+            manifest = {
+                "timestamp": timestamp,
+                "database": str(db_backup),
+                "config": str(config_backup),
+                "created": "2024-01-01T12:00:00"
+            }
+            with open(manifest_file, "w") as f:
+                json.dump(manifest, f)
+            success, message = restore_backup(str(manifest_file))
+            assert success
+            assert "successfully" in message.lower()
+            engine = create_engine(f'sqlite:///{tmp_path}/restored.db')
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT * FROM test")).fetchone()
+                assert result[0] == 1
     finally:
         Settings._reset()
 
 def test_list_backups(tmp_path):
     """Test listing available backups"""
-    # Set up test mode with specific configuration
+    from unittest.mock import patch
     test_config = {
         "paths": {
             "database": str(tmp_path / "test.db"),
@@ -661,46 +645,38 @@ def test_list_backups(tmp_path):
         }
     }
     Settings.set_test_mode(test_config)
-    
     try:
-        # Set up test paths
-        backup_dir = tmp_path / "backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create test backup
-        timestamp = "20240101_120000"
-        config_backup = backup_dir / f"config_{timestamp}.yaml"
-        manifest_file = backup_dir / f"backup_{timestamp}.json"
-        
-        # Create test config backup
-        with open(config_backup, "w") as f:
-            yaml.dump({"test": "config"}, f)
-        
-        # Create a dummy .db file to match what list_backups expects
-        db_file = backup_dir / f"certificates_{timestamp}.db"
-        db_file.touch()
-        # Set the database field in the manifest to the .db file path
-        manifest = {
-            "timestamp": timestamp,
-            "database": str(db_file),
-            "config": str(config_backup),
-            "created": "2024-01-01T12:00:00"
-        }
-        with open(manifest_file, "w") as f:
-            json.dump(manifest, f)
-        # List backups
-        backups = list_backups()
-        assert len(backups) == 1
-        assert backups[0]["timestamp"] == timestamp
-        assert backups[0]["config"] == str(config_backup)
-        assert backups[0]["created"] == "2024-01-01T12:00:00"
-    
+        with patch('infra_mgmt.views.settingsView.st') as mock_st, \
+             patch('infra_mgmt.components.page_header.st') as mock_header_st:
+            backup_dir = tmp_path / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = "20240101_120000"
+            config_backup = backup_dir / f"config_{timestamp}.yaml"
+            manifest_file = backup_dir / f"backup_{timestamp}.json"
+            with open(config_backup, "w") as f:
+                yaml.dump({"test": "config"}, f)
+            db_file = backup_dir / f"certificates_{timestamp}.db"
+            db_file.touch()
+            manifest = {
+                "timestamp": timestamp,
+                "database": str(db_file),
+                "config": str(config_backup),
+                "created": "2024-01-01T12:00:00"
+            }
+            with open(manifest_file, "w") as f:
+                json.dump(manifest, f)
+            backups = list_backups()
+            assert len(backups) == 1
+            assert backups[0]["timestamp"] == timestamp
+            assert backups[0]["config"] == str(config_backup)
+            assert backups[0]["created"] == "2024-01-01T12:00:00"
     finally:
         Settings._reset()
 
 def test_restore_nonexistent_backup():
     """Test restoring from a nonexistent backup with improved error handling"""
-    # Set up test mode with specific configuration
+    from unittest.mock import patch
+    import tempfile
     test_config = {
         "paths": {
             "database": "test.db",
@@ -708,39 +684,33 @@ def test_restore_nonexistent_backup():
         }
     }
     Settings.set_test_mode(test_config)
-    
     try:
-        # Create manifest with nonexistent files
-        manifest = {
-            "config": "nonexistent.yaml",
-            "database": "nonexistent.db",
-            "created": "2024-01-01T12:00:00"
-        }
-        
-        # Write manifest to a file and pass the file path
-        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.json') as tmp_manifest:
-            json.dump(manifest, tmp_manifest)
-            tmp_manifest_path = tmp_manifest.name
-        success, message = restore_backup(tmp_manifest_path)
-        
-        # Verify restore failed
-        assert not success
-        assert (
-            "Config backup file not found" in message or
-            "not found" in message or
-            "No such file" in message or
-            "Invalid manifest structure" in message
-        )
-        
-        # Verify settings were not modified
-        settings = Settings()
-        assert settings.get("paths.database") == "test.db"
-        assert settings.get("paths.backups") == "backups"
-    
+        with patch('infra_mgmt.views.settingsView.st') as mock_st, \
+             patch('infra_mgmt.components.page_header.st') as mock_header_st:
+            manifest = {
+                "config": "nonexistent.yaml",
+                "database": "nonexistent.db",
+                "created": "2024-01-01T12:00:00"
+            }
+            with tempfile.NamedTemporaryFile('w', delete=False, suffix='.json') as tmp_manifest:
+                json.dump(manifest, tmp_manifest)
+                tmp_manifest_path = tmp_manifest.name
+            success, message = restore_backup(tmp_manifest_path)
+            assert not success
+            assert (
+                "Config backup file not found" in message or
+                "not found" in message or
+                "No such file" in message or
+                "Invalid manifest structure" in message
+            )
+            settings = Settings()
+            assert settings.get("paths.database") == "test.db"
+            assert settings.get("paths.backups") == "backups"
     finally:
         Settings._reset()
 
 def test_invalid_settings_validation(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
     """Test validation of invalid settings values with improved error handling"""
     # Mock invalid input values
     default_rate = -1
@@ -757,19 +727,19 @@ def test_invalid_settings_validation(mock_streamlit, mock_settings, engine):
             return external_rate
         return 0
     
-    mock_streamlit.number_input.side_effect = mock_number_input
+    mock_st.number_input.side_effect = mock_number_input
     
     # Create mock text area function that returns empty values
     def mock_text_area(*args, **kwargs):
         return ""
     
-    mock_streamlit.text_area.side_effect = mock_text_area
+    mock_st.text_area.side_effect = mock_text_area
     
     # Mock button clicks - only scanning tab save button should be True
     def mock_button(*args, **kwargs):
         return "Save Scanning Settings" in str(args)
     
-    mock_streamlit.button.side_effect = mock_button
+    mock_st.button.side_effect = mock_button
     
     # Mock the notify function to capture error messages
     error_messages = []
@@ -791,3 +761,11 @@ def test_invalid_settings_validation(mock_streamlit, mock_settings, engine):
         
         # Verify save was not called since validation failed
         mock_settings.save.assert_not_called() 
+
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found" 

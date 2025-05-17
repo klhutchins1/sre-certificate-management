@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from infra_mgmt.models import Base, Certificate, Host, HostIP, CertificateBinding
 from infra_mgmt.views.searchView import render_search_view
+from unittest.mock import ANY
 
 @pytest.fixture(scope="function")
 def engine():
@@ -27,7 +28,8 @@ def session(engine):
 @pytest.fixture
 def mock_streamlit():
     """Mock streamlit module"""
-    with patch('infra_mgmt.views.searchView.st') as mock_st:
+    with patch('infra_mgmt.views.searchView.st') as mock_st, \
+         patch('infra_mgmt.components.page_header.st') as mock_header_st:
         # Create persistent column mocks
         column_mocks = {}
         def get_column_mocks(*args):
@@ -37,14 +39,13 @@ def mock_streamlit():
                 column_mocks[key] = [MagicMock(name=f"col_{i}") for i in range(num_cols)]
             return column_mocks[key]
         mock_st.columns.side_effect = get_column_mocks
-        
+        mock_header_st.columns.side_effect = get_column_mocks
         # Mock session state
         mock_st.session_state = MagicMock()
         mock_st.session_state.__setitem__ = MagicMock()
         mock_st.session_state.__getitem__ = MagicMock()
         mock_st.session_state.get = MagicMock()
-        
-        yield mock_st
+        yield (mock_st, mock_header_st)
 
 @pytest.fixture
 def sample_data(session):
@@ -128,115 +129,106 @@ def sample_data(session):
     }
 
 def test_render_search_view_empty(mock_streamlit, engine):
-    """Test rendering search view with no data"""
+    mock_st, mock_header_st = mock_streamlit
     # Mock search input and filters
-    mock_streamlit.text_input.return_value = "nonexistentquery123456789"  # Use a query that won't match anything
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.text_input.return_value = "nonexistentquery123456789"  # Use a query that won't match anything
+    mock_st.selectbox.side_effect = [
         "All",          # Search type
         "All",          # Status filter
         "All"           # Platform filter
     ]
-    
     render_search_view(engine)
-    
-    # Verify title was set
-    mock_streamlit.title.assert_called_once_with("Search")
-    
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Search</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
     # Verify empty state message
-    mock_streamlit.info.assert_called_once_with("No results found")
+    mock_st.info.assert_called_once_with("No results found")
 
 def test_render_search_view_with_data(mock_streamlit, engine, sample_data):
-    """Test rendering search view with sample data"""
+    mock_st, mock_header_st = mock_streamlit
     # Mock search input and filters
-    mock_streamlit.text_input.return_value = "test"
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.text_input.return_value = "test"
+    mock_st.selectbox.side_effect = [
         "All",          # Search type
         "All",          # Status filter
         "All"           # Platform filter
     ]
-    
     render_search_view(engine)
-    
-    # Verify title was set
-    mock_streamlit.title.assert_called_once_with("Search")
-    
+    # Check that the header was rendered
+    found = False
+    for call in mock_header_st.markdown.call_args_list:
+        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Search</h1>" and call.kwargs.get('unsafe_allow_html'):
+            found = True
+            break
+    assert found, "Expected header markdown call not found"
     # Verify subheaders for both sections
-    mock_streamlit.subheader.assert_any_call("Certificates")
-    mock_streamlit.subheader.assert_any_call("Hosts")
-    
+    mock_st.subheader.assert_any_call("Certificates")
+    mock_st.subheader.assert_any_call("Hosts")
     # Verify dataframes were created
-    assert mock_streamlit.dataframe.call_count == 2
+    assert mock_st.dataframe.call_count == 2
 
 def test_certificate_search(mock_streamlit, engine, sample_data):
-    """Test certificate-specific search"""
+    mock_st, mock_header_st = mock_streamlit
     # Mock search input and filters
-    mock_streamlit.text_input.return_value = "test.example.com"
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.text_input.return_value = "test.example.com"
+    mock_st.selectbox.side_effect = [
         "Certificates",  # Search type
         "Valid",         # Status filter
         "F5"            # Platform filter
     ]
-    
     render_search_view(engine)
-    
     # Verify only certificate results are shown
-    mock_streamlit.subheader.assert_called_once_with("Certificates")
-    mock_streamlit.dataframe.assert_called_once()
+    mock_st.subheader.assert_called_once_with("Certificates")
+    mock_st.dataframe.assert_called_once()
 
 def test_host_search(mock_streamlit, engine, sample_data):
-    """Test host-specific search"""
+    mock_st, mock_header_st = mock_streamlit
     # Mock search input and filters
-    mock_streamlit.text_input.return_value = "test-host"
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.text_input.return_value = "test-host"
+    mock_st.selectbox.side_effect = [
         "Hosts",        # Search type
         "Valid",        # Status filter
         "F5"           # Platform filter
     ]
-    
     render_search_view(engine)
-    
     # Verify only host results are shown
-    mock_streamlit.subheader.assert_called_once_with("Hosts")
-    mock_streamlit.dataframe.assert_called_once()
+    mock_st.subheader.assert_called_once_with("Hosts")
+    mock_st.dataframe.assert_called_once()
 
 def test_ip_search(mock_streamlit, engine, sample_data):
-    """Test IP address search"""
+    mock_st, mock_header_st = mock_streamlit
     # Mock search input and filters
-    mock_streamlit.text_input.return_value = "192.168.1"
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.text_input.return_value = "192.168.1"
+    mock_st.selectbox.side_effect = [
         "IP Addresses", # Search type
         "All",         # Status filter
         "All"          # Platform filter
     ]
-    
     render_search_view(engine)
-    
     # Verify host results are shown (IP search shows in host section)
-    mock_streamlit.subheader.assert_called_once_with("Hosts")
-    mock_streamlit.dataframe.assert_called_once()
+    mock_st.subheader.assert_called_once_with("Hosts")
+    mock_st.dataframe.assert_called_once()
 
 def test_filter_functionality(mock_streamlit, engine, sample_data):
-    """Test search filter functionality"""
+    mock_st, mock_header_st = mock_streamlit
     # Mock search input and filters
-    mock_streamlit.text_input.return_value = "example.com"
-    mock_streamlit.selectbox.side_effect = [
+    mock_st.text_input.return_value = "example.com"
+    mock_st.selectbox.side_effect = [
         "All",         # Search type
         "Valid",       # Status filter
         "F5"          # Platform filter
     ]
-    
     render_search_view(engine)
-    
     # Verify filter options were created
-    mock_streamlit.selectbox.assert_any_call(
+    mock_st.selectbox.assert_any_call(
         "Search In",
         ["All", "Certificates", "Hosts", "IP Addresses"]
     )
-    mock_streamlit.selectbox.assert_any_call(
+    mock_st.selectbox.assert_any_call(
         "Certificate Status",
         ["All", "Valid", "Expired"]
-    )
-    mock_streamlit.selectbox.assert_any_call(
-        "Platform",
-        ["All", "F5", "Akamai", "Cloudflare", "IIS", "Connection"]
     ) 

@@ -262,6 +262,11 @@ class ScanManager:
             True
         """
         try:
+            # Guard against None or non-string domain
+            if not domain or not isinstance(domain, str):
+                self.logger.warning(f"[SCAN] Skipping invalid domain: {domain}")
+                self.scan_results["error"].append(f"{domain}:{port} - Invalid domain (None or not a string)")
+                return False
             # Normalize domain
             domain = domain.strip().lower().rstrip('.')
             is_ip = is_ip_address(domain)

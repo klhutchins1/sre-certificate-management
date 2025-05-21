@@ -7,7 +7,8 @@ from .subdomain_scanner import SubdomainScanner
 from urllib.parse import urlparse
 from .utils import is_ip_address, get_ip_info
 from sqlalchemy.orm import Session
-from ..models import Certificate, CertificateBinding, Domain, DomainDNSRecord, Host, HOST_TYPE_SERVER, ENV_PRODUCTION, IgnoredCertificate, IgnoredDomain
+from ..models import Certificate, CertificateBinding, Domain, DomainDNSRecord, Host, IgnoredCertificate, IgnoredDomain
+from ..constants import HOST_TYPE_SERVER, ENV_PRODUCTION
 from typing import Tuple, Optional
 from ..settings import settings
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
@@ -489,7 +490,17 @@ class ScanManager:
                             if kwargs.get('status_container'):
                                 kwargs['status_container'].text(f'Discovering subdomains for {domain}...')
                             self.subdomain_scanner.set_status_container(kwargs.get('status_container'))
-                            subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(domain=domain, session=session, port=port, check_whois=kwargs.get('check_whois', False), check_dns=kwargs.get('check_dns', False), scanned_domains=self.infra_mgmt.tracker.scanned_domains)
+                            # Pass enable_ct to subdomain scanner
+                            enable_ct = kwargs.get('enable_ct', True)
+                            subdomain_results = self.subdomain_scanner.scan_and_process_subdomains(
+                                domain=domain,
+                                session=session,
+                                port=port,
+                                check_whois=kwargs.get('check_whois', False),
+                                check_dns=kwargs.get('check_dns', False),
+                                scanned_domains=self.infra_mgmt.tracker.scanned_domains,
+                                enable_ct=enable_ct
+                            )
                             if subdomain_results:
                                 self.logger.info(f"[SCAN] Found {len(subdomain_results)} subdomains for {domain}")
                                 for result in subdomain_results:

@@ -1,5 +1,50 @@
 # Certificate Management System
 
+## Feature Implementation & Test Checklist
+
+- [x] Certificate Management (view, search, filter, status, associations)
+- [x] Host Management (inventory, types, IPs)
+- [x] Domain Management (registration, DNS, associations)
+- [x] Infrastructure Mapping (certificates ↔ hosts/domains/applications)
+- [x] Scanning & Monitoring (internal/external, SANs, scan history, alerts)
+- [x] Export & Reporting (CSV/PDF, templates, timeline/charts)
+- [x] Configuration Management (YAML, web editor, multi-location, env overrides)
+- [x] Backup & Restore (automated/manual, manifests, verification)
+- [x] Error Handling & Exception Hierarchy (custom exceptions, logging)
+- [x] Performance for Small-to-Medium Scale (AG Grid, Streamlit, SQLite)
+- [x] Unit & Integration Tests (models, views, scanner, settings)
+- [x] Test Data & Error Scenarios (backup/restore, edge cases)
+- [ ] Planned Enhancements (data sync, advanced validation, multi-instance, etc.)
+- [ ] Scalability for Large Deployments (multi-instance, locking, concurrency)
+- [ ] Security Enhancements (role-based access, audit logging, secret management)
+
+---
+
+## Review Readiness
+
+This document is prepared for formal review. The following criteria have been addressed:
+
+- **Documentation Completeness:**
+  - All major features, modules, and interfaces are documented with traceability to code and requirements.
+  - Usage instructions, troubleshooting, and configuration options are clearly described.
+  - Known issues and planned enhancements are listed for transparency.
+
+- **Test Coverage:**
+  - Unit and integration tests exist for all core features (models, views, scanner, settings, backup/restore).
+  - Error and edge case scenarios are covered in the test suite.
+  - Test data is available for backup/restore and validation.
+
+- **Traceability:**
+  - Each requirement and feature is cross-referenced with implementation and test status.
+  - Checklist at the top of this document provides at-a-glance status for reviewers.
+
+- **Review Notes:**
+  - Planned enhancements and known limitations are clearly identified.
+  - All documentation is up to date with the current codebase.
+  - This document is ready for stakeholder and technical review.
+
+---
+
 A comprehensive web-based system for tracking and managing SSL/TLS certificates across various infrastructure components.
 
 ## Installation
@@ -494,9 +539,28 @@ These planned features will enhance the system's capabilities in:
 
 - Certificate Authority tracking and validation
 - Multi-instance deployment support
+- JWT certificate tracking
+- Scan result persistence
+- Domain lifecycle tracking
+- Data integrity and resilience
+
+## Known Issues & Improvements
+
+- [ ] Deleting a root domain does not remove all subdomains and related data; UI may still show the root domain without a delete option. Deletion should be recursive and update the UI immediately.
+- [ ] WhoIS module does not fully respect offline mode and may attempt network scanning. All scanning modules should honor offline mode.
+- [x] No way to disable Certificate Transparency (CT) scans. Add a configuration/UI option to enable/disable CT scans.
+- [ ] The label "include subdomains" is unclear. Rename to "try to find subdomains" for clarity.
+- [ ] Some scanned IP addresses are labeled as "Environment US" instead of "production". Review and correct environment detection/labeling logic.
+- [ ] Internal IP addresses are not getting certificate bindings added. Ensure internal IPs are properly associated with certificates during scanning.
+- [ ] No way to pause or stop an ongoing scan. Add UI controls and backend logic to allow pausing/stopping scans in progress.
+- [ ] Some domains are not appearing in dashboard results. Investigate and fix data aggregation/filtering so all relevant domains are shown.
+
+These planned features will enhance the system's capabilities in:
+
+- Certificate Authority tracking and validation
+- Multi-instance deployment support
 - JWT certificate management
 - Scan result persistence
 - Domain lifecycle management
 - Data integrity and resilience
-- create CSR
   

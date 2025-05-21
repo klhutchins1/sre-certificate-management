@@ -22,6 +22,7 @@ The module uses Streamlit for the UI and Plotly for timeline visualizations,
 providing an interactive and user-friendly interface for certificate history analysis.
 """
 
+import plotly
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -33,6 +34,7 @@ from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from ..services.HistoryService import HistoryService
 from infra_mgmt.components.page_header import render_page_header
+from ..constants import HOST_TYPE_VIRTUAL
 
 
 def render_history_view(engine) -> None:

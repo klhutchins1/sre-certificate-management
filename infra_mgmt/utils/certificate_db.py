@@ -2,7 +2,8 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional
-from infra_mgmt.models import Certificate, Host, HostIP, CertificateBinding, CertificateScan, HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION
+from infra_mgmt.models import Certificate, Host, HostIP, CertificateBinding, CertificateScan
+from infra_mgmt.constants import HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION
 
 class CertificateDBUtil:
     """

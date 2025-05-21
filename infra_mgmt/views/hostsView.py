@@ -25,7 +25,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 from ..models import Host, HostIP, CertificateBinding, Application, Certificate
-from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types
+from ..constants import platform_options, APP_TYPES, HOST_TYPES, ENVIRONMENTS, app_types, HOST_TYPE_VIRTUAL
 from ..static.styles import load_warning_suppression, load_css
 from ..components.deletion_dialog import render_danger_zone
 import logging

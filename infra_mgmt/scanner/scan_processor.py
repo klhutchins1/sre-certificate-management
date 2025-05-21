@@ -7,10 +7,9 @@ from .domain_scanner import DomainInfo
 from ..models import (
     IgnoredDomain, Domain, DomainDNSRecord, Certificate, 
     Host, HostIP, CertificateBinding, CertificateScan, 
-    HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, 
-    ENV_PRODUCTION, IgnoredCertificate
+    IgnoredCertificate
 )
-from ..constants import PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
+from ..constants import HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION, PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION
 from .certificate_scanner import CertificateInfo
 from ..notifications import notify
 from ..settings import settings

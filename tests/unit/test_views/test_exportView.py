@@ -15,6 +15,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 from unittest.mock import ANY
+from infra_mgmt.constants import HOST_TYPE_SERVER, ENV_PRODUCTION
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,8 @@ def sample_host():
     host = Host(
         id=1,
         name="test-host",
-        host_type="Server",
-        environment="Production",
+        host_type=HOST_TYPE_SERVER,
+        environment=ENV_PRODUCTION,
         last_seen=datetime.now(),
         certificate_bindings=[],
         ip_addresses=[

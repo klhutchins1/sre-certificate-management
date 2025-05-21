@@ -35,17 +35,15 @@ from .scanner.certificate_scanner import CertificateScanner, CertificateInfo
 from .scanner import ScanManager
 from .models import (
     Certificate, Host, HostIP, CertificateScan, CertificateBinding,
-    # Host type constants
-    HOST_TYPE_SERVER, HOST_TYPE_LOAD_BALANCER, HOST_TYPE_CDN, HOST_TYPE_VIRTUAL,
-    # Environment constants
-    ENV_PRODUCTION, ENV_CERT, ENV_DEVELOPMENT, ENV_INTERNAL, ENV_EXTERNAL,
-    # Binding type constants
-    BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
-    # Platform constants
-    PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION,
     Domain
 )
-from .constants import platform_options
+from .constants import (
+    HOST_TYPE_SERVER, HOST_TYPE_LOAD_BALANCER, HOST_TYPE_CDN, HOST_TYPE_VIRTUAL,
+    ENV_PRODUCTION, ENV_CERT, ENV_DEVELOPMENT, ENV_INTERNAL, ENV_EXTERNAL,
+    BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
+    PLATFORM_F5, PLATFORM_AKAMAI, PLATFORM_CLOUDFLARE, PLATFORM_IIS, PLATFORM_CONNECTION,
+    platform_options
+)
 from .db import init_database
 # View imports
 from .views.dashboardView import render_dashboard

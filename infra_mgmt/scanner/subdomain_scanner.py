@@ -254,7 +254,7 @@ class SubdomainScanner:
             self._save_subdomain_to_db(session, domain, subdomain)
         return discovered
 
-    def scan_and_process_subdomains(self, domain: str, session, port: int = 443, check_whois: bool = True, check_dns: bool = True, scanned_domains: Set[str] = None) -> List[Dict]:
+    def scan_and_process_subdomains(self, domain: str, session, port: int = 443, check_whois: bool = True, check_dns: bool = True, scanned_domains: Set[str] = None, enable_ct: bool = True) -> List[Dict]:
         """
         Discover and process subdomains for a given domain, saving results to the database.
         Args:
@@ -264,11 +264,14 @@ class SubdomainScanner:
             check_whois (bool): Whether to check WHOIS for discovered subdomains
             check_dns (bool): Whether to check DNS for discovered subdomains
             scanned_domains (Set[str], optional): Already scanned domains to avoid duplicates
+            enable_ct (bool): Whether to use Certificate Transparency logs for subdomain discovery
         Returns:
             List[Dict]: List of processed subdomain results
         """
         scanned_domains = scanned_domains or set()
-        subdomains = self.scan_subdomains(domain, session)
+        # Use only 'cert' if CT is disabled, otherwise both
+        methods = ['cert', 'ct'] if enable_ct else ['cert']
+        subdomains = self.scan_subdomains(domain, session, methods=methods)
         results = []
         for subdomain in subdomains:
             if subdomain in scanned_domains:

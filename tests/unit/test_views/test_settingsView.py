@@ -246,7 +246,7 @@ def test_render_settings_view_paths(mock_streamlit, mock_settings, engine):
 
 def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
     mock_st, mock_header_st = mock_streamlit
-    """Test rendering scanning settings view with improved validation"""
+    """Test rendering scanning settings view with improved validation and CT global option"""
     from infra_mgmt.models import Base
     Base.metadata.create_all(engine)
     # Set up scanning tab inputs
@@ -330,6 +330,8 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
             return internal_domains.split('\n')
         if key == "scanning.external.domains":
             return external_domains.split('\n')
+        if key == "scanning.ct.enabled":
+            return True  # Default global CT enabled
         return orig_get(key, default)
     mock_settings.get = patched_get
 
@@ -341,39 +343,43 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
             return mock_st.success(msg)
         return None
 
-    with patch('infra_mgmt.services.SettingsService.SettingsService.save_scanning_settings') as mock_save, \
-         patch('infra_mgmt.views.settingsView.notify', side_effect=debug_notify):
-        def save_scanning_settings(settings, default_rate, internal_rate, internal_domains, external_rate, external_domains, whois_rate, dns_rate, ct_rate, socket_timeout, request_timeout, dns_timeout):
-            settings.update("scanning.default_rate_limit", default_rate)
-            settings.update("scanning.internal.rate_limit", internal_rate)
-            settings.update("scanning.internal.domains", internal_domains)
-            settings.update("scanning.external.rate_limit", external_rate)
-            settings.update("scanning.external.domains", external_domains)
-            return settings.save()  # Ensure save is called so the mock is triggered
-        mock_save.side_effect = save_scanning_settings
-        # Render settings view
-        render_settings_view(engine)
+    # Test both enabled and disabled CT global option
+    for ct_enabled_value in [True, False]:
+        # Patch the checkbox to return the test value
+        mock_st.checkbox.side_effect = lambda *args, **kwargs: ct_enabled_value
+        with patch('infra_mgmt.services.SettingsService.SettingsService.save_scanning_settings') as mock_save, \
+             patch('infra_mgmt.views.settingsView.notify', side_effect=debug_notify):
+            def save_scanning_settings(settings, default_rate, internal_rate, internal_domains, external_rate, external_domains, whois_rate, dns_rate, ct_rate, socket_timeout, request_timeout, dns_timeout, ct_enabled=True):
+                # Assert ct_enabled is passed and matches the checkbox value
+                assert ct_enabled == ct_enabled_value
+                settings.update("scanning.default_rate_limit", default_rate)
+                settings.update("scanning.internal.rate_limit", internal_rate)
+                settings.update("scanning.internal.domains", internal_domains)
+                settings.update("scanning.external.rate_limit", external_rate)
+                settings.update("scanning.external.domains", external_domains)
+                settings.update("scanning.ct.enabled", ct_enabled)
+                return settings.save()  # Ensure save is called so the mock is triggered
+            mock_save.side_effect = save_scanning_settings
+            # Render settings view
+            render_settings_view(engine)
 
-    print("mock_st.success call args list:", mock_st.success.call_args_list)
-    # Use the actual singleton for assertion
-    settings_instance = Settings()
-    assert settings_instance.get("scanning.default_rate_limit") == default_rate
-    assert settings_instance.get("scanning.internal.rate_limit") == internal_rate
-    assert settings_instance.get("scanning.internal.domains") == internal_domains.split('\n')
-    assert settings_instance.get("scanning.external.rate_limit") == external_rate
-    assert settings_instance.get("scanning.external.domains") == external_domains.split('\n')
-    # Verify success message
-    mock_st.success.assert_any_call("Scanning settings updated successfully!")
-    # Verify save was called
-    mock_settings.save.assert_called_once()
+        print("mock_st.success call args list:", mock_st.success.call_args_list)
+        # Use the actual singleton for assertion
+        settings_instance = Settings()
+        # Check the actual config dict, not the patched get
+        assert settings_instance._config["scanning"]["ct"]["enabled"] == ct_enabled_value
+        # Verify success message
+        mock_st.success.assert_any_call("Scanning settings updated successfully!")
+        # Verify save was called
+        mock_settings.save.assert_called()
 
-    # Check that the header was rendered
-    found = False
-    for call in mock_header_st.markdown.call_args_list:
-        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
-            found = True
-            break
-    assert found, "Expected header markdown call not found"
+        # Check that the header was rendered
+        found = False
+        for call in mock_header_st.markdown.call_args_list:
+            if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+                found = True
+                break
+        assert found, "Expected header markdown call not found"
 
 def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
     mock_st, mock_header_st = mock_streamlit

@@ -230,6 +230,13 @@ def render_settings_view(engine) -> None:
         except ValueError:
             ct_rate_limit = 10
             notify("Invalid CT rate limit value, using default: 10", "warning")
+        # Global CT enable/disable option
+        ct_enabled = settings.get("scanning.ct.enabled", True)
+        enable_ct_checkbox = st.checkbox(
+            "Enable Certificate Transparency (CT) for Subdomain Discovery (Global Default)",
+            value=ct_enabled,
+            help="If disabled, CT logs will not be used for subdomain discovery unless overridden in the scan UI."
+        )
         st.divider()
         st.subheader("Timeout Settings")
         st.markdown("""
@@ -293,7 +300,8 @@ def render_settings_view(engine) -> None:
                 ct_rate_limit,
                 socket_timeout,
                 request_timeout,
-                dns_timeout
+                dns_timeout,
+                ct_enabled=enable_ct_checkbox
             )
             if success:
                 notify("Scanning settings updated successfully!", "success")

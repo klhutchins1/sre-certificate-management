@@ -6,10 +6,9 @@ from sqlalchemy.exc import IntegrityError
 import json
 from infra_mgmt.models import (
     Base, Host, HostIP, Certificate, CertificateBinding,
-    CertificateTracking, CertificateScan,
-    HOST_TYPE_SERVER, ENV_PRODUCTION, BINDING_TYPE_IP,
-    PLATFORM_F5
+    CertificateTracking, CertificateScan
 )
+from infra_mgmt.constants import HOST_TYPE_SERVER, ENV_PRODUCTION, BINDING_TYPE_IP, PLATFORM_F5
 
 @pytest.fixture
 def engine():

@@ -977,3 +977,157 @@ def monkeypatch_host_setattr(monkeypatch):
     monkeypatch.setattr(Host, "__setattr__", custom_setattr)
     yield
     monkeypatch.setattr(Host, "__setattr__", original_setattr)
+
+# --- New tests for per-scan CT option ---
+@pytest.fixture
+def mock_status_container():
+    container = MagicMock()
+    container.text = MagicMock()
+    container.progress = MagicMock()
+    return container
+
+def test_scan_interface_ct_checkbox_defaults_to_global(engine, mock_session_state):
+    """Test that the CT checkbox defaults to the global setting from config."""
+    from infra_mgmt.views import scannerView
+    real_get = scannerView.settings.get
+    checkbox_key = "Use Certificate Transparency (CT) for Subdomain Discovery"
+    for global_ct_enabled in [True, False]:
+        def patched_get(key, default=None):
+            if key == 'scanning.ct.enabled':
+                return global_ct_enabled
+            if key == 'scanning.certificate.rate_limit':
+                return 10
+            if key in ['scanning.internal.domains', 'scanning.external.domains']:
+                return []
+            return real_get(key, default)
+        with patch.object(scannerView.settings, 'get', side_effect=patched_get), \
+             patch('infra_mgmt.views.scannerView.st') as mock_st, \
+             patch('infra_mgmt.components.page_header.st', mock_st), \
+             patch('infra_mgmt.views.scannerView.ScanService') as mock_scan_service_class:
+            default_checkbox_value = None
+            def checkbox_side_effect(label, value=True, **kwargs):
+                nonlocal default_checkbox_value
+                print(f"CHECKBOX: label={label}, value={value}")
+                if label == checkbox_key:
+                    default_checkbox_value = value
+                return value
+            mock_st.checkbox.side_effect = checkbox_side_effect
+            mock_st.text_area.return_value = "example.com"
+            mock_st.button.return_value = False
+            mock_st.columns.return_value = [MagicMock(), MagicMock()]
+            # Use a mock session state that supports attribute and dict access
+            class SessionStateMock(dict):
+                def __getattr__(self, name):
+                    try:
+                        return self[name]
+                    except KeyError:
+                        raise AttributeError(name)
+                def __setattr__(self, name, value):
+                    self[name] = value
+            mock_st.session_state = SessionStateMock()
+            # Remove the checkbox key if present
+            if checkbox_key in mock_st.session_state:
+                del mock_st.session_state[checkbox_key]
+            mock_st.expander.return_value.__enter__.return_value = MagicMock()
+            mock_st.expander.return_value.__exit__.return_value = None
+            mock_st.container.return_value.__enter__.return_value = MagicMock()
+            mock_st.container.return_value.__exit__.return_value = None
+            mock_st.progress.return_value = MagicMock()
+            mock_st.empty.return_value = MagicMock()
+            mock_st.tabs.return_value = [MagicMock(), MagicMock(), MagicMock(), MagicMock()]
+            scannerView.render_scan_interface(engine)
+            print(f"DEBUG: session_state={mock_st.session_state}")
+            print(f"DEBUG: default_checkbox_value={default_checkbox_value}, global_ct_enabled={global_ct_enabled}")
+            assert default_checkbox_value == global_ct_enabled
+
+def test_scan_interface_ct_checkbox_propagates_to_scan_options(engine, mock_session_state):
+    """Test that toggling the CT checkbox changes the scan options passed to ScanService.run_scan."""
+    from infra_mgmt.views import scannerView
+    with patch('infra_mgmt.views.scannerView.st') as mock_st, \
+         patch('infra_mgmt.components.page_header.st', mock_st), \
+         patch('infra_mgmt.views.scannerView.ScanService') as mock_scan_service_class:
+        for ct_checkbox_value in [True, False]:
+            # Patch settings.get to always return True (so only the checkbox matters)
+            scannerView.settings.get = lambda key, default=None: True
+            # Patch checkbox to return the test value
+            mock_st.checkbox.side_effect = lambda *a, **k: ct_checkbox_value
+            mock_st.text_area.return_value = "example.com"
+            mock_st.button.return_value = True
+            mock_st.columns.return_value = [MagicMock(), MagicMock()]
+            mock_st.session_state = mock_session_state
+            mock_st.expander.return_value.__enter__.return_value = MagicMock()
+            mock_st.expander.return_value.__exit__.return_value = None
+            mock_st.container.return_value.__enter__.return_value = MagicMock()
+            mock_st.container.return_value.__exit__.return_value = None
+            mock_st.progress.return_value = MagicMock()
+            mock_st.empty.return_value = MagicMock()
+            mock_st.tabs.return_value = [MagicMock(), MagicMock(), MagicMock(), MagicMock()]
+            # Patch ScanService
+            mock_scan_service = MagicMock()
+            mock_scan_service.validate_and_prepare_targets.return_value = ([('example.com', 443)], [])
+            mock_scan_service.run_scan.return_value = {
+                "success": ["example.com:443"],
+                "error": [],
+                "warning": [],
+                "no_cert": []
+            }
+            mock_scan_service_class.return_value = mock_scan_service
+            # Call the interface
+            scannerView.render_scan_interface(engine)
+            # Assert run_scan was called with enable_ct matching the checkbox
+            args, kwargs = mock_scan_service.run_scan.call_args
+            assert args[1]["enable_ct"] == ct_checkbox_value
+
+def test_scan_manager_enable_ct_propagation(scan_manager, db_session, mock_status_container, mock_scan_result):
+    """Test that enable_ct is passed to scan_and_process_subdomains in ScanManager."""
+    # Configure mocks
+    scan_manager.infra_mgmt.scan_certificate.return_value = mock_scan_result
+    scan_manager.domain_scanner.scan_domain.return_value = MagicMock()
+    # Test both enabled and disabled
+    for enable_ct in [True, False]:
+        scan_manager.subdomain_scanner.scan_and_process_subdomains.reset_mock()
+        scan_manager.scan_target(
+            session=db_session,
+            domain="example.com",
+            port=443,
+            check_subdomains=True,
+            status_container=mock_status_container,
+            enable_ct=enable_ct
+        )
+        scan_manager.subdomain_scanner.scan_and_process_subdomains.assert_called_with(
+            domain="example.com",
+            session=db_session,
+            port=443,
+            check_whois=ANY,
+            check_dns=ANY,
+            scanned_domains=ANY,
+            enable_ct=enable_ct
+        )
+
+@pytest.fixture
+def scan_manager():
+    """Create a ScanManager instance."""
+    from infra_mgmt.scanner import ScanManager
+    from infra_mgmt.settings import settings as global_settings
+    from infra_mgmt.settings import settings
+    # Deep clean config to avoid bool/list pollution
+    settings._config["scanning"] = {
+        "internal": {"domains": []},
+        "external": {"domains": []}
+    }
+    print("DEBUG: internal.domains type:", type(settings._config['scanning']['internal']['domains']), settings._config['scanning']['internal']['domains'])
+    print("DEBUG: external.domains type:", type(settings._config['scanning']['external']['domains']), settings._config['scanning']['external']['domains'])
+    def patched_get(key, default=None):
+        if key == 'scanning.certificate.rate_limit':
+            return 10
+        if key in ['scanning.internal.domains', 'scanning.external.domains']:
+            return []
+        return default
+    with patch.object(global_settings, 'get', side_effect=patched_get):
+        manager = ScanManager()
+        # Mock the certificate scanner
+        from unittest.mock import MagicMock
+        manager.infra_mgmt = MagicMock()
+        manager.domain_scanner = MagicMock()
+        manager.subdomain_scanner = MagicMock()
+        return manager

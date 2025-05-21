@@ -1,5 +1,6 @@
 from sqlalchemy import func, desc
-from ..models import Certificate, Domain, Host, HostIP, CertificateBinding, HOST_TYPE_VIRTUAL, HOST_TYPE_SERVER, ENV_INTERNAL
+from infra_mgmt.models import Certificate, Domain, Host, HostIP, CertificateBinding
+from infra_mgmt.constants import HOST_TYPE_SERVER, HOST_TYPE_VIRTUAL, ENV_INTERNAL
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime
 from sqlalchemy.orm import joinedload

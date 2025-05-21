@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from infra_mgmt.models import Base, Application, CertificateBinding, Certificate, Host, HostIP
 from infra_mgmt.notifications import notify
 from infra_mgmt.views.applicationsView import render_applications_view, render_application_details, APP_TYPES, app_types
-from infra_mgmt.constants import HOST_TYPE_SERVER, ENV_PRODUCTION
+from infra_mgmt.constants import HOST_TYPE_SERVER, ENV_PRODUCTION, HOST_TYPE_VIRTUAL
 from unittest.mock import ANY
 
 @pytest.fixture(scope="function")

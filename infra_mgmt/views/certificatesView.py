@@ -29,10 +29,9 @@ from sqlalchemy.orm import Session, joinedload
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 from ..models import (
     Certificate, CertificateBinding, Host, HostIP, CertificateScan,
-    HOST_TYPE_VIRTUAL, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT,
-    ENV_INTERNAL, ENV_PRODUCTION, CertificateTracking, Application
+    CertificateTracking, Application
 )
-from ..constants import HOST_TYPE_SERVER, platform_options
+from ..constants import HOST_TYPE_SERVER, HOST_TYPE_VIRTUAL, ENV_PRODUCTION, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, platform_options
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications

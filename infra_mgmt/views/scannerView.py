@@ -21,10 +21,8 @@ from ..static.styles import load_warning_suppression, load_css
 from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
 import time
 import ipaddress
-from ..models import (
-    Domain, Certificate, CertificateBinding, DomainDNSRecord, Host, HostIP,
-    HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION
-)
+from ..models import Host, HostIP, CertificateBinding, Certificate, Domain
+from ..constants import HOST_TYPE_SERVER, ENV_PRODUCTION
 from ..settings import settings  # Import settings for database configuration
 from urllib.parse import urlparse
 from ..services.ScanService import ScanService
@@ -194,8 +192,14 @@ internal.server.local:444"""
             st.markdown("### Scan Options")
             check_whois = st.checkbox("Get WHOIS Info", value=True)
             check_dns = st.checkbox("Get DNS Records", value=True)
-            check_subdomains = st.checkbox("Include Subdomains", value=True)
+            check_subdomains = st.checkbox("Find Subdomains", value=True)
             check_sans = st.checkbox("Scan SANs", value=True)
+            # New: CT scan option, default to global config
+            enable_ct = st.checkbox(
+                "Use Certificate Transparency (CT) for Subdomain Discovery",
+                value=settings.get('scanning.ct.enabled', True),
+                help="If disabled, only certificate SANs will be used for subdomain discovery."
+            )
             
             # Platform detection and chain validation options
             detect_platform = st.checkbox("Detect Platform", value=True, 
@@ -281,6 +285,7 @@ internal.server.local:444"""
                     "check_sans": check_sans,
                     "detect_platform": detect_platform,
                     "validate_chain": validate_chain,
+                    "enable_ct": enable_ct,  # Pass CT scan option
                     "status_container": status_container,
                     "progress_container": progress_container,
                     "current_step": None,

@@ -587,14 +587,22 @@ class CertificateScanner:
         except socket.timeout:
             self._last_cert_chain = False
             self.logger.warning(f"Certificate chain validation timed out for {address}:{port}")
-            # Optionally, set a user-friendly error attribute if needed
             self._last_error = f"Certificate chain validation timed out for {address}:{port}"
+        except socket.gaierror as e:
+            self._last_cert_chain = False
+            self.logger.warning(f"Could not resolve {address}:{port} for certificate validation: {e}")
+            self._last_error = f"Could not resolve {address}:{port} for certificate validation: {e}"
         except ssl.SSLError as verify_error:
             self._last_cert_chain = False
             self.logger.warning(f"SSL error during certificate chain validation for {address}:{port}: {str(verify_error)}")
         except Exception as verify_error:
             self._last_cert_chain = False
-            self.logger.exception(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
+            # Only log stack trace if logger is in DEBUG mode
+            if hasattr(self.logger, 'getEffectiveLevel') and self.logger.getEffectiveLevel() <= logging.DEBUG:
+                self.logger.exception(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
+            else:
+                self.logger.warning(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
+            self._last_error = f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}"
     
     def _check_dns_for_platform(self, domain: str) -> Optional[str]:
         """

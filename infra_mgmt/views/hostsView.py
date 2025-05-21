@@ -340,9 +340,10 @@ def render_details(selected_host: Host, binding: CertificateBinding = None) -> N
                             if b.site_name:
                                 st.markdown(f"**Site:** {b.site_name}")
                             
+                            # Always define dialog_key before use
+                            dialog_key = f"show_delete_host_binding_dialog_{b.id}"
                             # Add remove binding button
                             if st.button("Remove Binding", key=f"remove_{b.id}", type="secondary"):
-                                dialog_key = f"show_delete_host_binding_dialog_{b.id}"
                                 st.session_state[dialog_key] = True
                             if st.session_state.get(dialog_key, False):
                                 def on_delete_host_binding(_):

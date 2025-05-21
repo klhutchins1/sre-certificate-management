@@ -2,8 +2,9 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional
-from infra_mgmt.models import Certificate, Host, HostIP, CertificateBinding, CertificateScan
+from infra_mgmt.models import Certificate, Host, HostIP, CertificateBinding, CertificateScan, Domain
 from infra_mgmt.constants import HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION
+import re
 
 class CertificateDBUtil:
     """
@@ -76,9 +77,25 @@ class CertificateDBUtil:
             cert.chain_valid = validate_chain and cert_info.chain_valid
             cert.sans_scanned = check_sans
             cert.updated_at = datetime.now()
-        # Associate certificate with domain
+        # Associate certificate with domain (if domain_obj is a Domain)
         if domain_obj and hasattr(domain_obj, 'certificates') and cert not in domain_obj.certificates:
             domain_obj.certificates.append(cert)
+        # If domain_obj is a Host, try to find a Domain with the same name and associate
+        elif domain_obj and isinstance(domain_obj, Host):
+            domain_name = domain_obj.name
+            domain_rec = session.query(Domain).filter_by(domain_name=domain_name).first()
+            if domain_rec and cert not in domain_rec.certificates:
+                domain_rec.certificates.append(cert)
+        # For each SAN in the certificate, associate with Domain if valid
+        if hasattr(cert_info, 'san') and cert_info.san:
+            for san in cert_info.san:
+                if is_valid_domain(san):
+                    san_domain = session.query(Domain).filter_by(domain_name=san).first()
+                    if not san_domain:
+                        san_domain = Domain(domain_name=san, created_at=datetime.now(), updated_at=datetime.now())
+                        session.add(san_domain)
+                    if cert not in san_domain.certificates:
+                        san_domain.certificates.append(cert)
         # Upsert Host
         host = session.query(Host).filter_by(name=domain).first()
         if not host:
@@ -167,3 +184,7 @@ class CertificateDBUtil:
             logger.exception(f"Error during session.flush() for {domain}:{port}: {e}")
             raise
         return cert 
+
+def is_valid_domain(name):
+    pattern = r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,}$'
+    return re.match(pattern, name) is not None 

@@ -140,8 +140,10 @@ def render_scan_interface(engine) -> None:
     # Create a placeholder for notifications at the top
     notification_placeholder = st.empty()
     
-    # Always initialize scan_service
-    scan_service = ScanService(engine)
+    # Use persistent ScanService in session_state
+    if 'scan_service' not in st.session_state:
+        st.session_state.scan_service = ScanService(engine)
+    scan_service = st.session_state.scan_service
     
     # Initialize session state
     if 'scan_in_progress' not in st.session_state:
@@ -192,13 +194,13 @@ internal.server.local:444"""
             st.markdown("### Scan Options")
             check_whois = st.checkbox("Get WHOIS Info", value=True)
             check_dns = st.checkbox("Get DNS Records", value=True)
-            check_subdomains = st.checkbox("Find Subdomains", value=True)
-            check_sans = st.checkbox("Scan SANs", value=True)
+            check_subdomains = st.checkbox("Find Subdomains", value=False, help="This might add a lot of time to the scan.")
+            check_sans = st.checkbox("Scan SANs", value=False, help="This might take a while for large numbers of certificates.")
             # New: CT scan option, default to global config
             enable_ct = st.checkbox(
                 "Use Certificate Transparency (CT) for Subdomain Discovery",
-                value=settings.get('scanning.ct.enabled', True),
-                help="If disabled, only certificate SANs will be used for subdomain discovery."
+                value=settings.get('scanning.ct.enabled', False),
+                help="This might add a lot of time to the scan. But could find some subdomains that are not otherwise found."
             )
             
             # Platform detection and chain validation options
@@ -224,6 +226,9 @@ internal.server.local:444"""
         
         # Handle scan initiation
         if scan_button_clicked and not st.session_state.scan_in_progress:
+            # Always reset scan state and tracker at the start of every scan
+            scan_service.scan_manager.reset_scan_state()
+            logger.debug("[SCAN_VIEW] Called reset_scan_state on scan_manager at scan start.")
             st.session_state.scan_in_progress = True
             st.session_state.scan_results = {
                 "success": [],
@@ -317,6 +322,7 @@ internal.server.local:444"""
         st.session_state.scan_results["error"] or
         st.session_state.scan_results["warning"] or
         st.session_state.scan_results["no_cert"]
+        or st.session_state.scan_results.get("db_only", [])  # Include db_only
     )
 
     if has_results:
@@ -324,26 +330,38 @@ internal.server.local:444"""
         st.subheader("Scan Results")
         results_container = st.container()
         with results_container:
-            tab_domains, tab_certs, tab_dns, tab_errors = st.tabs([
-                "🌐 Domains",
+            tab_registrar, tab_certs, tab_dns, tab_errors = st.tabs([
+                "📑 Registrar Records",
                 "🔐 Certificates",
                 "📝 DNS Records",
                 "⚠️ Issues"
             ])
             
-            # Domains tab
-            with tab_domains:
+            # Registrar tab (formerly Domains)
+            with tab_registrar:
                 scanned_domains = list(st.session_state.scanned_domains)
-                if not scanned_domains:
+                db_only_domains = [d.split(":")[0] for d in st.session_state.scan_results.get("db_only", [])]
+                info_only_domains = [d.split(":")[0] for d in st.session_state.scan_results.get("info_only", [])]
+                # Always show domains in info_only, db_only, or scanned_domains
+                all_domains = sorted(set(scanned_domains + db_only_domains + info_only_domains))
+                if not all_domains:
                     st.markdown("No domains or IPs scanned yet.")
                 else:
-                    for domain in sorted(scanned_domains):
+                    shown = set()
+                    for domain in all_domains:
+                        if domain in shown:
+                            continue
+                        shown.add(domain)
                         # Use scan_service to get all display data as a dict
                         domain_data = scan_service.get_domain_display_data(engine, domain)
                         if not domain_data["success"]:
                             notify(domain_data["error"], "error")
                             continue
                         data = domain_data["data"]
+                        if domain in db_only_domains:
+                            notify(f"Domain '{domain}' could not be resolved via DNS, but database info is shown below.", "warning")
+                        if domain in info_only_domains:
+                            notify(f"Partial information found for domain '{domain}'. Some data (e.g., certificate) may be missing.", "info")
                         if data["type"] == "host":
                             st.markdown(f"### IP: {data['name']}")
                             col1, col2 = st.columns(2)
@@ -360,6 +378,7 @@ internal.server.local:444"""
                                     st.write("**Ports:**", ", ".join(str(p) for p in data["ports"]))
                         elif data["type"] == "domain":
                             st.markdown(f"### Domain: {data['domain_name']}")
+                            st.markdown("#### Registrar Records")
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.write("**Registrar:**", data.get("registrar", "N/A"))
@@ -398,7 +417,7 @@ internal.server.local:444"""
                                     st.write("**Valid Until:**", cert.valid_until.strftime("%Y-%m-%d"))
                                     st.write("**Serial Number:**", cert.serial_number)
                                 with col2:
-                                    st.write("**Issuer:**", cert.issuer.get('CN', 'Unknown'))
+                                    st.write("**Issuer:**", cert.issuer.get('commonName', cert.issuer.get('CN', 'Unknown')))
                                     st.write("**Chain Valid:**", "✅" if cert.chain_valid else "❌")
                                     st.write("**SANs:**", ", ".join(cert.san))
                                     st.write("**Signature Algorithm:**", cert.signature_algorithm)
@@ -497,6 +516,9 @@ internal.server.local:444"""
                           st.session_state.scan_results["no_cert"]):
                         st.markdown("### No Issues Found")
                         st.markdown("All scans completed successfully with no issues detected.")
+            
+            # Show notifications after registrar tab content
+            show_notifications()
     
     # Show notifications after all content is rendered
     with notification_placeholder:
@@ -533,4 +555,5 @@ def update_progress(sub_step: int, total_sub_steps: int, progress_container: Str
         progress = calculate_progress(sub_step, total_sub_steps, current_step, total_steps)
         progress_container.progress(progress)
         queue_size = st.session_state.scan_manager.infra_mgmt.tracker.queue_size()
+        # Only show progress numbers, not domain/port or completed/remaining
         progress_container.text(f"Scanning target {current_step} of {total_steps} (Remaining in queue: {queue_size})")

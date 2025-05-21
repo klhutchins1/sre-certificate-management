@@ -313,7 +313,15 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
     def mock_update(key, value):
         update_calls.append((key, value))
         print(f"Settings update called with key: {key}, value: {value}")
-        return original_update(key, value)
+        # Create nested dicts for dot-separated keys
+        keys = key.split('.')
+        d = mock_settings._config
+        for k in keys[:-1]:
+            if k not in d or not isinstance(d[k], dict):
+                d[k] = {}
+            d = d[k]
+        d[keys[-1]] = value
+        return True
     
     mock_settings.update = mock_update
     

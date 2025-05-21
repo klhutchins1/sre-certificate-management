@@ -491,7 +491,7 @@ def test_render_certificate_card(mock_streamlit, sample_certificate, session):
         mock_st.markdown.assert_any_call('**Total Bindings:** 0')
         mock_st.markdown.assert_any_call('**Thumbprint:** `abcdef123456`')
         mock_st.markdown.assert_any_call('**Chain Status:** ⚠️ Unverified Chain')
-        mock_st.markdown.assert_any_call('**Key Usage:** Digital Signature, Key Encipherment')
+        mock_st.markdown.assert_any_call('**Issuer Common Name:** Test CA')
         mock_st.markdown.assert_any_call('**Platforms:** *None*')
         mock_st.markdown.assert_any_call('### ⚠️ Danger Zone')
 

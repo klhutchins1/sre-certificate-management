@@ -57,7 +57,10 @@ def test_scan_manager_initialization(scan_manager):
     assert hasattr(scan_manager, 'domain_scanner')
     assert hasattr(scan_manager, 'subdomain_scanner')
     assert hasattr(scan_manager, 'scan_results')
-    assert scan_manager.scan_results == {'success': [], 'error': [], 'warning': [], 'no_cert': []}
+    # Allow extra keys in scan_results, but required keys must be present and empty
+    for key in ['success', 'error', 'warning', 'no_cert']:
+        assert key in scan_manager.scan_results
+        assert scan_manager.scan_results[key] == []
 
 def test_process_scan_target(scan_manager):
     """Test processing a scan target."""
@@ -120,9 +123,10 @@ def test_scan_target_error(scan_manager, mock_session, mock_status_container):
 
 def test_scan_target_no_certificate(scan_manager, mock_session, mock_status_container):
     """Test handling when no certificate is found."""
-    # Configure mock to return None
+    # Configure mock to return None for certificate and domain info
     scan_manager.infra_mgmt.scan_certificate.return_value = None
-    
+    scan_manager.domain_scanner.scan_domain.return_value = None
+
     # Test the scan
     result = scan_manager.scan_target(
         session=mock_session,
@@ -130,9 +134,10 @@ def test_scan_target_no_certificate(scan_manager, mock_session, mock_status_cont
         port=443,
         status_container=mock_status_container
     )
-    
-    assert result is False
-    assert "example.com" in scan_manager.scan_results["no_cert"]
+    # Should return True (scan completed, but nothing found)
+    assert result is True
+    # Should record in error (with a message starting with the domain:port)
+    assert any(e.startswith("example.com:443") for e in scan_manager.scan_results["error"])
 
 def test_scan_target_with_subdomains(scan_manager, mock_session, mock_status_container, mock_scan_result):
     """Test scanning with subdomain discovery."""

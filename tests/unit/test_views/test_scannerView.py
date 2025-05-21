@@ -416,7 +416,8 @@ def test_render_scan_interface_with_input(engine, mock_session_state):
     mock_st = MagicMock(spec=[
         'title', 'text_area', 'checkbox', 'columns', 'session_state',
         'empty', 'expander', 'markdown', 'button', 'container',
-        'progress', 'spinner', 'info', 'error', 'warning', 'divider', 'subheader', 'tabs', 'experimental_rerun'
+        'progress', 'spinner', 'info', 'error', 'warning', 'divider', 'subheader', 
+        'tabs', 'experimental_rerun', 'write'
     ])
     mock_st.tabs.return_value = [MagicMock(), MagicMock(), MagicMock(), MagicMock()]
     mock_st.text_area.return_value = "example.com\ntest.com:443"
@@ -1055,6 +1056,7 @@ def test_scan_interface_ct_checkbox_propagates_to_scan_options(engine, mock_sess
             mock_st.button.return_value = True
             mock_st.columns.return_value = [MagicMock(), MagicMock()]
             mock_st.session_state = mock_session_state
+            mock_st.session_state.scan_in_progress = False  # Ensure scan can be triggered
             mock_st.expander.return_value.__enter__.return_value = MagicMock()
             mock_st.expander.return_value.__exit__.return_value = None
             mock_st.container.return_value.__enter__.return_value = MagicMock()
@@ -1075,8 +1077,12 @@ def test_scan_interface_ct_checkbox_propagates_to_scan_options(engine, mock_sess
             # Call the interface
             scannerView.render_scan_interface(engine)
             # Assert run_scan was called with enable_ct matching the checkbox
+            assert mock_scan_service.run_scan.called, "ScanService.run_scan was not called"
             args, kwargs = mock_scan_service.run_scan.call_args
             assert args[1]["enable_ct"] == ct_checkbox_value
+            # Reset for next iteration
+            mock_scan_service.run_scan.reset_mock()
+            mock_st.session_state.clear()
 
 def test_scan_manager_enable_ct_propagation(scan_manager, db_session, mock_status_container, mock_scan_result):
     """Test that enable_ct is passed to scan_and_process_subdomains in ScanManager."""

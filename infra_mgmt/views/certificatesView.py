@@ -315,8 +315,10 @@ def render_certificate_overview(cert: Certificate, session) -> None:
     with col2:
         st.markdown(f"**Thumbprint:** `{cert.thumbprint}`")
         st.markdown(f"**Chain Status:** {'🔒 Valid Chain' if cert.chain_valid else '⚠️ Unverified Chain'}")
-        st.markdown(f"**Key Usage:** {cert.key_usage if cert.key_usage else '*Not specified*'}")
-        
+        # Show issuer commonName (or CN) instead of key usage
+        issuer = cert.issuer or {}
+        issuer_cn = issuer.get('commonName') or issuer.get('CN') or '*Not specified*'
+        st.markdown(f"**Issuer Common Name:** {issuer_cn}")
         # Add platforms
         platforms = sorted(set(b.platform for b in cert.certificate_bindings if b.platform))
         st.markdown(f"**Platforms:** {', '.join(platforms) if platforms else '*None*'}")

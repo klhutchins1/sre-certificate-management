@@ -25,9 +25,12 @@ class ScanService:
             "success": [],
             "error": [],
             "warning": [],
-            "no_cert": []
+            "no_cert": [],
+            "db_only": [],
+            "info_only": []  # New category for domains with partial info
         }
         self.session_factory = sessionmaker(bind=engine)
+        print(f"[DEBUG] ScanService initialized: {id(self)}")
 
     def validate_and_prepare_targets(self, scan_input: str) -> Tuple[List[Tuple[str, int]], List[str]]:
         """
@@ -41,6 +44,13 @@ class ScanService:
         errors = []
         entries = [h.strip() for h in scan_input.split('\n') if h.strip()]
         with self.session_factory() as session:
+            def is_ip_address_str(addr):
+                try:
+                    import ipaddress
+                    ipaddress.ip_address(addr)
+                    return True
+                except Exception:
+                    return False
             for entry in entries:
                 is_valid, hostname, port, error = self.scan_manager.process_scan_target(entry, session)
                 if is_valid:
@@ -58,50 +68,67 @@ class ScanService:
         Returns:
             Dict[str, Any]: Aggregated scan results
         """
-        self.scan_manager.reset_scan_state()
         self.scan_results = {
             "success": [],
             "error": [],
             "warning": [],
-            "no_cert": []
+            "no_cert": [],
+            "db_only": [],
+            "info_only": []  # New category for domains with partial info
         }
         with self.session_factory() as session:
-            # --- Ensure root domains are also scanned ---
             def get_root_domain(domain_name: str) -> str:
                 if not domain_name or not isinstance(domain_name, str):
                     return ""
-                parts = domain_name.split('.')
-                if len(parts) >= 2:
-                    return '.'.join(parts[-2:])
-                return domain_name
-
-            # Collect all root domains from targets
+                # Only return root domain for valid domain names, not IPs
+                try:
+                    import ipaddress
+                    ipaddress.ip_address(domain_name)
+                    return domain_name
+                except Exception:
+                    parts = domain_name.split('.')
+                    if len(parts) >= 2:
+                        return '.'.join(parts[-2:])
+                    return domain_name
             root_targets = set()
             for hostname, port in targets:
-                root = get_root_domain(hostname)
-                root_targets.add((root, port))
-            # Add initial targets to the scan queue
+                # Only add root domains for valid domain names, not IPs
+                try:
+                    import ipaddress
+                    ipaddress.ip_address(hostname)
+                    continue  # Skip adding root for IPs
+                except Exception:
+                    root = get_root_domain(hostname)
+                    root_targets.add((root, port))
             for hostname, port in targets:
                 self.scan_manager.add_to_queue(hostname, port, session)
-            # Add root domains to the scan queue (if not already present)
             for root, port in root_targets:
                 self.scan_manager.add_to_queue(root, port, session)
+            # Main scan loop: process the queue until empty
+            # This ensures that any new targets (e.g., discovered hostnames) are also scanned
             while self.scan_manager.has_pending_targets():
                 target = self.scan_manager.get_next_target()
                 if not target:
                     break
-                # Scan the target first
                 try:
-                    self.scan_manager.scan_target(
+                    scan_result = self.scan_manager.scan_target(
                         session=session,
                         domain=target[0],
                         port=target[1],
                         **options
                     )
+                    # Always check for registrar info after scan, regardless of scan_result
+                    db_domain = session.query(Domain).filter_by(domain_name=target[0]).first()
+                    db_key = f"{target[0]}:{target[1]}"
+                    has_registrar = db_domain and (db_domain.registrar or db_domain.registration_date or db_domain.expiration_date or db_domain.owner)
+                    already_in_results = any([
+                        db_key in self.scan_results[cat] for cat in ["success", "db_only", "info_only"]
+                    ])
+                    if has_registrar and not already_in_results:
+                        self.scan_results["info_only"].append(db_key)
                 except Exception as e:
                     self.scan_results["error"].append(f"{target[0]}:{target[1]} - {str(e)}")
                     session.rollback()
-                # Now update progress and status (but do NOT set to complete here)
                 completed = len(self.scan_manager.infra_mgmt.tracker.scanned_endpoints)
                 remaining = len(self.scan_manager.infra_mgmt.tracker.scan_queue)
                 total = completed + remaining
@@ -109,21 +136,28 @@ class ScanService:
                 if options.get("progress_container"):
                     options["progress_container"].progress(progress)
                     options["progress_container"].text(
-                        f"Scanning target {completed} of {total} (Remaining in queue: {remaining}) [{target[0]}:{target[1]}]"
+                        f"Scanning target {completed} of {total} (Remaining in queue: {remaining})"
                     )
                 if options.get("status_container"):
                     options["status_container"].text(
-                        f"Scanning {target[0]}:{target[1]} (Completed: {completed}, Remaining: {remaining})"
+                        f"Scanning {target[0]}:{target[1]}"
                     )
-            # After all scans, set progress to complete
             session.commit()
             if options.get("progress_container"):
                 options["progress_container"].progress(1.0)
                 options["progress_container"].text("Scan completed!")
             if options.get("status_container"):
                 options["status_container"].text("Scan completed!")
-        # Copy results from scan_manager
-        self.scan_results = dict(self.scan_manager.scan_results)
+        # After the scan loop, before returning results:
+        final_results = dict(self.scan_manager.scan_results)
+        # Ensure info_only is present and merged
+        final_results['info_only'] = list(set(self.scan_results.get('info_only', [])) | set(final_results.get('info_only', [])))
+        self.scan_results = final_results
+        # Merge in db_only results
+        if "db_only" in self.scan_results:
+            self.scan_results["db_only"].extend([k for k in self.scan_results["db_only"] if k not in self.scan_results["db_only"]])
+        else:
+            self.scan_results["db_only"] = []
         return self.scan_results
 
     def get_scan_results(self) -> Dict[str, Any]:
@@ -296,6 +330,17 @@ class ScanService:
                 domain = session.query(Domain).filter_by(domain_name=domain_name).first()
                 if not domain:
                     return {"success": False, "error": "Domain not found"}
+                # Get DNS records
+                dns_records = [
+                    {
+                        "type": r.record_type,
+                        "name": r.name,
+                        "value": r.value,
+                        "ttl": r.ttl,
+                        "priority": r.priority
+                    }
+                    for r in domain.dns_records
+                ] if domain.dns_records else []
                 return {
                     "success": True,
                     "data": {
@@ -306,7 +351,8 @@ class ScanService:
                         "expiration_date": domain.expiration_date.strftime("%Y-%m-%d") if domain.expiration_date else None,
                         "owner": domain.owner,
                         "cert_count": len(domain.certificates),
-                        "dns_count": len(domain.dns_records)
+                        "dns_count": len(domain.dns_records),
+                        "dns_records": dns_records,
                     }
                 }
         except Exception as e:

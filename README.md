@@ -553,7 +553,7 @@ These planned features will enhance the system's capabilities in:
 - [ ] Some scanned IP addresses are labeled as "Environment US" instead of "production". Review and correct environment detection/labeling logic.
 - [ ] Internal IP addresses are not getting certificate bindings added. Ensure internal IPs are properly associated with certificates during scanning.
 - [ ] No way to pause or stop an ongoing scan. Add UI controls and backend logic to allow pausing/stopping scans in progress.
-- [ ] Some domains are not appearing in dashboard results. Investigate and fix data aggregation/filtering so all relevant domains are shown.
+- [x] Some domains are not appearing in dashboard results. Investigate and fix data aggregation/filtering so all relevant domains are shown.
 
 These planned features will enhance the system's capabilities in:
 

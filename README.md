@@ -76,15 +76,15 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
   - Scan domains you want to track registrar and certificate Info.
   - ![Scan](https://github.com/klhutchins1/sre-certificate-management/blob/main/images/Screenshot-Certificate.png "Scan")
 - **Viewing Certificates:** "Certificates" page for list/detail, SANs, associations.
-  - ![Certificate](https://github.com/klhutchins1/sre-certificate-management/images/Screenshot-Certificate.png "Certificate")
+  - ![Certificate](https://github.com/klhutchins1/sre-certificate-management/blob/main/images/Screenshot-Certificate.png "Certificate")
 - **Managing Hosts:** "Hosts" page with AG Grid, filtering, status indicators, details.
-  - ![Host](https://github.com/klhutchins1/SRE-CertificateManagement/images/Screenshot-Host.png "Host")
+  - ![Host](https://github.com/klhutchins1/sre-certificate-management/blob/main/images/Screenshot-Host.png "Host")
 - **Dashboard:** Overview of certificates, expiring soon, timeline.
-  - ![Dashboard](https://github.com/klhutchins1/SRE-CertificateManagement/images/Screenshot-Dashboard.png "Dashboard")
+  - ![Dashboard](https://github.com/klhutchins1/sre-certificate-management/blob/main/images/Screenshot-Dashboard.png "Dashboard")
 - **Domain:** Overview of Domain and DNS information
-  - ![Domain](https://github.com/klhutchins1/SRE-CertificateManagement/images/Screenshot-Domain.png "Domain")
+  - ![Domain](https://github.com/klhutchins1/sre-certificate-management/blob/main/images/Screenshot-Domain.png "Domain")
 - **History** Previosly scanned Certificates and scans
-  - ![History](https://github.com/klhutchins1/SRE-CertificateManagement/images/Screenshot-History.png "History")
+  - ![History](https://github.com/klhutchins1/sre-certificate-management/blob/main/images/Screenshot-History.png "History")
   
 ---
 

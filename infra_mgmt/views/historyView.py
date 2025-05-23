@@ -666,7 +666,7 @@ def render_cn_history(engine) -> None:
         )
         if selected_cn:
             certificates = HistoryService.get_certificates_by_cn(session, selected_cn)
-            if certificates:
+            if certificates and len(certificates) > 0:
                 # Prepare certificate history data
                 cert_history = []
                 for cert in certificates:
@@ -855,11 +855,19 @@ def render_cn_history(engine) -> None:
                 )
                 
                 # Handle certificate selection for detailed view
-                if grid_response['selected_rows']:
-                    selected = grid_response['selected_rows'][0]
+                selected_rows = grid_response.get('selected_rows', [])
+                if isinstance(selected_rows, pd.DataFrame):
+                    if not selected_rows.empty:
+                        selected = selected_rows.iloc[0].to_dict()
+                    else:
+                        selected = None
+                elif isinstance(selected_rows, list) and selected_rows:
+                    selected = selected_rows[0]
+                else:
+                    selected = None
+                if selected and '_id' in selected:
                     cert_id = selected['_id']
                     selected_cert = next((c for c in certificates if c.id == cert_id), None)
-                    
                     if selected_cert:
                         st.divider()
                         st.subheader("Certificate Details")
@@ -878,7 +886,7 @@ def render_cn_history(engine) -> None:
                                     san_list = selected_cert.san
                                     if isinstance(san_list, str):
                                         san_list = san_list.replace("'", "").replace("[", "").replace("]", "").split(",")
-                                    san_list = [domain.strip(" '\"[]") for domain in san_list if domain and domain.strip()]
+                                    san_list = [domain.strip(" '[]\"") for domain in san_list if domain and domain.strip()]
                                     for san in sorted(set(san_list)):
                                         st.text(san)
                                 except Exception as e:

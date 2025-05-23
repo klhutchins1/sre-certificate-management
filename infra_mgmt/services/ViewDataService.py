@@ -155,6 +155,7 @@ class ViewDataService(BaseService):
                 for host in hosts:
                     table_data.append({
                         "Hostname": host.name,
+                        "IP Addresses": ', '.join(ip.ip_address for ip in getattr(host, 'ip_addresses', [])),
                         "Type": host.host_type,
                         "Environment": host.environment,
                         "Description": host.description or "",
@@ -164,6 +165,7 @@ class ViewDataService(BaseService):
                 df = pd.DataFrame(table_data)
                 column_config = {
                     "Hostname": {"minWidth": 200, "flex": 2},
+                    "IP Addresses": {"minWidth": 200, "flex": 2},
                     "Type": {"minWidth": 120},
                     "Environment": {"minWidth": 120},
                     "Description": {"minWidth": 200},

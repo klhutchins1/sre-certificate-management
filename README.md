@@ -1,566 +1,137 @@
 # Certificate Management System
 
-## Feature Implementation & Test Checklist
+## 1. Overview
 
-- [x] Certificate Management (view, search, filter, status, associations)
-- [x] Host Management (inventory, types, IPs)
-- [x] Domain Management (registration, DNS, associations)
-- [x] Infrastructure Mapping (certificates ↔ hosts/domains/applications)
-- [x] Scanning & Monitoring (internal/external, SANs, scan history, alerts)
-- [x] Export & Reporting (CSV/PDF, templates, timeline/charts)
-- [x] Configuration Management (YAML, web editor, multi-location, env overrides)
-- [x] Backup & Restore (automated/manual, manifests, verification)
-- [x] Error Handling & Exception Hierarchy (custom exceptions, logging)
-- [x] Performance for Small-to-Medium Scale (AG Grid, Streamlit, SQLite)
-- [x] Unit & Integration Tests (models, views, scanner, settings)
-- [x] Test Data & Error Scenarios (backup/restore, edge cases)
-- [ ] Planned Enhancements (data sync, advanced validation, multi-instance, etc.)
-- [ ] Scalability for Large Deployments (multi-instance, locking, concurrency)
-- [ ] Security Enhancements (role-based access, audit logging, secret management)
+A comprehensive web-based system for tracking and managing SSL/TLS certificates across infrastructure components. Features include certificate/host/domain tracking, scanning, reporting, configuration, and backup.
 
 ---
 
-## Review Readiness
+## 2. Features
 
-This document is prepared for formal review. The following criteria have been addressed:
+### Core Features
 
-- **Documentation Completeness:**
-  - All major features, modules, and interfaces are documented with traceability to code and requirements.
-  - Usage instructions, troubleshooting, and configuration options are clearly described.
-  - Known issues and planned enhancements are listed for transparency.
+- **Certificate Tracking:** View, search, filter, and track SSL/TLS certificates, including status, associations, and history.
+- **Host & Domain Tracking:** Inventory, types, IPs, DNS, and associations.
+- **Infrastructure Mapping:** Visualize relationships between certificates, hosts, and domains.
+- **Scanning & Monitoring:** Internal/external scans, SANs, scan history, alerts, and certificate chain validation.
+- **Export & Reporting:** CSV/PDF exports, customizable templates, timeline/charts.
+- **Configuration & Backup:** YAML-based config, web editor, multi-location, env overrides, automated/manual backup/restore.
+- **User Interface:** Modern web UI with AG Grid, advanced filtering, responsive design.
+- **Error Handling:** Custom exceptions, logging, and robust error management.
+- **Testing:** Unit/integration tests, edge case coverage, test data for backup/restore.
 
-- **Test Coverage:**
-  - Unit and integration tests exist for all core features (models, views, scanner, settings, backup/restore).
-  - Error and edge case scenarios are covered in the test suite.
-  - Test data is available for backup/restore and validation.
+### Planned & Upcoming Features
 
-- **Traceability:**
-  - Each requirement and feature is cross-referenced with implementation and test status.
-  - Checklist at the top of this document provides at-a-glance status for reviewers.
-
-- **Review Notes:**
-  - Planned enhancements and known limitations are clearly identified.
-  - All documentation is up to date with the current codebase.
-  - This document is ready for stakeholder and technical review.
+- **Data Synchronization:** Environment-specific scanning, database export/import, incremental updates, conflict resolution.
+- **Advanced Validation:** Complete certificate chain validation, revocation checking, OCSP stapling.
+- **Enhanced Search:** Full-text search, advanced filtering, bulk actions.
+- **Multi-Instance Support:** Database locking, concurrent access, conflict resolution.
+- **Security Enhancements:** Role-based access, audit logging, secret management.
+- **Domain Management:** Registration/expiration tracking, ownership monitoring, wildcard support.
+- **Data Resilience:** Locking, rollback, audit trail, versioning.
+- **Scanning:** Scan certificates from associated bindings.
 
 ---
 
-A comprehensive web-based system for tracking and managing SSL/TLS certificates across various infrastructure components.
-
-## Installation
+## 3. Installation
 
 ### Standard Installation
 
-1. Clone the repository:
-
 ```bash
-git clone https://github.com/yourusername/SRE-CertificateManagement.git
+git clone https://github.com/klhutchins1/SRE-CertificateManagement.git
 cd SRE-CertificateManagement
-```
+  # Optional: Create and activate a virtual environment for Python
+  # python -m venv venv
+  # venv\Scripts\activate
 
-2. Create and activate a virtual environment:
-
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux/Mac
-python3 -m venv venv
-source venv/bin/activate
-```
-
-3. Install requirements:
-
-```bash
 pip install -r requirements.txt
-```
-
-4. Run the application:
-
-```bash
-# Method 1: Using custom runner (recommended)
 python run_custom.py
 
-# Method 2: Using streamlit directly (alternative)
-streamlit run run.py
+# or
+source venv/bin/activate  # Linux/Mac
+pip install -r requirements.txt
+python run_custom.py  # or: streamlit run run.py
 ```
 
-The application will be available at http://localhost:8501 by default.
-
-### Troubleshooting
-
-If you encounter port conflicts, you can modify the port in `run_custom.py` by changing the `--server.port` value.
-
-To see detailed logs of the application startup:
-
-1. Run the application using the custom runner
-2. Check the `streamlit_runner.log` file in the application directory
-3. The log file contains detailed information about the startup process and any errors
+App runs at <http://localhost:8501>.
 
 ### Offline Installation
 
-1. On a machine with internet access:
+- Download requirements on an online machine, copy to `requirements_offline`, then:
 
 ```bash
-# Create requirements folder
-mkdir requirements_offline
-cd requirements_offline
-
-# Download all required packages
-pip download -r requirements.txt
-
-# Copy the following to a zip/USB:
-# - requirements_offline folder
-# - All project files
-```
-
-2. On the offline machine:
-
-```bash
-# Extract/copy files
-# Create and activate virtual environment as above
-
-# Install from downloaded files
 pip install --no-index --find-links requirements_offline -r requirements.txt
 ```
 
-## Usage Guide
-
-### Scanning Certificates
-
-1. Navigate to "Scan" in the sidebar
-2. Enter hostnames (one per line)
-3. Click "Start Scan"
-4. View results and any errors
-
-### Viewing Certificates
-
-1. Go to "Certificates" page
-2. View list of all certificates
-3. Select a certificate to see:
-   - Subject Alternative Names (SANs)
-   - Associated hosts
-   - Detailed certificate information
-
-### Managing Hosts
-
-1. Access "Hosts" page
-2. View hosts in interactive AG Grid table with:
-   - Sortable columns
-   - Built-in filtering
-   - Real-time search
-   - Color-coded status indicators
-3. Select a host to see:
-   - Detailed host information
-   - Associated certificates
-   - Certificate status and details
-4. Features:
-   - Modern, responsive grid interface
-   - Advanced filtering capabilities
-   - Quick access to certificate details
-   - Color-coded status indicators
-   - Efficient data handling
-
-### Dashboard
-
-- View total certificates and hosts
-- See certificates expiring soon
-- Timeline of certificate validity periods
-
-## Features
-
-### Certificate Management
-
-- [x] View list of all SSL/TLS certificates
-- [x] Display detailed certificate information:
-  - Serial number
-  - Thumbprint
-  - Expiration date
-  - Issuer
-  - Subject
-  - Subject Alternative Names (SAN)
-  - Key usage
-  - Algorithm
-- [x] Track certificate status (active, expired, pending renewal)
-- [x] Store replacement dates and associated ticket numbers
-- [x] Track certificate hosting platform:
-  - F5
-  - Akamai
-  - Cloudflare
-  - Windows Server (IIS)
-  - Connection certificates
-
-### Export Features
-
-- [x] CSV Export:
-  - Certificate list exports
-  - Host list exports
-  - Custom field selection
-- [x] PDF Export:
-  - Detailed certificate reports
-  - Host inventory reports
-  - Customizable templates
-- [x] Timeline Visualization:
-  - Certificate validity timeline
-  - Interactive charts
-  - Export to image format
-
-### Data Synchronization
-
-- [ ] Environment-Specific Scanning:
-  - VDI Mode: Internal server and F5 certificate scanning
-  - Desktop Mode: External and F5 certificate scanning
-  - Mode auto-detection based on network access
-- [ ] Database Export/Import:
-  - Export scanned data as portable database files
-  - Merge databases from different environments
-  - Conflict resolution for duplicate entries
-  - Automatic backup before merge operations
-- [ ] Incremental Updates:
-  - Track scan origin and timestamp
-  - Only sync new or modified entries
-  - Preserve local modifications
-  - Conflict detection and resolution
-- [ ] Data Validation:
-  - Verify data integrity during import
-  - Validate certificate chains across environments
-  - Check for expired or revoked certificates
-  - Report conflicts and inconsistencies
-
-### Infrastructure Mapping
-
-- [x] Associate certificates with:
-  - IP addresses
-  - Hostnames
-  - DNS entries
-- [x] View all DNS/Hostnames using a specific certificate
-- [x] View certificate history for specific IP addresses
-
-### Scanning & Monitoring
-
-- [x] Scan DNS/Hostnames for current certificate information
-- [x] Automatically scan and track all DNS names in certificate SAN
-- [x] Auto-associate discovered hostnames with certificates
-- [x] Track last scan date
-- [x] Alert on approaching expiration dates
-- [x] Verify certificate chain validity
-
-### Historical Tracking
-
-- [x] Certificate deployment history
-- [x] Previous certificates per IP/hostname
-- [x] Changes in certificate assignments
-- [x] Scan history
-
-### User Interface
-
-- [x] Web-based interface with modern AG Grid tables
-- [x] Certificate list view with advanced filtering and sorting
-- [x] Host management with interactive grid interface
-- [x] Detailed certificate view
-- [x] Infrastructure view
-- [x] Scanning interface
-- [x] Historical data visualization
-- [x] Search functionality
-- [x] Settings management interface
-
-### Configuration Management
-
-- [x] YAML-based configuration file
-- [x] Multiple configuration locations support
-  - Local directory
-  - User home directory
-  - System-wide configuration
-- [x] Environment variable override support
-- [x] Web interface for settings management
-- [x] Configurable scanning profiles
-  - Internal scanning settings
-  - External scanning settings
-  - Rate limiting and delays
-- [x] Alert thresholds configuration
-- [x] Export settings management
-- [x] Automated backup system
-  - Database backups
-  - Configuration backups
-  - Backup manifests
-
-### Available Settings
-
-#### Database and Backup Settings
-
-- `paths.database`: Path to the SQLite database file
-  - Default: `data/certificates.db`
-  - Can be relative or absolute path
-- `paths.backups`: Directory for storing backups
-  - Default: `data/backups`
-  - Used for database and settings backups
-
-#### Scanning Profiles
-
-##### Internal Scanning
-
-- `scanning.internal.rate_limit`: Maximum requests per minute
-  - Default: 10
-  - Adjust based on network capacity
-- `scanning.internal.delay`: Delay between requests (seconds)
-  - Default: 2
-  - Higher values reduce network load
-- `scanning.internal.domains`: List of internal domains
-  - Used to identify internal scanning targets
-  - One domain per line in settings interface
-
-##### External Scanning
-
-- `scanning.external.rate_limit`: Maximum requests per minute
-  - Default: 5
-  - Lower than internal to respect external services
-- `scanning.external.delay`: Delay between requests (seconds)
-  - Default: 5
-  - Higher than internal to avoid triggering rate limits
-- `scanning.external.domains`: List of external domains
-  - Used to identify external scanning targets
-  - One domain per line in settings interface
-
-#### Alert Configuration
-
-##### Certificate Expiry Warnings
-
-- `alerts.expiry_warnings`: List of warning thresholds
-  - Info level: 90 days before expiry
-  - Warning level: 30 days before expiry
-  - Critical level: 7 days before expiry
-- `alerts.failed_scans.consecutive_failures`: Number of failed scans before alerting
-  - Default: 3
-  - Helps avoid false positives
-- `alerts.persistence_file`: Location of alert state storage
-  - Default: `data/alerts.json`
-  - Tracks acknowledged/unacknowledged alerts
-
-## Implementation
-
-### Technology Stack
-
-- Python 3.x
-- Streamlit for UI
-- SQLite database
-- PyYAML for configuration
-- Certificate scanning libraries:
-  - ssl
-  - OpenSSL
-  - cryptography
-  - socket
-
-### Core Components
-
-- Certificate Scanner: Python-based scanning engine
-  - Based on existing getCertificates.py
-  - Enhanced with SAN processing
-  - Modular design for UI integration
-- Database Layer: SQLite with SQLAlchemy
-- Web Interface: Streamlit dashboard
-- Settings Management: YAML-based configuration
-- Report Generator: PDF/CSV export functionality
-
-### Pending Features
-
-#### Data Synchronization Implementation
-
-- [ ] Environment Detection and Configuration:
-  - Network connectivity checks
-  - Environment-specific scanning profiles
-  - Automatic mode switching
-  - Configuration persistence
-
-- [ ] Database Operations:
-  - SQLite database file compression
-  - Incremental database dumps
-  - Three-way merge algorithm
-  - Transaction-safe imports
-
-- [ ] User Interface:
-  - Environment status indicator
-  - Manual sync trigger option
-  - Sync history and logs
-  - Conflict resolution interface
-  - Progress tracking for long operations
-
-- [ ] Data Integrity:
-  - Checksums for exported data
-  - Version tracking for records
-  - Audit logging of sync operations
-  - Rollback capabilities
-
-#### Advanced Certificate Validation
-
-- [ ] Complete certificate chain validation
-- [ ] Root certificate verification
-- [ ] Intermediate certificate tracking
-- [ ] Certificate revocation checking
-- [ ] OCSP stapling support
-
-#### Enhanced Search Capabilities
-
-- [ ] Full-text search across all fields
-- [ ] Advanced filtering and sorting
-
-- [ ] Bulk actions on search results
-
-
-#### Settings Management Interface
-
-- [ ] Web-based configuration editor
-- [ ] Rate limit configuration
-- [ ] Configuration validation
-
-#### Automated Backup System
-
-- [ ] Backup verification
-- [ ] Restore testing
-
-## Development Approach
-
-### Phase 1: Core Features
-
-1. Port/adapt existing scanning code
-2. Setup SQLite database schema
-3. Create basic Streamlit interface
-
-### Phase 2: Infrastructure Integration
-
-1. Scanning functionality
-2. Platform integration
-3. Assignment management
-
-### Phase 3: Advanced Features
-
-1. Historical tracking
-2. Advanced reporting
-3. Search capabilities
-
-### Phase 4: Enhancement
-
-1. Performance optimization
-2. Advanced certificate validation
-3. History page does not need Scan Trends
-4. Scan button color should be green
-5. Scan button should be disabled when scanning is in progress
-6. Scan results should be organized better
-7. When scanning is in progress, the site should show a loading spinner sooner and stay present longer
-8. History page should show correct host instead of unknown host.
-9.  Hosts page should be using ag-grid
-10. Hosts page should use color for valid and invalid certificates
-11. Dashboard data graph should be sized correctly when there are a lot of certificates.
-12. Need a Change planning page, to help build change tickets.
-
-## Planned Features
-
-### Certificate Authority Management
-
-- [ ] Track CA certificates separately from end-entity certificates
-- [ ] Display CA information in Certificates view
-- [ ] Track CA certificate chain relationships
-- [ ] Monitor CA certificate expiration
-- [ ] Validate certificate chains against known CAs
-- [ ] Import trusted CA certificates from system store
-
-### Multi-Instance Support
-
-- [ ] Enable multiple application instances to run simultaneously
-- [ ] Implement proper database locking mechanisms
-- [ ] Handle concurrent database access
-- [ ] Add instance identification and status tracking
-- [ ] Provide conflict resolution for concurrent updates
-
-### JWT Certificate Management
-
-- [ ] Scan for JWT certificates on RDS servers using PowerShell
-- [ ] Define standardized JWT certificate format
-- [ ] Import JWT certificates from scan results
-- [ ] Track JWT-specific certificate usage
-- [ ] Monitor JWT certificate expiration
-- [ ] Validate JWT certificate signatures
-
-### Enhanced Scanning Features
-
-- [ ] Maintain historical certificate data when scans fail
-  - Preserve existing certificate data if new scan fails
-  - Keep last successful scan data for each IP/domain
-  - Track scan source (instance/environment) for each result
-  - Implement scan result confidence scoring
-- [ ] Implement partial update mechanism for scan results
-  - Update only changed certificate data
-  - Keep existing data when scan access is denied
-  - Merge partial scan results from different sources
-  - Handle network connectivity issues gracefully
-- [ ] Track scan success/failure history
-  - Log scan attempts from each instance
-  - Record scan environment details
-  - Track access permissions per instance
-  - Monitor scan reliability per source
-- [ ] Add scan result confidence levels
-  - Calculate confidence score based on scan source
-  - Consider historical scan success rate
-  - Factor in network conditions
-  - Weight results by instance reliability
-- [ ] Provide manual override for scan results
-  - Allow manual data preservation
-  - Support administrator data validation
-  - Enable source-specific overrides
-  - Track override history
-- [ ] Compare scan results with previous data
-  - Detect significant changes
-  - Alert on unexpected data loss
-  - Validate scan result consistency
-  - Maintain scan result audit trail
-- [ ] Cross-instance scan coordination
-  - Coordinate scanning between instances
-  - Share scan results across environments
-  - Resolve conflicting scan data
-  - Optimize scanning efficiency
-
-### Domain Management
-
-- [ ] Track domain registration expiration
-- [ ] Monitor domain ownership
-- [ ] Alertand warning on approaching domain expiration
-- [ ] Track domain-certificate relationships
-- [ ] Support for wildcard domain tracking
-
-### Data Resilience
-
-- [ ] Implement robust database locking
-- [ ] Add transaction rollback support
-- [ ] Maintain audit trail of changes
-- [ ] Implement data versioning
-- [ ] Add conflict resolution mechanisms
-
-These planned features will enhance the system's capabilities in:
-
-- Certificate Authority tracking and validation
-- Multi-instance deployment support
-- JWT certificate tracking
-- Scan result persistence
-- Domain lifecycle tracking
-- Data integrity and resilience
-
-## Known Issues & Improvements
-
-- [ ] Deleting a root domain does not remove all subdomains and related data; UI may still show the root domain without a delete option. Deletion should be recursive and update the UI immediately.
-- [ ] WhoIS module does not fully respect offline mode and may attempt network scanning. All scanning modules should honor offline mode.
-- [x] No way to disable Certificate Transparency (CT) scans. Add a configuration/UI option to enable/disable CT scans.
-- [ ] The label "include subdomains" is unclear. Rename to "try to find subdomains" for clarity.
-- [ ] Some scanned IP addresses are labeled as "Environment US" instead of "production". Review and correct environment detection/labeling logic.
-- [ ] Internal IP addresses are not getting certificate bindings added. Ensure internal IPs are properly associated with certificates during scanning.
-- [ ] No way to pause or stop an ongoing scan. Add UI controls and backend logic to allow pausing/stopping scans in progress.
-- [x] Some domains are not appearing in dashboard results. Investigate and fix data aggregation/filtering so all relevant domains are shown.
-
-These planned features will enhance the system's capabilities in:
-
-- Certificate Authority tracking and validation
-- Multi-instance deployment support
-- JWT certificate management
-- Scan result persistence
-- Domain lifecycle management
-- Data integrity and resilience
+### Troubleshooting
+
+- Change port in `run_custom.py` if needed.
+- Check `streamlit_runner.log` for startup errors.
+
+---
+
+## 4. Usage Guide
+
+- **Scanning Certificates:** Use the "Scan" sidebar, enter hostnames, start scan, view results/errors.
+- **Viewing Certificates:** "Certificates" page for list/detail, SANs, associations.
+- **Managing Hosts:** "Hosts" page with AG Grid, filtering, status indicators, details.
+- **Dashboard:** Overview of certificates, expiring soon, timeline.
+
+---
+
+## 5. Configuration
+
+- **Database:** `paths.database` (default: `data/certificates.db`)
+- **Backups:** `paths.backups` (default: `data/backups`)
+- **Scanning Profiles:** Internal/external rate limits, delays, domains.
+- **Alerts:** Expiry warnings, failed scan thresholds, alert state file.
+- **Environment Overrides:** Supported via environment variables.
+- **Web Editor:** UI for settings management.
+
+---
+
+## 6. Architecture & Technology
+
+- **Stack:** Python 3.x, Streamlit, SQLite, PyYAML, cryptography libraries.
+- **Core Components:** Scanner, database layer (SQLAlchemy), web interface, settings manager, report generator.
+- **Data Flow:** Scanning → Database → UI/Export/Alerts.
+- **Control Flow:** User actions in UI trigger scans, updates, exports, and configuration changes.
+
+---
+
+## 7. Testing
+
+- **Coverage:** Unit/integration tests for all core features.
+- **How to Run:**
+
+```bash
+pytest
+```
+
+- **Edge Cases:** Backup/restore, error scenarios, validation.
+
+---
+
+## 8. Development & Contribution
+
+- **Phases:** Core features → Integration → Advanced features → Enhancements.
+- **How to Contribute:** Submit pull requests, follow code style guidelines, add/maintain tests and documentation.
+- **Roadmap:** See "Planned & Upcoming Features" above.
+
+---
+
+## 9. Known Issues & Limitations
+
+- Recursive domain deletion not fully implemented.
+- WhoIS module may not respect offline mode.
+- No pause/stop for ongoing scans.
+- Some environment labeling and dashboard aggregation issues.
+
+---
+
+## 10. Appendix
+
+- **Glossary:** (Add as needed)
+- **References:** (Add as needed)
+- **Links:** (Add as needed)
   

@@ -34,6 +34,7 @@ from ..services.ViewDataService import ViewDataService
 from infra_mgmt.utils.SessionManager import SessionManager
 from infra_mgmt.components.page_header import render_page_header
 from infra_mgmt.components.metrics_row import render_metrics_row
+from infra_mgmt.notifications import notify, show_notifications
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,9 @@ def render_hosts_view(engine) -> None:
     
     # Show any pending success messages
     if 'success_message' in st.session_state:
-        st.success(st.session_state.success_message)
+        notify(st.session_state.success_message, "success")
         del st.session_state.success_message
+        show_notifications()
     
     # Show Add Host form if button was clicked
     if st.session_state.get('show_add_host_form', False):
@@ -123,13 +125,15 @@ def render_hosts_view(engine) -> None:
                         ip_list = [ip.strip() for ip in ip_addresses.strip().split('\n') if ip.strip()]
                         result = HostService.add_host_with_ips(session, hostname, host_type, environment, description, ip_list)
                         if result['success']:
-                            st.success("✅ Host added successfully!")
+                            notify("✅ Host added successfully!", "success")
                             st.session_state['show_add_host_form'] = False
                             st.rerun()
                         else:
-                            st.error(f"Error adding host: {result['error']}")
+                            notify(f"Error adding host: {result['error']}", "error")
+                        show_notifications()
                 except Exception as e:
-                    st.error(f"Error adding host: {str(e)}")
+                    notify(f"Error adding host: {str(e)}", "error")
+                    show_notifications()
         st.markdown('</div>', unsafe_allow_html=True)
     
 
@@ -138,7 +142,8 @@ def render_hosts_view(engine) -> None:
     view_data_service = ViewDataService()
     result = view_data_service.get_host_list_view_data(engine)
     if not result['success']:
-        st.error(result['error'])
+        notify(result['error'], "error")
+        show_notifications()
         return
     metrics = result['data']['metrics']
     df = result['data']['df']
@@ -151,7 +156,8 @@ def render_hosts_view(engine) -> None:
     ], columns=3)
 
     if df.empty:
-        st.warning("No host data available")
+        notify("No host data available", "info")
+        show_notifications()
         return
 
     # Configure AG Grid to match certificatesView style
@@ -241,7 +247,8 @@ def render_hosts_view(engine) -> None:
                 if host_obj:
                     render_details(host_obj)
     except Exception as e:
-        st.error(f"Error handling selection: {str(e)}")
+        notify(f"Error handling selection: {str(e)}", "error")
+        show_notifications()
 
 def render_details(selected_host: Host, binding: CertificateBinding = None) -> None:
     """
@@ -350,11 +357,11 @@ def render_details(selected_host: Host, binding: CertificateBinding = None) -> N
                                     with SessionManager(selected_host.__class__.metadata.bind) as session:
                                         result = HostService.delete_binding(session, b.id)
                                         if result['success']:
-                                            st.success("Binding removed successfully!")
+                                            notify("Binding removed successfully!", "success")
                                             st.session_state[dialog_key] = False
                                             st.rerun()
                                         else:
-                                            st.error(f"Error removing binding: {result['error']}")
+                                            notify(f"Error removing binding: {result['error']}", "error")
                                             st.session_state[dialog_key] = False
                                     return True
                                 render_danger_zone(
@@ -367,7 +374,8 @@ def render_details(selected_host: Host, binding: CertificateBinding = None) -> N
                                     custom_warning=f"This will remove the binding for certificate '{b.certificate.common_name if b.certificate else b.id}'."
                                 )
             else:
-                st.info("No certificates bound to this host")
+                notify("No certificates bound to this host", "info")
+                show_notifications()
     
     with tab3:
         # IP Addresses tab
@@ -379,7 +387,8 @@ def render_details(selected_host: Host, binding: CertificateBinding = None) -> N
                 for ip in selected_host.ip_addresses:
                     st.markdown(f"**{ip.ip_address}** - Last seen: {ip.last_seen.strftime('%Y-%m-%d %H:%M')}")
             else:
-                st.info("No IP addresses recorded for this host")
+                notify("No IP addresses recorded for this host", "info")
+                show_notifications()
     
     with tab4:
         st.markdown("### ⚠️ Danger Zone")

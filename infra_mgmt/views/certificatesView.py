@@ -64,7 +64,7 @@ def render_certificate_list(engine):
     # Standardized page header
     def toggle_manual_entry():
         st.session_state['show_manual_entry'] = not st.session_state.get('show_manual_entry', False)
-        st.rerun()
+    
     render_page_header(
         title="Certificates",
         button_label="➕ Add Certificate" if not st.session_state.get('show_manual_entry', False) else "❌ Cancel",
@@ -79,10 +79,9 @@ def render_certificate_list(engine):
     
     # Show manual entry form if button was clicked
     if st.session_state.get('show_manual_entry', False):
-        st.markdown('<div class="form-container">', unsafe_allow_html=True)
         with SessionManager(engine) as session:
             render_manual_entry_form(session)
-        st.markdown('</div>', unsafe_allow_html=True)
+        return  # Prevent rendering the rest of the page when the form is shown
     
 
     
@@ -349,6 +348,7 @@ def render_certificate_overview(cert: Certificate, session) -> None:
                     st.rerun()
         else:
             notify("No Subject Alternative Names found", "info")
+            show_notifications()
 
 def render_certificate_bindings(cert, session):
     """Render the certificate bindings section."""
@@ -395,13 +395,16 @@ def render_certificate_bindings(cert, session):
             )
             if result['success']:
                 notify("Usage record added successfully", "success")
+                show_notifications()
                 st.rerun()
             else:
                 notify(f"Failed to add usage record: {result['error']}", "error")
+                show_notifications()
     
     # Current Usage Records
     if not cert.certificate_bindings:
         notify("No usage records found for this certificate", "info")
+        show_notifications()
         return
         
     # Load all applications once for efficiency
@@ -609,6 +612,7 @@ def render_certificate_tracking(cert, session):
         )
     else:
         notify("No change entries found for this certificate", "info")
+        show_notifications()
 
 def render_manual_entry_form(session):
     """

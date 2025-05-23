@@ -74,9 +74,9 @@ pip install --no-index --find-links requirements_offline -r requirements.txt
 
 - **Scanning Certificates:** Use the "Scan" sidebar, enter hostnames, start scan, view results/errors.
   - Scan domains you want to track registrar and certificate Info.
-  - ![Scan](https://github.com/klhutchins1/SRE-CertificateManagement/images/Screenshot-Scanner.png "Scan")
+  - ![Scan](https://github.com/klhutchins1/sre-certificate-management/blob/main/images/Screenshot-Certificate.png "Scan")
 - **Viewing Certificates:** "Certificates" page for list/detail, SANs, associations.
-  - ![Certificate](https://github.com/klhutchins1/SRE-CertificateManagement/images/Screenshot-Certificate.png "Certificate")
+  - ![Certificate](https://github.com/klhutchins1/sre-certificate-management/images/Screenshot-Certificate.png "Certificate")
 - **Managing Hosts:** "Hosts" page with AG Grid, filtering, status indicators, details.
   - ![Host](https://github.com/klhutchins1/SRE-CertificateManagement/images/Screenshot-Host.png "Host")
 - **Dashboard:** Overview of certificates, expiring soon, timeline.

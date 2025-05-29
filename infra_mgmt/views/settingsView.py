@@ -104,7 +104,9 @@ def render_settings_view(engine) -> None:
  
 
     settings = Settings()
-    tabs = st.tabs(["Paths", "Scanning", "Alerts", "Exports", "Ignore Lists"])
+    tabs = st.tabs([
+        "Paths", "Scanning", "Alerts", "Exports", "Ignore Lists", "Proxy Detection", "Backup & Restore"
+    ])
 
     # Path Settings Tab
     with tabs[0]:
@@ -536,7 +538,86 @@ def render_settings_view(engine) -> None:
             except Exception as e:
                 notify(f"Error loading ignored certificates: {str(e)}", "error")
 
-    render_backup_restore_section(engine, settings)
+    # Proxy Detection Tab
+    with tabs[5]:
+        st.header("Proxy Detection Settings")
+        # Robust summary block
+        try:
+            current_enabled = settings.get("proxy_detection.enabled", True)
+            current_fingerprints = settings.get("proxy_detection.ca_fingerprints") or []
+            current_subjects = settings.get("proxy_detection.ca_subjects") or []
+            current_serials = settings.get("proxy_detection.ca_serials") or []
+            # Ensure all are lists of strings
+            if not isinstance(current_fingerprints, list):
+                current_fingerprints = []
+            else:
+                current_fingerprints = [str(fp) for fp in current_fingerprints if isinstance(fp, str) or fp is not None]
+            if not isinstance(current_subjects, list):
+                current_subjects = []
+            else:
+                current_subjects = [str(subj) for subj in current_subjects if isinstance(subj, str) or subj is not None]
+            if not isinstance(current_serials, list):
+                current_serials = []
+            else:
+                current_serials = [str(sn) for sn in current_serials if isinstance(sn, str) or sn is not None]
+            summary_md = f"""
+            **Proxy Detection Enabled:** `{current_enabled}`  
+            **Known Proxy CA Fingerprints:** {len(current_fingerprints)} configured  
+            """
+            if current_fingerprints:
+                summary_md += "\n" + "\n".join([f"- `{fp[:16]}...`" for fp in current_fingerprints[:5]])
+                if len(current_fingerprints) > 5:
+                    summary_md += "\n..."
+            summary_md += f"\n**Known Proxy CA Subjects:** {len(current_subjects)} configured  "
+            if current_subjects:
+                summary_md += "\n" + "\n".join([f"- `{subj}`" for subj in current_subjects[:5]])
+                if len(current_subjects) > 5:
+                    summary_md += "\n..."
+            summary_md += f"\n**Known Proxy CA Serial Numbers:** {len(current_serials)} configured  "
+            if current_serials:
+                summary_md += "\n" + "\n".join([f"- `{sn}`" for sn in current_serials[:5]])
+                if len(current_serials) > 5:
+                    summary_md += "\n..."
+            st.info(summary_md)
+        except Exception as e:
+            st.warning(f"Could not display proxy detection summary: {e}")
+
+        st.markdown("""
+        Configure detection of proxy/MITM certificates. If enabled, the system will check scanned certificates against known proxy CA fingerprints, subjects, and serial numbers.
+        """)
+        proxy_enabled = st.checkbox(
+            "Enable Proxy Detection",
+            value=settings.get("proxy_detection.enabled", True),
+            help="If disabled, proxy/MITM detection will not be performed."
+        )
+        ca_fingerprints = st.text_area(
+            "Known Proxy CA Fingerprints (one per line, SHA256)",
+            value="\n".join(current_fingerprints),
+            help="Add SHA256 fingerprints of known proxy CA certificates. One per line."
+        )
+        ca_subjects = st.text_area(
+            "Known Proxy CA Subjects (one per line)",
+            value="\n".join(current_subjects),
+            help="Add subject strings of known proxy CA certificates. One per line."
+        )
+        ca_serials = st.text_area(
+            "Known Proxy CA Serial Numbers (one per line)",
+            value="\n".join(current_serials),
+            help="Add serial numbers of known proxy CA certificates. One per line."
+        )
+        if st.button("Save Proxy Detection Settings"):
+            SettingsService.save_proxy_detection_settings(
+                settings,
+                proxy_enabled,
+                [f.strip() for f in ca_fingerprints.split("\n") if f.strip()],
+                [s.strip() for s in ca_subjects.split("\n") if s.strip()],
+                [sn.strip() for sn in ca_serials.split("\n") if sn.strip()]
+            )
+            notify("Proxy detection settings updated successfully!", "success")
+
+    # Backup & Restore Tab
+    with tabs[6]:
+        render_backup_restore_section(engine, settings)
     show_notifications()
 
 def render_backup_restore_section(engine, settings):

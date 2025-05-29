@@ -386,3 +386,39 @@ def reset_database(engine):
 # Alias for compatibility
 update_schema = update_database_schema
 
+# --- MIGRATION UTILITY: Add proxied and proxy_info columns to certificates table ---
+def migrate_add_proxy_fields_to_certificates(db_path='data/certificates.db'):
+    """
+    Adds 'proxied' (BOOLEAN) and 'proxy_info' (TEXT) columns to the certificates table if they do not exist.
+    Usage: from infra_mgmt.db.schema import migrate_add_proxy_fields_to_certificates; migrate_add_proxy_fields_to_certificates()
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    # Check and add 'proxied' column
+    cur.execute("PRAGMA table_info(certificates)")
+    columns = [row[1] for row in cur.fetchall()]
+    if 'proxied' not in columns:
+        cur.execute("ALTER TABLE certificates ADD COLUMN proxied BOOLEAN DEFAULT 0")
+        print("Added 'proxied' column to certificates table.")
+    else:
+        print("'proxied' column already exists.")
+    # Check and add 'proxy_info' column
+    cur.execute("PRAGMA table_info(certificates)")
+    columns = [row[1] for row in cur.fetchall()]
+    if 'proxy_info' not in columns:
+        cur.execute("ALTER TABLE certificates ADD COLUMN proxy_info TEXT")
+        print("Added 'proxy_info' column to certificates table.")
+    else:
+        print("'proxy_info' column already exists.")
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Migrate: Add proxied and proxy_info columns to certificates table.")
+    parser.add_argument('--db', type=str, default='data/certificates.db', help='Path to the SQLite database file')
+    args = parser.parse_args()
+    migrate_add_proxy_fields_to_certificates(args.db)
+    print("Migration complete.")
+

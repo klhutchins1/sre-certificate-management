@@ -257,9 +257,10 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
     # Track button calls
     button_calls = []
 
-    # Create 5 tab mocks, with only the Scanning tab (index 1) as a real context manager
-    tab_mocks = [MagicMock() for _ in range(5)]
+    # Create 7 tab mocks to match the actual number of tabs in settingsView.py
+    tab_mocks = [MagicMock() for _ in range(7)]
     scanning_tab_context = MagicMock()
+    # Ensure the Scanning tab (index 1) is a real context manager for the test
     tab_mocks[1].__enter__.return_value = scanning_tab_context
     tab_mocks[1].__exit__.return_value = None
     mock_st.tabs.side_effect = lambda labels: tab_mocks

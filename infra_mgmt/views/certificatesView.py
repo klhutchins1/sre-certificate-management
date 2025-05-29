@@ -96,6 +96,19 @@ def render_certificate_list(engine):
     metrics = result['data']['metrics']
     df = result['data']['df']
     
+    # Add Proxy/MITM column for quick scanning
+    if 'Proxy/MITM' not in df.columns:
+        def proxy_icon(row):
+            if hasattr(row, 'proxied') and row.proxied:
+                return '⚠️'
+            if isinstance(row, dict) and row.get('proxied'):
+                return '⚠️'
+            return ''
+        if hasattr(df, 'apply'):
+            df['Proxy/MITM'] = df.apply(lambda row: proxy_icon(row), axis=1)
+        else:
+            df['Proxy/MITM'] = ''
+
     render_metrics_row([
         {"label": "Total Certificates", "value": metrics["total_certs"]},
         {"label": "Valid Certificates", "value": metrics["valid_certs"]},
@@ -115,6 +128,9 @@ def render_certificate_list(engine):
         filter=True,
         editable=False
     )
+    gb.configure_column("Proxy/MITM", minWidth=80, maxWidth=100, flex=0, type=["textColumn"],
+        cellStyle={"textAlign": "center", "fontSize": "1.5em"},
+        headerTooltip="Flagged as proxy/MITM certificate", filter=True, sortable=True)
     gb.configure_column("Common Name", minWidth=200, flex=2)
     gb.configure_column("Serial Number", minWidth=150, flex=1)
     gb.configure_column(
@@ -294,6 +310,10 @@ def render_certificate_overview(cert: Certificate, session) -> None:
     ).get(cert.id)
     
     st.subheader("Certificate Overview")
+    
+    # Proxy/MITM indicator
+    if getattr(cert, 'proxied', False):
+        st.warning(f"⚠️ This certificate is flagged as a PROXY/MITM certificate!\n\nReason: {cert.proxy_info or 'Matched proxy CA'}")
     
     # Create columns for layout
     col1, col2 = st.columns(2)

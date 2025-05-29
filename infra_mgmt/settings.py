@@ -133,6 +133,12 @@ DEFAULT_CONFIG = {
                 "*sandbox*"
             ]
         }
+    },
+    "proxy_detection": {
+        "enabled": True,
+        "ca_fingerprints": [],  # List of SHA256 fingerprints of known proxy CA certs
+        "ca_subjects": [],       # List of subject strings of known proxy CA certs
+        "ca_serials": []        # List of serial numbers of known proxy CA certs
     }
 }
 
@@ -464,6 +470,19 @@ class Settings:
             elif key == "exports.default_format":
                 return value in ["CSV", "JSON", "YAML"]
                 
+        # Validate proxy detection settings
+        elif key.startswith("proxy_detection."):
+            if key == "proxy_detection.enabled":
+                return isinstance(value, bool)
+            elif key == "proxy_detection.ca_fingerprints":
+                return isinstance(value, list) and all(isinstance(fp, str) for fp in value)
+            elif key == "proxy_detection.ca_subjects":
+                return isinstance(value, list) and all(isinstance(s, str) for s in value)
+            elif key == "proxy_detection.ca_serials":
+                return isinstance(value, list) and all(isinstance(s, str) for s in value)
+            # Unknown sub-key under proxy_detection
+            return False
+
         # Unknown key
         return False
     

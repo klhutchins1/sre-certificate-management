@@ -55,6 +55,8 @@ class Certificate(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     notes = Column(Text, nullable=True)
     version = Column(Integer, nullable=True)
+    proxied = Column(Boolean, default=False)  # True if detected as proxy/MITM cert
+    proxy_info = Column(Text, nullable=True)  # Info about proxy detection (e.g., matched CA, fingerprint, etc)
     certificate_bindings = relationship("CertificateBinding", back_populates="certificate", cascade="all, delete-orphan")
     tracking_entries = relationship("CertificateTracking", back_populates="certificate", cascade="all, delete-orphan")
     scans = relationship("CertificateScan", back_populates="certificate", cascade="all, delete-orphan")

@@ -126,4 +126,18 @@ def test_config_validation():
     assert settings.update("scanning.internal.domains", ["test.com"])  # Valid
     assert settings.update("scanning.internal.domains", [])  # Valid empty
     assert not settings.update("scanning.internal.domains", "test.com")  # Invalid type
-    assert not settings.update("scanning.internal.domains", [1, 2])  # Invalid items 
+    assert not settings.update("scanning.internal.domains", [1, 2])  # Invalid items
+
+def test_proxy_detection_config():
+    Settings.set_test_mode()
+    settings = Settings()
+    # Set proxy detection config
+    assert settings.update("proxy_detection.enabled", True)
+    assert settings.update("proxy_detection.ca_fingerprints", ["abc123", "def456"])
+    assert settings.update("proxy_detection.ca_subjects", ["CorpProxy Root CA"])
+    assert settings.update("proxy_detection.ca_serials", ["9999"])
+    # Retrieve and check
+    assert settings.get("proxy_detection.enabled") is True
+    assert settings.get("proxy_detection.ca_fingerprints") == ["abc123", "def456"]
+    assert settings.get("proxy_detection.ca_subjects") == ["CorpProxy Root CA"]
+    assert settings.get("proxy_detection.ca_serials") == ["9999"] 

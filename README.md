@@ -135,6 +135,8 @@ pytest
 - WhoIS module may not respect offline mode.
 - No pause/stop for ongoing scans.
 - Some environment labeling and dashboard aggregation issues.
+- Internal Proxy can provide an incorrect serial Number with a scan for external site.
+- Need to detect or set offline mode during scan.
 
 ---
 

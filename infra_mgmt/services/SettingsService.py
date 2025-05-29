@@ -272,4 +272,16 @@ class SettingsService:
     @staticmethod
     def get_ignored_certificates(engine) -> List[IgnoredCertificate]:
         with Session(engine) as session:
-            return session.query(IgnoredCertificate).order_by(IgnoredCertificate.created_at.desc()).all() 
+            return session.query(IgnoredCertificate).order_by(IgnoredCertificate.created_at.desc()).all()
+
+    @staticmethod
+    def save_proxy_detection_settings(settings: Settings, enabled: bool, ca_fingerprints: list, ca_subjects: list, ca_serials: list = None) -> bool:
+        """
+        Update and save proxy detection settings.
+        """
+        settings.update("proxy_detection.enabled", enabled)
+        settings.update("proxy_detection.ca_fingerprints", ca_fingerprints)
+        settings.update("proxy_detection.ca_subjects", ca_subjects)
+        if ca_serials is not None:
+            settings.update("proxy_detection.ca_serials", ca_serials)
+        return settings.save() 

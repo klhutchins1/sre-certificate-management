@@ -501,4 +501,35 @@ def test_certificate_tracking_basic_info(session, certificate_tracking):
     assert isinstance(certificate_tracking.planned_change_date, datetime)
     assert certificate_tracking.status == "Pending"
     assert isinstance(certificate_tracking.created_at, datetime)
-    assert isinstance(certificate_tracking.updated_at, datetime) 
+    assert isinstance(certificate_tracking.updated_at, datetime)
+
+def test_certificate_proxied_fields(session):
+    """Test the proxied and proxy_info fields on Certificate model."""
+    cert = Certificate(
+        serial_number="proxytest1",
+        thumbprint="proxythumb1",
+        common_name="proxy.com",
+        valid_from=datetime.now(),
+        valid_until=datetime.now(),
+        issuer={"CN": "Proxy CA"},
+        subject={"CN": "proxy.com"},
+        san=["proxy.com"],
+        key_usage="Digital Signature",
+        signature_algorithm="sha256WithRSAEncryption",
+        sans_scanned=False,
+        proxied=True,
+        proxy_info="Matched proxy CA fingerprint"
+    )
+    session.add(cert)
+    session.commit()
+    loaded = session.query(Certificate).filter_by(serial_number="proxytest1").first()
+    assert loaded is not None
+    assert loaded.proxied is True
+    assert loaded.proxy_info == "Matched proxy CA fingerprint"
+    # Update and check
+    loaded.proxied = False
+    loaded.proxy_info = None
+    session.commit()
+    loaded2 = session.query(Certificate).filter_by(serial_number="proxytest1").first()
+    assert loaded2.proxied is False
+    assert loaded2.proxy_info is None 

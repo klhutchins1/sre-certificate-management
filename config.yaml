@@ -62,6 +62,10 @@ ignore_lists:
 paths:
   backups: data/backups
   database: data/certificates.db
+proxy_detection:
+  ca_fingerprints: null
+  ca_subjects: null
+  enabled: true
 scanning:
   certificate:
     rate_limit: 30

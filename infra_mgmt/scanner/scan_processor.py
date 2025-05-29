@@ -16,6 +16,7 @@ from ..settings import settings
 from infra_mgmt.utils.ignore_list import IgnoreListUtil
 from infra_mgmt.utils.dns_records import DNSRecordUtil
 from infra_mgmt.utils.certificate_db import CertificateDBUtil
+from infra_mgmt.utils.proxy_detection import detect_proxy_certificate
 
 class ScanProcessor:
     """
@@ -144,11 +145,17 @@ class ScanProcessor:
             >>> processor.process_certificate('example.com', 443, cert_info, domain_obj)
         """
         try:
+            # Proxy detection
+            is_proxy, proxy_reason = detect_proxy_certificate(cert_info, settings)
+            if is_proxy:
+                cert_info.proxied = True
+                cert_info.proxy_info = proxy_reason
+            else:
+                cert_info.proxied = False
+                cert_info.proxy_info = None
             # Replace the certificate/host/binding update logic with:
             CertificateDBUtil.upsert_certificate_and_binding(self.session, domain, port, cert_info, domain_obj, detect_platform=kwargs.get('detect_platform', False), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True), status_callback=self.set_status)
-            
             self.session.flush()
-            
         except ValueError as e:
             self.logger.error(f"Value error processing certificate for {domain}: {str(e)}")
             raise

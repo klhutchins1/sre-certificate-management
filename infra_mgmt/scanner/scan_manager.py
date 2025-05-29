@@ -16,6 +16,7 @@ from infra_mgmt.utils.dns_records import DNSRecordUtil
 from infra_mgmt.utils.certificate_db import CertificateDBUtil
 from infra_mgmt.utils.cache import ScanSessionCache
 import re
+from infra_mgmt.utils.proxy_detection import detect_proxy_certificate
 
 CertificateScanner = None
 
@@ -282,22 +283,37 @@ class ScanManager:
                 # 1. hasCertificate
                 cert_result = self.infra_mgmt.scan_certificate(domain, port)
                 if cert_result and cert_result.certificate_info:
-                    cert_info = cert_result.certificate_info
-                    CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
+                    cert_info_from_scan = cert_result.certificate_info
+                    
+                    is_proxy, proxy_reason = detect_proxy_certificate(cert_info_from_scan, settings)
+                    print(f"DEBUG [ScanManager.scan_target IP FLOW]: detect_proxy_certificate returned: is_proxy={is_proxy}, reason='{proxy_reason}'")
+
+                    if is_proxy:
+                        cert_info_from_scan.proxied = True
+                        cert_info_from_scan.proxy_info = proxy_reason
+                        print(f"DEBUG [ScanManager.scan_target IP FLOW INSIDE if is_proxy]: cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
+                    else:
+                        cert_info_from_scan.proxied = False
+                        cert_info_from_scan.proxy_info = None
+                    
+                    print(f"DEBUG [ScanManager.scan_target IP FLOW]: About to upsert. cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
+
+                    CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info_from_scan, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
                     # --- PATCH: Associate cert with SAN domains if present ---
-                    if hasattr(cert_info, 'san') and cert_info.san:
+                    if hasattr(cert_info_from_scan, 'san') and cert_info_from_scan.san:
                         from infra_mgmt.utils.certificate_db import is_valid_domain
-                        for san in cert_info.san:
-                            if is_valid_domain(san):
-                                san_domain = session.query(Domain).filter_by(domain_name=san).first()
-                                if not san_domain:
-                                    san_domain = Domain(domain_name=san, created_at=datetime.now(), updated_at=datetime.now())
-                                    session.add(san_domain)
-                                if cert_info.serial_number:
-                                    cert = session.query(Certificate).filter_by(serial_number=cert_info.serial_number).first()
-                                    if cert and cert not in san_domain.certificates:
-                                        san_domain.certificates.append(cert)
-                                        self.logger.info(f"[SCAN] Associated certificate {cert.serial_number} with SAN domain {san}")
+                        for san_item in cert_info_from_scan.san:
+                            if is_valid_domain(san_item):
+                                san_domain_obj = session.query(Domain).filter_by(domain_name=san_item).first()
+                                if not san_domain_obj:
+                                    san_domain_obj = Domain(domain_name=san_item, created_at=datetime.now(), updated_at=datetime.now())
+                                    session.add(san_domain_obj)
+                                if cert_info_from_scan.serial_number:
+                                    cert = session.query(Certificate).filter_by(serial_number=cert_info_from_scan.serial_number).first()
+                                    if cert and cert not in san_domain_obj.certificates:
+                                        san_domain_obj.certificates.append(cert)
+                                        self.logger.info(f"[SCAN] Associated certificate {cert.serial_number} with SAN domain {san_item}")
+                    session.commit()
                     target_key = f"{domain}:{port}"
                     if target_key not in self.scan_results["success"]:
                         self.scan_results["success"].append(target_key)
@@ -359,22 +375,37 @@ class ScanManager:
             # 1. hasCertificate
             cert_result = self.infra_mgmt.scan_certificate(domain, port)
             if cert_result and cert_result.certificate_info:
-                cert_info = cert_result.certificate_info
-                CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
+                cert_info_from_scan = cert_result.certificate_info
+                
+                is_proxy, proxy_reason = detect_proxy_certificate(cert_info_from_scan, settings)
+                print(f"DEBUG [ScanManager.scan_target DOMAIN FLOW]: detect_proxy_certificate returned: is_proxy={is_proxy}, reason='{proxy_reason}'")
+                
+                if is_proxy:
+                    cert_info_from_scan.proxied = True
+                    cert_info_from_scan.proxy_info = proxy_reason
+                    print(f"DEBUG [ScanManager.scan_target DOMAIN FLOW INSIDE if is_proxy]: cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
+                else:
+                    cert_info_from_scan.proxied = False
+                    cert_info_from_scan.proxy_info = None
+
+                print(f"DEBUG [ScanManager.scan_target DOMAIN FLOW]: About to upsert. cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
+
+                CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info_from_scan, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
                 # --- PATCH: Associate cert with SAN domains if present ---
-                if hasattr(cert_info, 'san') and cert_info.san:
+                if hasattr(cert_info_from_scan, 'san') and cert_info_from_scan.san:
                     from infra_mgmt.utils.certificate_db import is_valid_domain
-                    for san in cert_info.san:
-                        if is_valid_domain(san):
-                            san_domain = session.query(Domain).filter_by(domain_name=san).first()
-                            if not san_domain:
-                                san_domain = Domain(domain_name=san, created_at=datetime.now(), updated_at=datetime.now())
-                                session.add(san_domain)
-                            if cert_info.serial_number:
-                                cert = session.query(Certificate).filter_by(serial_number=cert_info.serial_number).first()
-                                if cert and cert not in san_domain.certificates:
-                                    san_domain.certificates.append(cert)
-                                    self.logger.info(f"[SCAN] Associated certificate {cert.serial_number} with SAN domain {san}")
+                    for san_item in cert_info_from_scan.san:
+                        if is_valid_domain(san_item):
+                            san_domain_obj = session.query(Domain).filter_by(domain_name=san_item).first()
+                            if not san_domain_obj:
+                                san_domain_obj = Domain(domain_name=san_item, created_at=datetime.now(), updated_at=datetime.now())
+                                session.add(san_domain_obj)
+                            if cert_info_from_scan.serial_number:
+                                cert = session.query(Certificate).filter_by(serial_number=cert_info_from_scan.serial_number).first()
+                                if cert and cert not in san_domain_obj.certificates:
+                                    san_domain_obj.certificates.append(cert)
+                                    self.logger.info(f"[SCAN] Associated certificate {cert.serial_number} with SAN domain {san_item}")
+                session.commit()
                 target_key = f"{domain}:{port}"
                 if target_key not in self.scan_results["success"]:
                     self.scan_results["success"].append(target_key)

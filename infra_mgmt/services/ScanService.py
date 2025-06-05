@@ -148,16 +148,30 @@ class ScanService:
                 options["progress_container"].text("Scan completed!")
             if options.get("status_container"):
                 options["status_container"].text("Scan completed!")
+
         # After the scan loop, before returning results:
-        final_results = dict(self.scan_manager.scan_results)
-        # Ensure info_only is present and merged
-        final_results['info_only'] = list(set(self.scan_results.get('info_only', [])) | set(final_results.get('info_only', [])))
-        self.scan_results = final_results
-        # Merge in db_only results
-        if "db_only" in self.scan_results:
-            self.scan_results["db_only"].extend([k for k in self.scan_results["db_only"] if k not in self.scan_results["db_only"]])
-        else:
-            self.scan_results["db_only"] = []
+        # Initialize final results with what ScanService itself might have populated during the scan loop
+        final_scan_results = {
+            "success": [],
+            "error": list(set(self.scan_results.get("error", []))),  # Errors caught by ScanService directly
+            "warning": [],
+            "no_cert": [],
+            "db_only": list(set(self.scan_results.get("db_only", []))), # Populated by ScanService
+            "info_only": list(set(self.scan_results.get("info_only", []))) # Populated by ScanService
+        }
+
+        # Merge results from ScanManager
+        manager_results = self.scan_manager.scan_results
+        final_scan_results["success"] = list(set(final_scan_results.get("success", [])) | set(manager_results.get("success", [])))
+        final_scan_results["error"]   = list(set(final_scan_results.get("error", []))   | set(manager_results.get("error", [])))
+        final_scan_results["warning"] = list(set(final_scan_results.get("warning", [])) | set(manager_results.get("warning", [])))
+        final_scan_results["no_cert"] = list(set(final_scan_results.get("no_cert", [])) | set(manager_results.get("no_cert", [])))
+        
+        # Merge ScanManager's general "info" category into ScanService's "info_only"
+        manager_info = manager_results.get("info", [])
+        final_scan_results["info_only"] = list(set(final_scan_results.get("info_only", [])) | set(manager_info))
+
+        self.scan_results = final_scan_results
         return self.scan_results
 
     def get_scan_results(self) -> Dict[str, Any]:

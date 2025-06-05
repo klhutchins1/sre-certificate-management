@@ -64,6 +64,7 @@ paths:
   database: data/certificates.db
 proxy_detection:
   ca_fingerprints: null
+  ca_serials: []
   ca_subjects: null
   enabled: true
 scanning:
@@ -71,7 +72,7 @@ scanning:
     rate_limit: 30
   ct:
     rate_limit: 120
-  default_rate_limit: 240
+  default_rate_limit: 360
   dns:
     rate_limit: 120
     timeout: 5
@@ -83,6 +84,7 @@ scanning:
     delay: 0
     domains: []
     rate_limit: 120
+  offline_mode: true
   timeouts:
     dns: 5.0
     request: 15

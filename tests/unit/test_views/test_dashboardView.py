@@ -176,8 +176,8 @@ def test_dashboard_invalid_engine(mock_streamlit, monkeypatch):
     })
     # Patch notify in dashboardView to capture notifications
     notifications = []
-    def fake_notify(message, level='info'):
-        notifications.append({'message': message, 'level': level})
+    def fake_notify(message, level='info', page_key=None):
+        notifications.append({'message': message, 'level': level, 'page_key': page_key})
     monkeypatch.setattr('infra_mgmt.views.dashboardView.notify', fake_notify)
     # Create an engine without creating tables
     invalid_engine = create_engine('sqlite:///:memory:')

@@ -35,7 +35,9 @@ from ..static.styles import load_warning_suppression, load_css
 from ..services.HistoryService import HistoryService
 from infra_mgmt.components.page_header import render_page_header
 from ..constants import HOST_TYPE_VIRTUAL
+from ..notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 
+HISTORY_PAGE_KEY = "history" # Define page key
 
 def render_history_view(engine) -> None:
     """
@@ -57,8 +59,13 @@ def render_history_view(engine) -> None:
     # Initialize UI components and styles
     load_warning_suppression()
     load_css()
+    initialize_page_notifications(HISTORY_PAGE_KEY) # Initialize for this page
     
+    notification_placeholder = st.empty() # Create placeholder first
     render_page_header(title="Certificate History")
+    
+    with notification_placeholder.container(): # Show notifications for this page
+        show_notifications(HISTORY_PAGE_KEY)
     
     # Create tabs for different history views
     cn_tab, scan_tab, host_tab = st.tabs(["Common Name History", "Scan History", "Host Certificate History"])
@@ -97,6 +104,7 @@ def render_host_certificate_history(engine) -> None:
     result = HistoryService.get_host_certificate_history(engine)
     if not result['success']:
         st.warning(result['error'])
+        notify(result['error'], "warning", page_key=HISTORY_PAGE_KEY)
         return
     hosts = result['data']['hosts']
     host_options = result['data']['host_options']
@@ -149,6 +157,7 @@ def render_host_certificate_history(engine) -> None:
             )
         else:
             st.info("No certificate history found for this host")
+            notify("No certificate history found for this host", "info", page_key=HISTORY_PAGE_KEY)
 
 def create_timeline_chart(data: dict) -> "plotly.graph_objs._figure.Figure":
     """
@@ -238,6 +247,7 @@ def render_scan_history(engine) -> None:
         scans = HistoryService.get_scan_history(session)
         if not scans:
             st.warning("No scan history found")
+            notify("No scan history found", "warning", page_key=HISTORY_PAGE_KEY)
             return
         scan_data = []
         for scan in scans:
@@ -496,10 +506,12 @@ def render_certificate_tracking(cert: Certificate, session: Session) -> None:
                 )
                 if result['success']:
                     st.success("Change entry added!")
+                    notify("Change entry added!", "success", page_key=HISTORY_PAGE_KEY)
                     st.session_state.show_tracking_entry = False
                     st.rerun()
                 else:
                     st.error(f"Error saving change entry: {result['error']}")
+                    notify(f"Error saving change entry: {result['error']}", "error", page_key=HISTORY_PAGE_KEY)
     
     # Display existing tracking entries
     if cert.tracking_entries:
@@ -617,6 +629,7 @@ def render_certificate_tracking(cert: Certificate, session: Session) -> None:
         )
     else:
         st.info("No change entries found for this certificate")
+        notify("No change entries found for this certificate", "info", page_key=HISTORY_PAGE_KEY)
         
 def render_cn_history(engine) -> None:
     """
@@ -657,6 +670,7 @@ def render_cn_history(engine) -> None:
         cn_options = HistoryService.get_cn_history(session)
         if not cn_options:
             st.warning("No certificate data found")
+            notify("No certificate data found", "warning", page_key=HISTORY_PAGE_KEY)
             return
         selected_cn = st.selectbox(
             "Select Common Name",
@@ -891,7 +905,9 @@ def render_cn_history(engine) -> None:
                                         st.text(san)
                                 except Exception as e:
                                     st.error(f"Error parsing SANs: {str(e)}")
+                                    notify(f"Error parsing SANs: {str(e)}", "error", page_key=HISTORY_PAGE_KEY)
             else:
                 st.info("No certificates found with this common name")
+                notify("No certificates found with this common name", "info", page_key=HISTORY_PAGE_KEY)
 
         

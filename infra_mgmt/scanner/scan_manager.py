@@ -265,6 +265,11 @@ class ScanManager:
                 if re.match(pattern, name) and not is_ip_address(name):
                     return True
                 return False
+            
+            is_offline = settings.get("scanning.offline_mode", False)
+            if is_offline:
+                self.logger.info(f"[SCAN] Offline mode enabled for target: {domain}:{port}")
+
             # --- IP SCAN FLOW ---
             if is_ip:
                 kwargs['check_dns'] = False
@@ -281,7 +286,7 @@ class ScanManager:
                     )
                     session.add(host)
                 # 1. hasCertificate
-                cert_result = self.infra_mgmt.scan_certificate(domain, port)
+                cert_result = self.infra_mgmt.scan_certificate(domain, port, offline_mode=is_offline)
                 if cert_result and cert_result.certificate_info:
                     cert_info_from_scan = cert_result.certificate_info
                     
@@ -322,9 +327,11 @@ class ScanManager:
                     self.scan_results["error"].append(f"{domain}:{port} - Certificate scan failed or no certificate info")
                 # 2. getWhoIsRecords
                 if ip_info['whois']:
-                    if ip_info['whois'].get('organization'):
+                    if is_offline:
+                        self.logger.info(f"[SCAN] Offline mode: Skipping WHOIS for IP {domain}")
+                    elif ip_info['whois'].get('organization'):
                         host.owner = ip_info['whois']['organization']
-                    if ip_info['whois'].get('country'):
+                    if ip_info['whois'].get('country') and not is_offline:
                         host.environment = ip_info['whois']['country']
                 else:
                     self.scan_results["warning"].append(f"{domain}:{port} - No WHOIS info found")
@@ -373,7 +380,7 @@ class ScanManager:
                     session.rollback()
                     return False
             # 1. hasCertificate
-            cert_result = self.infra_mgmt.scan_certificate(domain, port)
+            cert_result = self.infra_mgmt.scan_certificate(domain, port, offline_mode=is_offline)
             if cert_result and cert_result.certificate_info:
                 cert_info_from_scan = cert_result.certificate_info
                 
@@ -416,7 +423,7 @@ class ScanManager:
             # 2. getDNSRecords
             dns_records = []
             try:
-                dns_info = self.domain_scanner.scan_domain(domain, session, get_whois=False, get_dns=True)
+                dns_info = self.domain_scanner.scan_domain(domain, session, get_whois=False, get_dns=True, offline_mode=is_offline)
                 if dns_info and dns_info.dns_records:
                     dns_records = dns_info.dns_records
                     # Update DNS records in DB
@@ -460,21 +467,25 @@ class ScanManager:
             # 3. getWhoIsRecords
             whois_info = None
             try:
-                whois_info = self.domain_scanner.scan_domain(domain, session, get_whois=True, get_dns=False)
-                if whois_info and whois_info.registrar:
-                    domain_obj.registrar = whois_info.registrar
-                    domain_obj.registration_date = whois_info.registration_date
-                    domain_obj.expiration_date = whois_info.expiration_date
-                    domain_obj.owner = whois_info.registrant
-                    domain_obj.updated_at = datetime.now()
-                    try:
-                        session.commit()
-                    except Exception as e:
-                        self.logger.error(f"Error committing WHOIS info for {domain}: {str(e)}")
-                        session.rollback()
-                        self.scan_results["error"].append(f"{domain}:{port} - WHOIS DB error: {str(e)}")
+                if is_offline:
+                    self.logger.info(f"[SCAN] Offline mode: Skipping WHOIS query for domain {domain}")
+                    self.scan_results["info"].append(f"{domain}:{port} - WHOIS skipped (offline mode)")
                 else:
-                    self.scan_results["error"].append(f"{domain}:{port} - No WHOIS info found")
+                    whois_info = self.domain_scanner.scan_domain(domain, session, get_whois=True, get_dns=False, offline_mode=is_offline)
+                    if whois_info and whois_info.registrar:
+                        domain_obj.registrar = whois_info.registrar
+                        domain_obj.registration_date = whois_info.registration_date
+                        domain_obj.expiration_date = whois_info.expiration_date
+                        domain_obj.owner = whois_info.registrant
+                        domain_obj.updated_at = datetime.now()
+                        try:
+                            session.commit()
+                        except Exception as e:
+                            self.logger.error(f"Error committing WHOIS info for {domain}: {str(e)}")
+                            session.rollback()
+                            self.scan_results["error"].append(f"{domain}:{port} - WHOIS DB error: {str(e)}")
+                    else:
+                        self.scan_results["error"].append(f"{domain}:{port} - No WHOIS info found")
             except Exception as e:
                 self.scan_results["error"].append(f"{domain}:{port} - WHOIS error: {str(e)}")
                 session.rollback()
@@ -503,7 +514,8 @@ class ScanManager:
                     check_whois=False,
                     check_dns=False,
                     scanned_domains=self.infra_mgmt.tracker.scanned_domains,
-                    enable_ct=kwargs.get('enable_ct', True)
+                    enable_ct=kwargs.get('enable_ct', True),
+                    offline_mode=is_offline
                 )
                 # Add discovered subdomains to scan queue if not already scanned in this session
                 for sub in subdomains:

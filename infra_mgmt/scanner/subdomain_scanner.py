@@ -233,28 +233,50 @@ class SubdomainScanner:
         
         return subdomains
 
-    def scan_subdomains(self, domain: str, session, methods: List[str] = None) -> Set[str]:
+    def _discover_subdomains_ct(self, domain: str, offline_mode: bool = False, enable_ct: bool = True) -> Set[str]:
+        """
+        Discover subdomains using Certificate Transparency logs, respecting offline mode.
+
+        Args:
+            domain (str): The domain to search for.
+            offline_mode (bool): If True, CT log lookup will be skipped.
+            enable_ct (bool): If False, CT log lookup will be skipped.
+
+        Returns:
+            Set[str]: A set of discovered subdomains.
+        """
+        if offline_mode:
+            logger.info(f"[CT] Offline mode enabled, skipping CT log lookup for {domain}")
+            return set()
+        if not enable_ct:
+            logger.info(f"[CT] CT log lookup disabled by configuration, skipping for {domain}")
+            return set()
+        return self._get_ct_logs_subdomains(domain) # Actual call to existing CT logic
+
+    def scan_subdomains(self, domain: str, session, methods: List[str] = None, offline_mode: bool = False, enable_ct: bool = True) -> Set[str]:
         """
         Discover subdomains for a domain using the provided session.
         Args:
             domain (str): Domain to scan
             session: SQLAlchemy session to use
             methods (List[str], optional): Methods to use ('cert', 'ct'). Defaults to instance methods.
+            offline_mode (bool): If True, CT log lookup will be skipped if 'ct' is in methods.
+            enable_ct (bool): If False, CT log lookup will be skipped if 'ct' is in methods.
         Returns:
             Set[str]: Set of all discovered subdomains
         """
-        methods = methods or self.methods
+        methods_to_use = methods or self.methods
         discovered = set()
-        if 'cert' in methods:
+        if 'cert' in methods_to_use:
             discovered |= self._get_certificate_sans(domain)
-        if 'ct' in methods:
-            discovered |= self._get_ct_logs_subdomains(domain)
+        if 'ct' in methods_to_use:
+            discovered |= self._discover_subdomains_ct(domain, offline_mode=offline_mode, enable_ct=enable_ct)
         # Save discovered subdomains to DB
         for subdomain in discovered:
             self._save_subdomain_to_db(session, domain, subdomain)
         return discovered
 
-    def scan_and_process_subdomains(self, domain: str, session, port: int = 443, check_whois: bool = True, check_dns: bool = True, scanned_domains: Set[str] = None, enable_ct: bool = True) -> List[Dict]:
+    def scan_and_process_subdomains(self, domain: str, session, port: int = 443, check_whois: bool = True, check_dns: bool = True, scanned_domains: Set[str] = None, enable_ct: bool = True, offline_mode: bool = False) -> List[Dict]:
         """
         Discover and process subdomains for a given domain, saving results to the database.
         Args:
@@ -265,13 +287,14 @@ class SubdomainScanner:
             check_dns (bool): Whether to check DNS for discovered subdomains
             scanned_domains (Set[str], optional): Already scanned domains to avoid duplicates
             enable_ct (bool): Whether to use Certificate Transparency logs for subdomain discovery
+            offline_mode (bool): If True, CT log lookup will be skipped if 'ct' is in methods.
         Returns:
             List[Dict]: List of processed subdomain results
         """
         scanned_domains = scanned_domains or set()
         # Use only 'cert' if CT is disabled, otherwise both
         methods = ['cert', 'ct'] if enable_ct else ['cert']
-        subdomains = self.scan_subdomains(domain, session, methods=methods)
+        subdomains = self.scan_subdomains(domain, session, methods=methods, offline_mode=offline_mode, enable_ct=enable_ct)
         results = []
         for subdomain in subdomains:
             if subdomain in scanned_domains:

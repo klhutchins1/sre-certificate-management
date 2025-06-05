@@ -105,7 +105,7 @@ class SettingsService:
         return settings.save()
 
     @staticmethod
-    def save_scanning_settings(settings: Settings, default_rate_limit: int, internal_rate_limit: int, internal_domains: List[str], external_rate_limit: int, external_domains: List[str], whois_rate_limit: int, dns_rate_limit: int, ct_rate_limit: int, socket_timeout: int, request_timeout: int, dns_timeout: float, ct_enabled: bool = True) -> bool:
+    def save_scanning_settings(settings: Settings, default_rate_limit: int, internal_rate_limit: int, internal_domains: List[str], external_rate_limit: int, external_domains: List[str], whois_rate_limit: int, dns_rate_limit: int, ct_rate_limit: int, socket_timeout: int, request_timeout: int, dns_timeout: float, ct_enabled: bool = True, offline_mode: bool = False) -> bool:
         """
         Update and save scanning settings.
         """
@@ -121,6 +121,7 @@ class SettingsService:
         settings.update("scanning.timeouts.request", request_timeout)
         settings.update("scanning.timeouts.dns", dns_timeout)
         settings.update("scanning.ct.enabled", ct_enabled)
+        settings.update("scanning.offline_mode", offline_mode)
         return settings.save()
 
     @staticmethod

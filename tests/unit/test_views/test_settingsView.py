@@ -222,27 +222,37 @@ def test_render_settings_view_paths(mock_streamlit, mock_settings, engine):
         return "Save Path Settings" in str(args)
     
     mock_st.button.side_effect = mock_button
-    
-    # Render settings view
-    render_settings_view(engine)
-    
-    # Verify settings were updated with correct paths
-    assert mock_settings.get("paths.database") == db_path
-    assert mock_settings.get("paths.backups") == backup_path
-    
-    # Verify success message
-    mock_st.success.assert_called_with("Path settings updated successfully!")
-    
-    # Verify save was called
-    mock_settings.save.assert_called_once()
 
-    # Check that the header was rendered
-    found = False
-    for call in mock_header_st.markdown.call_args_list:
-        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
-            found = True
-            break
-    assert found, "Expected header markdown call not found"
+    # Mock notify function to handle page_key
+    def mock_notify(message, level, page_key=None):
+        if level == "success":
+            mock_st.success(message)
+        elif level == "error":
+            mock_st.error(message)
+        elif level == "warning":
+            mock_st.warning(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify):
+        # Render settings view
+        render_settings_view(engine)
+        
+        # Verify settings were updated with correct paths
+        assert mock_settings.get("paths.database") == db_path
+        assert mock_settings.get("paths.backups") == backup_path
+        
+        # Verify success message
+        mock_st.success.assert_called_with("Path settings updated successfully!")
+        
+        # Verify save was called
+        mock_settings.save.assert_called_once()
+
+        # Check that the header was rendered
+        found = False
+        for call in mock_header_st.markdown.call_args_list:
+            if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+                found = True
+                break
+        assert found, "Expected header markdown call not found"
 
 def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
     mock_st, mock_header_st = mock_streamlit
@@ -341,54 +351,66 @@ def test_render_settings_view_scanning(mock_streamlit, mock_settings, engine):
             return external_domains.split('\n')
         if key == "scanning.ct.enabled":
             return True  # Default global CT enabled
+        if key == "scanning.offline_mode":
+            return False  # Default offline mode disabled
         return orig_get(key, default)
     mock_settings.get = patched_get
 
-    # Patch notify to print when called
-    def debug_notify(msg, level):
-        print(f"NOTIFY CALLED: {msg}, {level}")
+    # Mock notify function to handle page_key
+    def mock_notify(message, level, page_key=None):
         if level == "success":
-            print("Calling mock_st.success")
-            return mock_st.success(msg)
-        return None
+            mock_st.success(message)
+        elif level == "error":
+            mock_st.error(message)
+        elif level == "warning":
+            mock_st.warning(message)
 
     # Test both enabled and disabled CT global option
     for ct_enabled_value in [True, False]:
-        # Patch the checkbox to return the test value
-        mock_st.checkbox.side_effect = lambda *args, **kwargs: ct_enabled_value
-        with patch('infra_mgmt.services.SettingsService.SettingsService.save_scanning_settings') as mock_save, \
-             patch('infra_mgmt.views.settingsView.notify', side_effect=debug_notify):
-            def save_scanning_settings(settings, default_rate, internal_rate, internal_domains, external_rate, external_domains, whois_rate, dns_rate, ct_rate, socket_timeout, request_timeout, dns_timeout, ct_enabled=True):
-                # Assert ct_enabled is passed and matches the checkbox value
-                assert ct_enabled == ct_enabled_value
-                settings.update("scanning.default_rate_limit", default_rate)
-                settings.update("scanning.internal.rate_limit", internal_rate)
-                settings.update("scanning.internal.domains", internal_domains)
-                settings.update("scanning.external.rate_limit", external_rate)
-                settings.update("scanning.external.domains", external_domains)
-                settings.update("scanning.ct.enabled", ct_enabled)
-                return settings.save()  # Ensure save is called so the mock is triggered
-            mock_save.side_effect = save_scanning_settings
-            # Render settings view
-            render_settings_view(engine)
+        for offline_mode_value in [True, False]:
+            # Patch the checkboxes to return the test values
+            def mock_checkbox(*args, **kwargs):
+                if "Enable Offline Scanning Mode" in str(args):
+                    return offline_mode_value
+                return ct_enabled_value
+            mock_st.checkbox.side_effect = mock_checkbox
 
-        print("mock_st.success call args list:", mock_st.success.call_args_list)
-        # Use the actual singleton for assertion
-        settings_instance = Settings()
-        # Check the actual config dict, not the patched get
-        assert settings_instance._config["scanning"]["ct"]["enabled"] == ct_enabled_value
-        # Verify success message
-        mock_st.success.assert_any_call("Scanning settings updated successfully!")
-        # Verify save was called
-        mock_settings.save.assert_called()
+            with patch('infra_mgmt.services.SettingsService.SettingsService.save_scanning_settings') as mock_save, \
+                 patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify):
+                def save_scanning_settings(settings, default_rate, internal_rate, internal_domains, external_rate, external_domains, whois_rate, dns_rate, ct_rate, socket_timeout, request_timeout, dns_timeout, ct_enabled=True, offline_mode=False):
+                    # Assert ct_enabled and offline_mode are passed and match the checkbox values
+                    assert ct_enabled == ct_enabled_value
+                    assert offline_mode == offline_mode_value
+                    settings.update("scanning.default_rate_limit", default_rate)
+                    settings.update("scanning.internal.rate_limit", internal_rate)
+                    settings.update("scanning.internal.domains", internal_domains)
+                    settings.update("scanning.external.rate_limit", external_rate)
+                    settings.update("scanning.external.domains", external_domains)
+                    settings.update("scanning.ct.enabled", ct_enabled)
+                    settings.update("scanning.offline_mode", offline_mode)
+                    return settings.save()  # Ensure save is called so the mock is triggered
+                mock_save.side_effect = save_scanning_settings
+                # Render settings view
+                render_settings_view(engine)
 
-        # Check that the header was rendered
-        found = False
-        for call in mock_header_st.markdown.call_args_list:
-            if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
-                found = True
-                break
-        assert found, "Expected header markdown call not found"
+            print("mock_st.success call args list:", mock_st.success.call_args_list)
+            # Use the actual singleton for assertion
+            settings_instance = Settings()
+            # Check the actual config dict, not the patched get
+            assert settings_instance._config["scanning"]["ct"]["enabled"] == ct_enabled_value
+            assert settings_instance._config["scanning"]["offline_mode"] == offline_mode_value
+            # Verify success message
+            mock_st.success.assert_any_call("Scanning settings updated successfully!")
+            # Verify save was called
+            mock_settings.save.assert_called()
+
+            # Check that the header was rendered
+            found = False
+            for call in mock_header_st.markdown.call_args_list:
+                if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+                    found = True
+                    break
+            assert found, "Expected header markdown call not found"
 
 def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
     mock_st, mock_header_st = mock_streamlit
@@ -447,30 +469,40 @@ def test_render_settings_view_alerts(mock_streamlit, mock_settings, engine):
         return False
     
     mock_st.button.side_effect = mock_button
-    
-    # Render settings view
-    render_settings_view(engine)
-    
-    # Verify settings were updated with correct alert values
-    assert mock_settings.get("alerts.expiry_warnings") == [
-        {"days": critical_days, "level": "critical"},
-        {"days": warning_days, "level": "warning"}
-    ]
-    assert mock_settings.get("alerts.failed_scans.consecutive_failures") == consecutive_failures
-    
-    # Verify success message
-    mock_st.success.assert_called_with("Alert settings updated successfully!")
-    
-    # Verify save was called
-    mock_settings.save.assert_called_once()
 
-    # Check that the header was rendered
-    found = False
-    for call in mock_header_st.markdown.call_args_list:
-        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
-            found = True
-            break
-    assert found, "Expected header markdown call not found"
+    # Mock notify function to handle page_key
+    def mock_notify(message, level, page_key=None):
+        if level == "success":
+            mock_st.success(message)
+        elif level == "error":
+            mock_st.error(message)
+        elif level == "warning":
+            mock_st.warning(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify):
+        # Render settings view
+        render_settings_view(engine)
+        
+        # Verify settings were updated with correct alert values
+        assert mock_settings.get("alerts.expiry_warnings") == [
+            {"days": critical_days, "level": "critical"},
+            {"days": warning_days, "level": "warning"}
+        ]
+        assert mock_settings.get("alerts.failed_scans.consecutive_failures") == consecutive_failures
+        
+        # Verify success message
+        mock_st.success.assert_called_with("Alert settings updated successfully!")
+        
+        # Verify save was called
+        mock_settings.save.assert_called_once()
+
+        # Check that the header was rendered
+        found = False
+        for call in mock_header_st.markdown.call_args_list:
+            if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+                found = True
+                break
+        assert found, "Expected header markdown call not found"
 
 def test_render_settings_view_exports(mock_streamlit, mock_settings, engine):
     mock_st, mock_header_st = mock_streamlit
@@ -496,27 +528,37 @@ def test_render_settings_view_exports(mock_streamlit, mock_settings, engine):
         return False
     
     mock_st.button.side_effect = mock_button
-    
-    # Render settings view
-    render_settings_view(engine)
-    
-    # Verify settings were updated with correct export values
-    assert mock_settings.get("exports.csv.delimiter") == delimiter
-    assert mock_settings.get("exports.csv.encoding") == encoding
-    
-    # Verify success message
-    mock_st.success.assert_called_with("Export settings updated successfully!")
-    
-    # Verify save was called
-    mock_settings.save.assert_called_once()
 
-    # Check that the header was rendered
-    found = False
-    for call in mock_header_st.markdown.call_args_list:
-        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
-            found = True
-            break
-    assert found, "Expected header markdown call not found"
+    # Mock notify function to handle page_key
+    def mock_notify(message, level, page_key=None):
+        if level == "success":
+            mock_st.success(message)
+        elif level == "error":
+            mock_st.error(message)
+        elif level == "warning":
+            mock_st.warning(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify):
+        # Render settings view
+        render_settings_view(engine)
+        
+        # Verify settings were updated with correct export values
+        assert mock_settings.get("exports.csv.delimiter") == delimiter
+        assert mock_settings.get("exports.csv.encoding") == encoding
+        
+        # Verify success message
+        mock_st.success.assert_called_with("Export settings updated successfully!")
+        
+        # Verify save was called
+        mock_settings.save.assert_called_once()
+
+        # Check that the header was rendered
+        found = False
+        for call in mock_header_st.markdown.call_args_list:
+            if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
+                found = True
+                break
+        assert found, "Expected header markdown call not found"
 
 def test_create_backup_success(engine):
     """Test successful database backup creation."""
@@ -758,9 +800,14 @@ def test_invalid_settings_validation(mock_streamlit, mock_settings, engine):
     
     # Mock the notify function to capture error messages
     error_messages = []
-    def mock_notify(message, level):
+    def mock_notify(message, level, page_key=None):
         if level == "error":
             error_messages.append(message)
+            mock_st.error(message)
+        elif level == "success":
+            mock_st.success(message)
+        elif level == "warning":
+            mock_st.warning(message)
     
     with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify):
         # Render settings view
@@ -775,7 +822,7 @@ def test_invalid_settings_validation(mock_streamlit, mock_settings, engine):
         assert mock_settings.get("scanning.external.rate_limit") != external_rate
         
         # Verify save was not called since validation failed
-        mock_settings.save.assert_not_called() 
+        mock_settings.save.assert_not_called()
 
     # Check that the header was rendered
     found = False

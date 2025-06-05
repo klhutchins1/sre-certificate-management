@@ -32,7 +32,7 @@ from ..constants import APP_TYPES, app_types, HOST_TYPE_VIRTUAL, ENV_PRODUCTION
 from ..static.styles import load_warning_suppression, load_css
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..components.deletion_dialog import render_danger_zone
-from infra_mgmt.notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from infra_mgmt.notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 import altair as alt
 from ..services.ApplicationService import ApplicationService
 from ..services.ViewDataService import ViewDataService
@@ -72,14 +72,16 @@ BINDING_TYPE_DISPLAY = {
     None: "Unknown Type"
 }
 
+APPLICATIONS_PAGE_KEY = "applications" # Define page key
+
 def handle_add_form():
     """Handle the add application form submission."""
     if not st.session_state.app_name:
-        notify("Application Name is required", "error")
+        notify("Application Name is required", "error", page_key=APPLICATIONS_PAGE_KEY)
         return
     
     if len(st.session_state.app_name) > 255:
-        notify("Application Name must be 255 characters or less", "error")
+        notify("Application Name must be 255 characters or less", "error", page_key=APPLICATIONS_PAGE_KEY)
         return
     
     try:
@@ -93,12 +95,12 @@ def handle_add_form():
             )
             if result['success']:
                 st.session_state.show_add_app_form = False
-                notify("✅ Application added successfully!", "success")
+                notify("✅ Application added successfully!", "success", page_key=APPLICATIONS_PAGE_KEY)
             else:
-                notify(result['error'], "error")
+                notify(result['error'], "error", page_key=APPLICATIONS_PAGE_KEY)
     except Exception as e:
         logger.exception(f"Error adding application: {str(e)}")
-        notify(f"Error adding application: {str(e)}", "error")
+        notify(f"Error adding application: {str(e)}", "error", page_key=APPLICATIONS_PAGE_KEY)
 
 def toggle_add_form():
     """Toggle the add application form visibility."""
@@ -119,14 +121,14 @@ def handle_update_form():
                 st.session_state.new_owner
             )
             if result['success']:
-                notify("Application updated successfully!", "success")
+                notify("Application updated successfully!", "success", page_key=APPLICATIONS_PAGE_KEY)
             else:
-                notify(result['error'], "error")
+                notify(result['error'], "error", page_key=APPLICATIONS_PAGE_KEY)
         else:
-            notify("Unable to update application: Engine or application not available", "error")
+            notify("Unable to update application: Engine or application not available", "error", page_key=APPLICATIONS_PAGE_KEY)
     except Exception as e:
         logger.exception(f"Error updating application: {str(e)}")
-        notify(f"Error updating application: {str(e)}", "error")
+        notify(f"Error updating application: {str(e)}", "error", page_key=APPLICATIONS_PAGE_KEY)
 
 def handle_delete_app():
     try:
@@ -136,14 +138,14 @@ def handle_delete_app():
             result = ApplicationService.delete_application(engine, application.id)
             if result['success']:
                 st.session_state.current_app = None
-                notify("Application deleted successfully!", "success")
+                notify("Application deleted successfully!", "success", page_key=APPLICATIONS_PAGE_KEY)
             else:
-                notify(result['error'], "error")
+                notify(result['error'], "error", page_key=APPLICATIONS_PAGE_KEY)
         else:
-            notify("Unable to delete application: Engine or application not available", "error")
+            notify("Unable to delete application: Engine or application not available", "error", page_key=APPLICATIONS_PAGE_KEY)
     except Exception as e:
         logger.exception(f"Error deleting application: {str(e)}")
-        notify(f"Error deleting application: {str(e)}", "error")
+        notify(f"Error deleting application: {str(e)}", "error", page_key=APPLICATIONS_PAGE_KEY)
 
 def render_applications_view(engine) -> None:
     """Render the main applications management interface."""
@@ -151,12 +153,17 @@ def render_applications_view(engine) -> None:
         # Initialize UI components and styles
         load_warning_suppression()
         load_css()
-        initialize_notifications()
-        clear_notifications()
+        initialize_page_notifications(APPLICATIONS_PAGE_KEY) # Initialize for this page
+        # clear_page_notifications(APPLICATIONS_PAGE_KEY) # Clear at beginning if needed, or before specific actions
+        
         st.session_state.engine = engine
         if 'show_add_app_form' not in st.session_state:
             st.session_state.show_add_app_form = False
-        show_notifications()
+        
+        notification_placeholder = st.empty() # Create placeholder first
+        with notification_placeholder.container():
+            show_notifications(APPLICATIONS_PAGE_KEY) # Show notifications for this page
+            
         render_page_header(
             title="Applications",
             button_label="❌ Cancel" if st.session_state.show_add_app_form else "➕ Add Application",
@@ -200,8 +207,8 @@ def render_applications_view(engine) -> None:
         view_data_service = ViewDataService()
         result = view_data_service.get_applications_list_view_data(engine)
         if not result['success']:
-            notify(result['error'], "error")
-            show_notifications()
+            notify(result['error'], "error", page_key=APPLICATIONS_PAGE_KEY)
+            # show_notifications(APPLICATIONS_PAGE_KEY) # Removed, will show via placeholder on rerun
             return
         df = result['data']['df']
         column_config = result['data']['column_config']
@@ -269,15 +276,15 @@ def render_applications_view(engine) -> None:
                                     render_application_details(selected_app)
                                 else:
                                     logger.warning(f"No application found for ID: {selected_app_id}")
-                                    notify("Application not found", "error")
+                                    notify("Application not found", "error", page_key=APPLICATIONS_PAGE_KEY)
                 except Exception as e:
                     logger.exception(f"Error handling grid selection: {str(e)}")
-                    clear_notifications()
-                    notify("Error displaying application details. Please try again.", "error")
+                    clear_page_notifications(APPLICATIONS_PAGE_KEY) # Clear existing before showing new error
+                    notify("Error displaying application details. Please try again.", "error", page_key=APPLICATIONS_PAGE_KEY)
     except Exception as e:
         logger.exception(f"Error rendering applications view: {str(e)}")
-        notify(f"Error rendering applications view: {str(e)}", "error")
-    show_notifications()
+        notify(f"Error rendering applications view: {str(e)}", "error", page_key=APPLICATIONS_PAGE_KEY)
+    # show_notifications(APPLICATIONS_PAGE_KEY) # Removed, will show via placeholder on rerun
 
 def render_application_details(application: Application) -> None:
     """
@@ -296,7 +303,7 @@ def render_application_details(application: Application) -> None:
     if not application:
         return
     st.session_state.current_app = application
-    clear_notifications()
+    # clear_page_notifications(APPLICATIONS_PAGE_KEY) # Clear if switching detail view, or on action
     details_container = st.container()
     with details_container:
         st.subheader(f"📱 {application.name}")
@@ -345,14 +352,14 @@ def render_application_details(application: Application) -> None:
                                     if engine:
                                         result = ApplicationService.remove_binding(engine, binding.id)
                                         if result['success']:
-                                            notify("Certificate binding removed", "success")
+                                            notify("Certificate binding removed", "success", page_key=APPLICATIONS_PAGE_KEY)
                                             st.session_state[dialog_key] = False
                                             st.rerun()
                                         else:
-                                            notify(result['error'], "error")
+                                            notify(result['error'], "error", page_key=APPLICATIONS_PAGE_KEY)
                                             st.session_state[dialog_key] = False
                                     else:
-                                        notify("Engine not available", "error")
+                                        notify("Engine not available", "error", page_key=APPLICATIONS_PAGE_KEY)
                                         st.session_state[dialog_key] = False
                                     return True
                                 render_danger_zone(
@@ -366,7 +373,7 @@ def render_application_details(application: Application) -> None:
                                 )
                         st.divider()
             else:
-                notify("No certificate bindings found for this application.", "info")
+                notify("No certificate bindings found for this application.", "info", page_key=APPLICATIONS_PAGE_KEY)
             st.markdown("### Add Certificate Bindings")
             available_certs = []
             try:
@@ -377,7 +384,7 @@ def render_application_details(application: Application) -> None:
                     if result['success']:
                         available_certs = result['data']
                     else:
-                        notify(result['error'], "error")
+                        notify(result['error'], "error", page_key=APPLICATIONS_PAGE_KEY)
                 if available_certs:
                     cert_options = {
                         f"{cert.common_name} (Valid until: {cert.valid_until.strftime('%Y-%m-%d')})": cert.id
@@ -409,17 +416,17 @@ def render_application_details(application: Application) -> None:
                                     binding_type_map[binding_type]
                                 )
                                 if result['success']:
-                                    notify(f"{result['count']} certificate(s) bound successfully!", "success")
+                                    notify(f"{result['count']} certificate(s) bound successfully!", "success", page_key=APPLICATIONS_PAGE_KEY)
                                 else:
-                                    notify(result['error'], "error")
+                                    notify(result['error'], "error", page_key=APPLICATIONS_PAGE_KEY)
                             except Exception as e:
                                 logger.exception(f"Error binding certificates: {str(e)}")
-                                notify(f"Error binding certificates: {str(e)}", "error")
+                                notify(f"Error binding certificates: {str(e)}", "error", page_key=APPLICATIONS_PAGE_KEY)
                 else:
-                    notify("No available certificates found to bind.", "info")
+                    notify("No available certificates found to bind.", "info", page_key=APPLICATIONS_PAGE_KEY)
             except Exception as e:
                 logger.exception(f"Error loading available certificates: {str(e)}")
-                notify(f"Error loading available certificates: {str(e)}", "error")
+                notify(f"Error loading available certificates: {str(e)}", "error", page_key=APPLICATIONS_PAGE_KEY)
         with tab3:
             engine = st.session_state.get('engine')
             if engine:
@@ -447,4 +454,4 @@ def render_application_details(application: Application) -> None:
                     custom_warning=f"This will permanently delete the application '{application.name}' and remove all certificate bindings."
                 )
             else:
-                notify("Unable to delete application: Engine not available", "error") 
+                notify("Unable to delete application: Engine not available", "error", page_key=APPLICATIONS_PAGE_KEY) 

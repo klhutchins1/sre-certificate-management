@@ -18,7 +18,7 @@ import logging
 from typing import Tuple, List, Set
 import pandas as pd
 from ..static.styles import load_warning_suppression, load_css
-from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from ..notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 import time
 import ipaddress
 from ..models import Host, HostIP, CertificateBinding, Certificate, Domain
@@ -41,6 +41,8 @@ if not logger.handlers:
     # Set UTF-8 encoding for the handler
     console_handler.stream.reconfigure(encoding='utf-8')
     logger.addHandler(console_handler)
+
+SCANNER_PAGE_KEY = "scanner" # Define a page key
 
 class StreamlitProgressContainer:
     """Wrapper for Streamlit progress functionality."""
@@ -133,12 +135,14 @@ def render_scan_interface(engine) -> None:
     load_warning_suppression()
     load_css()
     
-    # Initialize notifications at the very beginning
-    initialize_notifications()
-    clear_notifications()  # Clear any existing notifications
+    # Initialize notifications for this page
+    initialize_page_notifications(SCANNER_PAGE_KEY)
     
     # Create a placeholder for notifications at the top
     notification_placeholder = st.empty()
+    # Call show_notifications() ONCE here. This will be updated on reruns.
+    with notification_placeholder.container():
+        show_notifications(SCANNER_PAGE_KEY)
     
     # Use persistent ScanService in session_state
     if 'scan_service' not in st.session_state:
@@ -162,6 +166,18 @@ def render_scan_interface(engine) -> None:
     
     render_page_header(title="Domain & Certificate Scanner")
     
+    # Display Offline Mode indicator if enabled
+    is_offline = settings.get("scanning.offline_mode", False)
+    if is_offline:
+        notify(
+            "📢 **Offline Mode Enabled:** External lookups (Whois, CT Logs) are disabled. "
+            "DNS resolution may be limited to local network and cached entries.",
+            level='info',
+            page_key=SCANNER_PAGE_KEY
+        )
+        # st.rerun() # Removed for now, let Streamlit handle update timing
+        # No st.markdown("---") here, as notify will handle display
+
     # Create main layout columns
     col1, col2 = st.columns([3, 1])
     
@@ -226,6 +242,9 @@ internal.server.local:444"""
         
         # Handle scan initiation
         if scan_button_clicked and not st.session_state.scan_in_progress:
+            # Clear notifications ONLY when a new scan is initiated by this page's button
+            clear_page_notifications(SCANNER_PAGE_KEY)
+            
             # Always reset scan state and tracker at the start of every scan
             scan_service.scan_manager.reset_scan_state()
             logger.debug("[SCAN_VIEW] Called reset_scan_state on scan_manager at scan start.")
@@ -264,24 +283,25 @@ internal.server.local:444"""
                 valid_targets, validation_errors = scan_service.validate_and_prepare_targets(st.session_state.scan_input)
                 if validation_errors:
                     for err in validation_errors:
-                        notify(err, "error")
-                    with notification_placeholder:
-                        show_notifications()
+                        notify(err, level="error", page_key=SCANNER_PAGE_KEY)
+                    # No explicit show_notifications() here. It will show on rerun.
                     st.session_state.scan_in_progress = False
                     progress_bar.empty()
                     status_container.empty()
                     queue_status.empty()
-                    return
+                    # st.rerun() # Optionally, force a rerun to show notifications immediately
+                    return # End execution here to show notifications and stop scan
                 if not valid_targets:
-                    notify("Please enter at least one valid domain to scan", "error")
-                    with notification_placeholder:
-                        show_notifications()
+                    notify("Please enter at least one valid domain to scan", level="warning", page_key=SCANNER_PAGE_KEY)
+                    # No explicit show_notifications() here.
                     st.session_state.scan_in_progress = False
                     # Clear progress containers
                     progress_bar.empty()
                     status_container.empty()
                     queue_status.empty()
-                    return
+                    # st.rerun() # Optionally, force a rerun
+                    return # End execution here
+
                 # Prepare scan options
                 options = {
                     "check_whois": check_whois,
@@ -312,9 +332,8 @@ internal.server.local:444"""
                 status_container.empty()
                 queue_status.empty()
                 st.session_state.scan_in_progress = False
-                # Show notifications
-                with notification_placeholder:
-                    show_notifications()
+                # Notifications will be shown by the top-level show_notifications() on rerun
+                # No explicit show_notifications() here.
     
     # Only show results if a scan has been performed
     has_results = (
@@ -355,13 +374,13 @@ internal.server.local:444"""
                         # Use scan_service to get all display data as a dict
                         domain_data = scan_service.get_domain_display_data(engine, domain)
                         if not domain_data["success"]:
-                            notify(domain_data["error"], "error")
+                            notify(domain_data["error"], "error", page_key=SCANNER_PAGE_KEY)
                             continue
                         data = domain_data["data"]
                         if domain in db_only_domains:
-                            notify(f"Domain '{domain}' could not be resolved via DNS, but database info is shown below.", "warning")
+                            notify(f"Domain '{domain}' could not be resolved via DNS, but database info is shown below.", "warning", page_key=SCANNER_PAGE_KEY)
                         if domain in info_only_domains:
-                            notify(f"Partial information found for domain '{domain}'. Some data (e.g., certificate) may be missing.", "info")
+                            notify(f"Partial information found for domain '{domain}'. Some data (e.g., certificate) may be missing.", "info", page_key=SCANNER_PAGE_KEY)
                         if data["type"] == "host":
                             st.markdown(f"### IP: {data['name']}")
                             col1, col2 = st.columns(2)
@@ -516,13 +535,6 @@ internal.server.local:444"""
                           st.session_state.scan_results["no_cert"]):
                         st.markdown("### No Issues Found")
                         st.markdown("All scans completed successfully with no issues detected.")
-            
-            # Show notifications after registrar tab content
-            show_notifications()
-    
-    # Show notifications after all content is rendered
-    with notification_placeholder:
-        show_notifications()
 
 def calculate_progress(sub_step: int, total_sub_steps: int, current_step: int, total_steps: int) -> float:
     """

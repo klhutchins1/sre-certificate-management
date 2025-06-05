@@ -1098,16 +1098,18 @@ def test_scan_manager_enable_ct_propagation(scan_manager, db_session, mock_statu
             port=443,
             check_subdomains=True,
             status_container=mock_status_container,
-            enable_ct=enable_ct
+            enable_ct=enable_ct,
+            offline_mode=True
         )
         scan_manager.subdomain_scanner.scan_and_process_subdomains.assert_called_with(
             domain="example.com",
             session=db_session,
             port=443,
-            check_whois=ANY,
-            check_dns=ANY,
+            check_whois=False,
+            check_dns=False,
             scanned_domains=ANY,
-            enable_ct=enable_ct
+            enable_ct=enable_ct,
+            offline_mode=True
         )
 
 @pytest.fixture

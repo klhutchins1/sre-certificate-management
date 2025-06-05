@@ -34,7 +34,7 @@ from ..models import (
 from ..constants import HOST_TYPE_SERVER, HOST_TYPE_VIRTUAL, ENV_PRODUCTION, BINDING_TYPE_IP, BINDING_TYPE_JWT, BINDING_TYPE_CLIENT, platform_options
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
-from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from ..notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 import json
 import logging
 from ..services.CertificateService import CertificateService
@@ -45,20 +45,22 @@ from infra_mgmt.components.metrics_row import render_metrics_row
 
 logger = logging.getLogger(__name__)
 
+CERTIFICATES_PAGE_KEY = "certificates" # Define page key
+
 def render_certificate_list(engine):
     """Render the certificate list view"""
     # Load warning suppression script and CSS
     load_warning_suppression()
     load_css()
     
-    # Initialize and clear notifications
-    initialize_notifications()
-    clear_notifications()
+    # Initialize notifications for this page
+    initialize_page_notifications(CERTIFICATES_PAGE_KEY)
+    # clear_page_notifications(CERTIFICATES_PAGE_KEY) # Decide if clearing upfront is needed
     
     # Create notification placeholder at the top
     notification_placeholder = st.empty()
-    
-    # Add custom progress bar color
+    with notification_placeholder.container():
+        show_notifications(CERTIFICATES_PAGE_KEY) # Show notifications for this page
 
     
     # Standardized page header
@@ -72,10 +74,10 @@ def render_certificate_list(engine):
         button_type="primary" if not st.session_state.get('show_manual_entry', False) else "secondary"
     )
     
-    # Show any pending success messages
-    if 'success_message' in st.session_state:
-        notify(st.session_state.success_message, "success")
-        del st.session_state.success_message
+    # Show any pending success messages (now handled by the placeholder)
+    # if 'success_message' in st.session_state:
+    #     notify(st.session_state.success_message, "success", page_key=CERTIFICATES_PAGE_KEY)
+    #     del st.session_state.success_message
     
     # Show manual entry form if button was clicked
     if st.session_state.get('show_manual_entry', False):
@@ -89,9 +91,9 @@ def render_certificate_list(engine):
     view_data_service = ViewDataService()
     result = view_data_service.get_certificate_list_view_data(engine)
     if not result['success']:
-        notify(result['error'], "error")
-        with notification_placeholder:
-            show_notifications()
+        notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
+        # with notification_placeholder: # Already handled by the main placeholder
+        #     show_notifications(CERTIFICATES_PAGE_KEY)
         return
     metrics = result['data']['metrics']
     df = result['data']['df']
@@ -115,9 +117,9 @@ def render_certificate_list(engine):
         {"label": "Total Bindings", "value": metrics["total_bindings"]},
     ], columns=3)
     if df.empty:
-        notify("No certificates found in database", "info")
-        with notification_placeholder:
-            show_notifications()
+        notify("No certificates found in database", "info", page_key=CERTIFICATES_PAGE_KEY)
+        # with notification_placeholder: # Already handled
+        #     show_notifications(CERTIFICATES_PAGE_KEY)
         return
     
     # Configure AG Grid
@@ -222,12 +224,12 @@ def render_certificate_list(engine):
                     if cert_obj is not None:
                         render_certificate_card(cert_obj, session)
     except Exception as e:
-        notify(f"Error handling selection: {str(e)}", "error")
-        with notification_placeholder:
-            show_notifications()
-    # Show all notifications at the end
-    with notification_placeholder:
-        show_notifications()
+        notify(f"Error handling selection: {str(e)}", "error", page_key=CERTIFICATES_PAGE_KEY)
+        # with notification_placeholder: # Already handled
+        #     show_notifications(CERTIFICATES_PAGE_KEY)
+    # Show all notifications at the end (now handled by the single placeholder at the top)
+    # with notification_placeholder:
+    #     show_notifications(CERTIFICATES_PAGE_KEY)
 
 def render_certificate_card(cert, session):
     """
@@ -296,7 +298,7 @@ def render_certificate_card(cert, session):
             entity_name=cert.common_name,
             entity_type="certificate",
             dependencies=dependencies,
-            on_delete=delete_certificate,
+            on_delete=delete_certificate, # This callback might call notify internally; ensure it uses page_key
             session=session
         )
 
@@ -367,8 +369,8 @@ def render_certificate_overview(cert: Certificate, session) -> None:
                     st.session_state.current_view = "Scanner"
                     st.rerun()
         else:
-            notify("No Subject Alternative Names found", "info")
-            show_notifications()
+            notify("No Subject Alternative Names found", "info", page_key=CERTIFICATES_PAGE_KEY)
+            # show_notifications(CERTIFICATES_PAGE_KEY) # Handled by placeholder
 
 def render_certificate_bindings(cert, session):
     """Render the certificate bindings section."""
@@ -414,17 +416,17 @@ def render_certificate_bindings(cert, session):
                 cert.id, platform, binding_type, hostname, ip, port, session
             )
             if result['success']:
-                notify("Usage record added successfully", "success")
-                show_notifications()
+                notify("Usage record added successfully", "success", page_key=CERTIFICATES_PAGE_KEY)
+                # show_notifications(CERTIFICATES_PAGE_KEY) # Handled by placeholder
                 st.rerun()
             else:
-                notify(f"Failed to add usage record: {result['error']}", "error")
-                show_notifications()
+                notify(f"Failed to add usage record: {result['error']}", "error", page_key=CERTIFICATES_PAGE_KEY)
+                # show_notifications(CERTIFICATES_PAGE_KEY) # Handled by placeholder
     
     # Current Usage Records
     if not cert.certificate_bindings:
-        notify("No usage records found for this certificate", "info")
-        show_notifications()
+        notify("No usage records found for this certificate", "info", page_key=CERTIFICATES_PAGE_KEY)
+        # show_notifications(CERTIFICATES_PAGE_KEY) # Handled by placeholder
         return
         
     # Load all applications once for efficiency
@@ -474,16 +476,16 @@ def render_certificate_bindings(cert, session):
                         # binding['obj'] is expected to be a CertificateBinding ORM object
                         result = service.delete_certificate_binding(binding['id'], session)
                         if result['success']:
-                            notify("Usage record deleted", "success")
+                            notify("Usage record deleted", "success", page_key=CERTIFICATES_PAGE_KEY)
                             st.session_state[dialog_key] = False
                             st.rerun()
                         else:
-                            notify(result['error'], "error")
+                            notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
                             st.session_state[dialog_key] = False
                         session.delete(binding['obj']) if 'obj' in binding else session.execute(
                             f"DELETE FROM certificate_binding WHERE id = :id", {{'id': binding['id']}})
                         session.commit()
-                        notify("Usage record deleted", "success")
+                        notify("Usage record deleted", "success", page_key=CERTIFICATES_PAGE_KEY) # Duplicated notify? Review service logic
                         st.session_state[dialog_key] = False
                         st.rerun()
                         return True
@@ -580,7 +582,7 @@ def render_certificate_tracking(cert, session):
                 )
                 session.add(new_entry)
                 session.commit()
-                notify("Change entry added successfully!", "success")
+                notify("Change entry added successfully!", "success", page_key=CERTIFICATES_PAGE_KEY)
                 st.session_state.show_tracking_entry = False
                 st.rerun()
     
@@ -631,8 +633,8 @@ def render_certificate_tracking(cert, session):
             use_container_width=True
         )
     else:
-        notify("No change entries found for this certificate", "info")
-        show_notifications()
+        notify("No change entries found for this certificate", "info", page_key=CERTIFICATES_PAGE_KEY)
+        # show_notifications(CERTIFICATES_PAGE_KEY) # Handled by placeholder
 
 def render_manual_entry_form(session):
     """
@@ -696,11 +698,11 @@ def render_manual_entry_form(session):
                 cert_type, common_name, serial_number, thumbprint, valid_from, valid_until, platform, session
             )
             if result['success']:
-                notify("Certificate added successfully!", "success")
+                notify("Certificate added successfully!", "success", page_key=CERTIFICATES_PAGE_KEY)
                 st.session_state.show_manual_entry = False
                 st.rerun()
             else:
-                notify(f"Error saving certificate: {result['error']}", "error")
+                notify(f"Error saving certificate: {result['error']}", "error", page_key=CERTIFICATES_PAGE_KEY)
 
 def render_certificate_scans(cert):
     """

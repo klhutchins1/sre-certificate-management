@@ -30,7 +30,7 @@ import plotly.express as px
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
 from collections import defaultdict
-from ..notifications import initialize_notifications, show_notifications, notify, clear_notifications
+from ..notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 from ..monitoring import monitor_rendering, performance_metrics
 import functools
 from typing import Dict, Any, Optional
@@ -43,6 +43,8 @@ from infra_mgmt.components.metrics_row import render_metrics_row
 # Cache for dashboard data
 _dashboard_cache: Dict[str, Any] = {}
 _cache_timeout = 300  # 5 minutes
+
+DASHBOARD_PAGE_KEY = "dashboard" # Define page key
 
 def get_cached_data(key: str) -> Optional[Any]:
     """Get data from cache if it exists and is not expired."""
@@ -307,16 +309,21 @@ def render_dashboard(engine) -> None:
     # Initialize UI components and styles
     load_warning_suppression()
     load_css()
-    initialize_notifications()
-    clear_notifications()
-    notification_placeholder = st.empty()
+    initialize_page_notifications(DASHBOARD_PAGE_KEY) # Initialize for this page
+    # clear_page_notifications(DASHBOARD_PAGE_KEY) # Clear if needed, or before specific actions
+    
+    notification_placeholder = st.empty() # Create placeholder first
     render_page_header(title="Dashboard")
+    
+    with notification_placeholder.container(): # Show notifications for this page
+        show_notifications(DASHBOARD_PAGE_KEY)
+        
     view_data_service = ViewDataService()
     result = view_data_service.get_dashboard_view_data(engine)
     if not result['success']:
-        notify(result['error'], "error")
-        with notification_placeholder:
-            show_notifications()
+        notify(result['error'], "error", page_key=DASHBOARD_PAGE_KEY)
+        # with notification_placeholder: # Already handled by the main placeholder
+        #     show_notifications(DASHBOARD_PAGE_KEY)
         return
     metrics = result['data']['metrics']
     cert_timeline = result['data']['cert_timeline']
@@ -348,7 +355,7 @@ def render_dashboard(engine) -> None:
         )
         st.plotly_chart(fig_certs, use_container_width=True)
     else:
-        notify("No certificates found in database. \n", "info")
+        notify("No certificates found in database. \n", "info", page_key=DASHBOARD_PAGE_KEY)
     st.divider()
     # Create root domain timeline
     df_domains = pd.DataFrame(domain_timeline) if domain_timeline else pd.DataFrame()
@@ -365,10 +372,10 @@ def render_dashboard(engine) -> None:
         )
         st.plotly_chart(fig_domains, use_container_width=True)
     else:
-        notify("No root domain registration information found in database. \n", "info")
-    # Show all notifications at the end
-    with notification_placeholder:
-        show_notifications()
+        notify("No root domain registration information found in database. \n", "info", page_key=DASHBOARD_PAGE_KEY)
+    # Show all notifications at the end (now handled by the single placeholder)
+    # with notification_placeholder:
+    #     show_notifications(DASHBOARD_PAGE_KEY)
     # Show performance metrics at the bottom
     render_performance_metrics()
 

@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from sqlalchemy import String
 
-from infra_mgmt.notifications import notify
+from infra_mgmt.notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 from ..models import Certificate, Host, HostIP, CertificateBinding
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
@@ -46,6 +46,8 @@ from infra_mgmt.components.page_header import render_page_header
 
 # Add logger setup at the top
 logger = logging.getLogger(__name__)
+
+SEARCH_PAGE_KEY = "search" # Define page key
 
 def render_search_view(engine) -> None:
     """
@@ -80,8 +82,13 @@ def render_search_view(engine) -> None:
     # Initialize UI components and styles
     load_warning_suppression()
     load_css()
+    initialize_page_notifications(SEARCH_PAGE_KEY) # Initialize for this page
     
+    notification_placeholder = st.empty() # Create placeholder
     render_page_header(title="Search")
+    
+    with notification_placeholder.container(): # Show notifications for this page
+        show_notifications(SEARCH_PAGE_KEY)
     
     # Main search input field
     search_query = st.text_input(
@@ -112,7 +119,7 @@ def render_search_view(engine) -> None:
         try:
             result = ViewDataService().get_search_view_data(engine, search_query, search_type, status_filter, platform_filter)
             if not result['success']:
-                notify(result['error'], "error")
+                notify(result['error'], "error", page_key=SEARCH_PAGE_KEY)
                 return
             df = result['data']['df']
             column_config = result['data']['column_config']
@@ -123,7 +130,8 @@ def render_search_view(engine) -> None:
             if search_type == "Certificates":
                 st.subheader("Certificates")
                 if df.empty:
-                    st.info("No results found")
+                    st.info("No results found") # Convert to notify
+                    notify("No results found for Certificates", "info", page_key=SEARCH_PAGE_KEY)
                 else:
                     st.dataframe(
                         df.drop(columns=['type'], errors='ignore') if has_type else df,
@@ -134,7 +142,8 @@ def render_search_view(engine) -> None:
             elif search_type == "Hosts" or search_type == "IP Addresses":
                 st.subheader("Hosts")
                 if df.empty:
-                    st.info("No results found")
+                    st.info("No results found") # Convert to notify
+                    notify("No results found for Hosts/IP Addresses", "info", page_key=SEARCH_PAGE_KEY)
                 else:
                     st.dataframe(
                         df.drop(columns=['type'], errors='ignore') if has_type else df,
@@ -165,7 +174,8 @@ def render_search_view(engine) -> None:
                     )
                     shown = True
                 if not shown:
-                    st.info("No results found")
+                    st.info("No results found") # Convert to notify
+                    notify("No results found for the current filters", "info", page_key=SEARCH_PAGE_KEY)
         except Exception as e:
             logger.exception(f"Error in search view: {str(e)}")
-            notify(f"Error in search view: {str(e)}", "error")
+            notify(f"Error in search view: {str(e)}", "error", page_key=SEARCH_PAGE_KEY)

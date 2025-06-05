@@ -18,7 +18,7 @@ import logging
 
 from ..models import Domain, DomainDNSRecord, Certificate, IgnoredDomain
 from ..components.deletion_dialog import render_danger_zone
-from ..notifications import notify, show_notifications, initialize_notifications, clear_notifications
+from ..notifications import notify, show_notifications, initialize_page_notifications, clear_page_notifications
 from ..services.DomainService import DomainService, VirtualDomain
 from ..services.ViewDataService import ViewDataService
 from infra_mgmt.utils.SessionManager import SessionManager
@@ -27,6 +27,8 @@ from infra_mgmt.components.page_header import render_page_header
 from infra_mgmt.components.metrics_row import render_metrics_row
 
 logger = logging.getLogger(__name__)
+
+DOMAINS_PAGE_KEY = "domains" # Define page key
 
 def get_domain_hierarchy(domains):
     """
@@ -151,24 +153,27 @@ def render_domain_list(engine):
     load_css()
     
     render_page_header(title="Domain Management")
-    # Initialize and clear notifications
-    initialize_notifications()
-    clear_notifications()
+    # Initialize notifications for this page
+    initialize_page_notifications(DOMAINS_PAGE_KEY)
+    # clear_page_notifications(DOMAINS_PAGE_KEY) # Clear if needed, or before specific actions
     
     # Create notification placeholder at the top
     notification_placeholder = st.empty()
+    with notification_placeholder.container(): # Show notifications for this page
+        show_notifications(DOMAINS_PAGE_KEY)
+        
     view_data_service = ViewDataService()
     result = view_data_service.get_domain_list_view_data(engine)
     if not result['success']:
-        notify(result['error'], "error")
-        show_notifications()
+        notify(result['error'], "error", page_key=DOMAINS_PAGE_KEY)
+        # show_notifications(DOMAINS_PAGE_KEY) # Handled by placeholder
         return
     visible_domains = result['data']['visible_domains']
     metrics = result['data']['metrics']
     ignored_patterns = result['data']['ignored_patterns']
     if not visible_domains:
-        notify("No domains found in the database.", "info")
-        show_notifications()
+        notify("No domains found in the database.", "info", page_key=DOMAINS_PAGE_KEY)
+        # show_notifications(DOMAINS_PAGE_KEY) # Handled by placeholder
         return
     render_metrics_row([
         {"label": "Total Domains", "value": metrics["total_domains"]},
@@ -181,8 +186,8 @@ def render_domain_list(engine):
     # Use service to get filtered domains and hierarchy
     result = DomainService.get_filtered_domain_hierarchy(engine, search)
     if not result['success']:
-        notify(result['error'], "error")
-        show_notifications()
+        notify(result['error'], "error", page_key=DOMAINS_PAGE_KEY)
+        # show_notifications(DOMAINS_PAGE_KEY) # Handled by placeholder
         return
     root_domains = result['data']['root_domains']
     domain_hierarchy = result['data']['domain_hierarchy']
@@ -236,7 +241,7 @@ def render_domain_list(engine):
             if "└" in selected_domain:
                 selected_domain = selected_domain.split("└")[-1].replace("─", "").strip()
         else:
-            notify("No domains match your search.", "info")
+            notify("No domains match your search.", "info", page_key=DOMAINS_PAGE_KEY)
             return
     
     with col_details:
@@ -244,7 +249,7 @@ def render_domain_list(engine):
         if 'last_selected_domain' not in st.session_state:
             st.session_state['last_selected_domain'] = None
         if selected_domain != st.session_state['last_selected_domain']:
-            clear_notifications()
+            clear_page_notifications(DOMAINS_PAGE_KEY) # Clear when selection changes
             st.session_state['last_selected_domain'] = selected_domain
         if selected_domain:
             # Find the selected domain, handling both real and virtual domains
@@ -297,7 +302,7 @@ def render_domain_list(engine):
                 if not isinstance(domain, VirtualDomain):
                     # --- Robust notification logic ---
                     if should_notify_no_certificates(domain, domain_hierarchy):
-                        notify("No certificates found for this domain.", "info")
+                        notify("No certificates found for this domain.", "info", page_key=DOMAINS_PAGE_KEY)
                     else:
                         st.markdown("### \U0001F510 Certificates")
                         for cert in domain.certificates:
@@ -314,7 +319,7 @@ def render_domain_list(engine):
                                 st.markdown("**SANs:** {}".format(", ".join(f"`{san}`" for san in cert.san)))
                                 st.markdown("**Signature Algorithm:** {}".format(cert.signature_algorithm))
                             st.markdown("---")
-                    show_notifications()
+                    # show_notifications(DOMAINS_PAGE_KEY) # Handled by placeholder
                     # DNS Records
                     if domain.dns_records:
                         st.markdown("### \U0001F4DD DNS Records")
@@ -334,7 +339,7 @@ def render_domain_list(engine):
                                 use_container_width=True
                             )
                     else:
-                        notify("No DNS records found for this domain.", "info")
+                        notify("No DNS records found for this domain.", "info", page_key=DOMAINS_PAGE_KEY)
                     # Add Danger Zone for domain deletion
                     st.markdown("### \u26A0\uFE0F Danger Zone")
                     dependencies = {
@@ -352,10 +357,10 @@ def render_domain_list(engine):
                     def add_to_ignore_list(_):
                         result = DomainService.add_to_ignore_list_by_name(engine, domain.domain_name)
                         if result['success']:
-                            notify(f"Added '{domain.domain_name}' to ignore list", "success")
+                            notify(f"Added '{domain.domain_name}' to ignore list", "success", page_key=DOMAINS_PAGE_KEY)
                             st.rerun()
                         else:
-                            notify(result['error'], "warning")
+                            notify(result['error'], "warning", page_key=DOMAINS_PAGE_KEY)
                             logger.warning(result['error'])
                     render_danger_zone(
                         title="Domain Management",

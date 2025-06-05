@@ -42,45 +42,46 @@ class CertificateDBUtil:
         def set_status(msg):
             if status_callback:
                 status_callback(msg)
-        # Upsert Certificate
-        cert = session.query(Certificate).filter_by(serial_number=cert_info.serial_number).first()
-        if not cert:
-            set_status(f'Found new certificate for {domain}...')
-            cert = Certificate(
-                serial_number=cert_info.serial_number,
-                thumbprint=cert_info.thumbprint,
-                common_name=cert_info.common_name,
-                valid_from=cert_info.valid_from,
-                valid_until=cert_info.expiration_date,
-                _issuer=json.dumps(cert_info.issuer),
-                _subject=json.dumps(cert_info.subject),
-                _san=json.dumps(cert_info.san),
-                key_usage=json.dumps(cert_info.key_usage) if cert_info.key_usage else None,
-                signature_algorithm=cert_info.signature_algorithm,
-                chain_valid=validate_chain and cert_info.chain_valid,
-                sans_scanned=check_sans,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-                proxied=getattr(cert_info, 'proxied', False),
-                proxy_info=getattr(cert_info, 'proxy_info', None)
-            )
-            session.add(cert)
+
+        # Upsert Certificate: Primary lookup by thumbprint
+        cert = session.query(Certificate).filter_by(thumbprint=cert_info.thumbprint).first()
+
+        if cert:
+            # Certificate with this thumbprint exists, update it
+            set_status(f'Updating existing certificate (thumbprint: {cert_info.thumbprint[:12]}...).')
         else:
-            set_status(f'Updating existing certificate for {domain}...')
-            cert.thumbprint = cert_info.thumbprint
-            cert.common_name = cert_info.common_name
-            cert.valid_from = cert_info.valid_from
-            cert.valid_until = cert_info.expiration_date
-            cert._issuer = json.dumps(cert_info.issuer)
-            cert._subject = json.dumps(cert_info.subject)
-            cert._san = json.dumps(cert_info.san)
-            cert.key_usage = json.dumps(cert_info.key_usage) if cert_info.key_usage else None
-            cert.signature_algorithm = cert_info.signature_algorithm
-            cert.chain_valid = validate_chain and cert_info.chain_valid
-            cert.sans_scanned = check_sans
-            cert.updated_at = datetime.now()
-            cert.proxied = getattr(cert_info, 'proxied', False)
-            cert.proxy_info = getattr(cert_info, 'proxy_info', None)
+            # No certificate with this thumbprint, create a new one
+            # We should also check by serial if thumbprint not found, in case of re-key with same serial (less common)
+            cert_by_serial = session.query(Certificate).filter_by(serial_number=cert_info.serial_number).first()
+            if cert_by_serial:
+                set_status(f'Updating existing certificate (serial: {cert_info.serial_number}), new thumbprint {cert_info.thumbprint[:12]}...')
+                cert = cert_by_serial # Use the existing cert object found by serial
+                cert.thumbprint = cert_info.thumbprint # Update its thumbprint
+            else:
+                set_status(f'Creating new certificate (thumbprint: {cert_info.thumbprint[:12]}...).')
+                cert = Certificate(thumbprint=cert_info.thumbprint) # Create with the unique key
+                session.add(cert) # Add to session if new, this will be flushed later with other changes
+
+        # Update all fields for the (now existing or newly added) certificate object
+        cert.serial_number = cert_info.serial_number
+        cert.common_name = cert_info.common_name
+        cert.valid_from = cert_info.valid_from
+        cert.valid_until = cert_info.expiration_date
+        cert._issuer = json.dumps(cert_info.issuer)
+        cert._subject = json.dumps(cert_info.subject)
+        cert._san = json.dumps(cert_info.san)
+        cert.key_usage = json.dumps(cert_info.key_usage) if cert_info.key_usage else None
+        cert.signature_algorithm = cert_info.signature_algorithm
+        # Ensure chain_valid uses the result from the actual validation attempt if available in cert_info,
+        # otherwise, it uses the validate_chain flag if cert_info doesn't have it explicitly.
+        cert.chain_valid = getattr(cert_info, 'chain_valid', validate_chain) 
+        cert.sans_scanned = check_sans # Update this flag
+        cert.proxied = getattr(cert_info, 'proxied', False)
+        cert.proxy_info = getattr(cert_info, 'proxy_info', None)
+        cert.updated_at = datetime.now()
+        if not cert.id: # If cert.id is None, it means it's a new instance not yet flushed (or created_at not set)
+            cert.created_at = datetime.now()
+
         # Associate certificate with domain (if domain_obj is a Domain)
         if domain_obj and hasattr(domain_obj, 'certificates') and cert not in domain_obj.certificates:
             domain_obj.certificates.append(cert)

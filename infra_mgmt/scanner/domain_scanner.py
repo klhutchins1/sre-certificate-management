@@ -486,7 +486,7 @@ class DomainScanner:
         self.session_cache.set_dns(domain, records)
         return records
 
-    def scan_domain(self, domain: str, session, get_whois: bool = True, get_dns: bool = True) -> DomainInfo:
+    def scan_domain(self, domain: str, session, get_whois: bool = True, get_dns: bool = True, offline_mode: bool = False) -> DomainInfo:
         """
         Scan a domain for all available information (WHOIS, DNS, ignore list, etc.).
         Args:
@@ -494,6 +494,7 @@ class DomainScanner:
             session: SQLAlchemy session to use
             get_whois (bool): Whether to retrieve WHOIS info
             get_dns (bool): Whether to retrieve DNS records
+            offline_mode (bool): If True, skips external network calls like Whois.
         Returns:
             DomainInfo: Populated domain information object
         """
@@ -504,63 +505,20 @@ class DomainScanner:
                 is_valid=False,
                 error="Invalid domain name format"
             )
-        # Remove any leftover try block and code that creates a session or engine
-        # Only use the passed-in session for all DB operations
-        # Remove any now-unused imports related to session/engine creation
-        # ... rest of the method ...
         try:
-            # Check if domain is in ignore list FIRST, before any scanning
-            is_ignored = False
-            ignore_reason = None
-            
-            # First check exact matches
-            ignored = session.query(IgnoredDomain).filter_by(pattern=domain).first()
-            if ignored:
-                is_ignored = True
-                ignore_reason = ignored.reason
-            else:
-                # Then check all patterns
-                patterns = session.query(IgnoredDomain).all()
-                for pattern in patterns:
-                    # Handle wildcard prefix (*.example.com)
-                    if pattern.pattern.startswith('*.'):
-                        suffix = pattern.pattern[2:]  # Remove *. from pattern
-                        if domain.endswith(suffix):
-                            is_ignored = True
-                            ignore_reason = pattern.reason
-                            break
-                    # Handle suffix match (example.com)
-                    elif domain.endswith(pattern.pattern):
-                        is_ignored = True
-                        ignore_reason = pattern.reason
-                        break
-                    # Handle contains pattern (*test*)
-                    elif pattern.pattern.startswith('*') and pattern.pattern.endswith('*'):
-                        search_term = pattern.pattern.strip('*')
-                        if search_term in domain:
-                            is_ignored = True
-                            ignore_reason = pattern.reason
-                            break
-            
+            is_ignored, ignore_reason = IgnoreListUtil.is_domain_ignored(session, domain)
             if is_ignored:
                 self.logger.info(f"[SCAN] Skipping {domain} - Domain is in ignore list" + 
-                               (f" ({ignore_reason})" if ignore_reason else ""))
+                                (f" ({ignore_reason})" if ignore_reason else ""))
                 return DomainInfo(
                     domain_name=domain,
-                    is_valid=True,
+                    is_valid=True, # Should this be False if ignored? Or just an error/status?
                     error=f"Domain is in ignore list" + (f" ({ignore_reason})" if ignore_reason else "")
                 )
 
-            whois_info = {}
-            dns_records = []
-            related_domains = set()
-            
-            # Get WHOIS information if requested
-            if get_whois:
-                whois_info = self._get_whois_info(domain, session)
-                # Find related domains based on WHOIS info
-                if whois_info:  # Only try to find related domains if we got WHOIS info
-                    related_domains = self._find_related_domains(whois_info, session)
+            whois_data_dict = {}
+            dns_records_list = []
+            related_domains_set = set()
             
             # Get or create domain object
             domain_obj = session.query(Domain).filter_by(domain_name=domain).first()
@@ -572,85 +530,113 @@ class DomainScanner:
                 )
                 session.add(domain_obj)
                 session.commit()  # Commit to get domain ID
-            
-            # Update domain information from WHOIS
-            if whois_info:
-                domain_obj.registrar = whois_info.get('registrar')
-                domain_obj.registration_date = whois_info.get('creation_date')
-                domain_obj.expiration_date = whois_info.get('expiration_date')
-                domain_obj.owner = whois_info.get('registrant')
-                domain_obj.updated_at = datetime.now()
-                session.commit()  # Commit WHOIS updates
-            
-            # Get DNS records if requested
+
+            # Initialize DomainInfo object
+            domain_info = DomainInfo(domain_name=domain)
+
+            # Get DNS records
             if get_dns:
+                self.last_dns_query_time = self._apply_rate_limit(self.last_dns_query_time, self.dns_rate_limit, "DNS")
+                
+                # Construct resolver_config dictionary
+                resolver_config_dict = {}
+                if hasattr(self, 'dns_timeout') and self.dns_timeout is not None:
+                    resolver_config_dict['timeout'] = self.dns_timeout
+                if hasattr(self, 'dns_servers') and self.dns_servers: # Check if list is not empty
+                    resolver_config_dict['nameservers'] = self.dns_servers
+                
+                # If resolver_config_dict is empty, pass None, otherwise pass the dict
+                effective_resolver_config = resolver_config_dict if resolver_config_dict else None
+
                 try:
-                    dns_records = self._get_dns_records(domain)
-                    if dns_records:
-                        # Get existing DNS records
-                        existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
-                        existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
-                        
-                        # Process each DNS record
-                        for record in dns_records:
-                            record_key = (record['type'], record['name'], record['value'])
-                            
-                            if record_key in existing_map:
-                                # Update existing record
-                                existing_record = existing_map[record_key]
-                                existing_record.ttl = record['ttl']
-                                existing_record.priority = record.get('priority')
-                                existing_record.updated_at = datetime.now()
-                            else:
-                                # Create new record
-                                dns_record = DomainDNSRecord(
-                                    domain=domain_obj,
-                                    record_type=record['type'],
-                                    name=record['name'],
-                                    value=record['value'],
-                                    ttl=record['ttl'],
-                                    priority=record.get('priority'),
-                                    created_at=datetime.now(),
-                                    updated_at=datetime.now()
-                                )
-                                session.add(dns_record)
-                        
-                        # Commit DNS changes
-                        session.commit()
-                        
-                except (dns.resolver.NoNameservers, dns.resolver.NXDOMAIN, dns.resolver.Timeout) as e:
-                    self.logger.warning(f"DNS error getting records for {domain}: {str(e)}")
-                    session.rollback()
+                    # Corrected call to get_dns_records
+                    dns_records_list = DNSRecordUtil.get_dns_records(domain, resolver_config=effective_resolver_config)
+                    domain_info.dns_records = dns_records_list
+                    if not dns_records_list:
+                        self.logger.warning(f"[SCAN] No DNS records found for {domain}")
                 except Exception as e:
-                    self.logger.exception(f"Unexpected error getting DNS records for {domain}: {str(e)}")
-                    session.rollback()
+                    self.logger.error(f"Unexpected error getting DNS records for {domain}: {str(e)}")
+                    domain_info.error = f"DNS lookup error: {str(e)}"
+                    # Potentially add to a warning list in scan_results if that's part of ScanManager
             
-            # Create and return domain info object
+            if get_whois:
+                if offline_mode:
+                    self.logger.info(f"[DOMAIN SCAN] Offline mode: Skipping WHOIS query for {domain}")
+                    # Potentially add a note to the DomainInfo object if desired
+                else:
+                    # Apply rate limit before WHOIS query
+                    self.last_whois_query_time = self._apply_rate_limit(self.last_whois_query_time, self.whois_rate_limit, "WHOIS")
+                    try:
+                        cached_whois = self.session_cache.get_whois(domain)
+                        if cached_whois:
+                            whois_data_obj = cached_whois
+                            self.logger.info(f"[DOMAIN SCAN] Using cached WHOIS for {domain}")
+                        else:
+                            whois_data_obj = whois.whois(domain) # type: ignore
+                            self.session_cache.set_whois(domain, whois_data_obj)
+
+                        if whois_data_obj:
+                            # Convert whois object to dictionary
+                            if hasattr(whois_data_obj, '__dict__'):
+                                whois_data_dict = {key: value for key, value in whois_data_obj.__dict__.items() if not key.startswith('_')}
+                            else: # Handle cases where __dict__ might not be available or suitable
+                                whois_data_dict = {
+                                    'registrar': getattr(whois_data_obj, 'registrar', None),
+                                    'creation_date': getattr(whois_data_obj, 'creation_date', None),
+                                    'expiration_date': getattr(whois_data_obj, 'expiration_date', None),
+                                    'name_servers': getattr(whois_data_obj, 'name_servers', []),
+                                    'status': getattr(whois_data_obj, 'status', []),
+                                    'name': getattr(whois_data_obj, 'name', None) # For registrant name
+                                }
+                            
+                            # Normalize date fields (often lists from whois library)
+                            for date_field in ['creation_date', 'expiration_date', 'updated_date']:
+                                if date_field in whois_data_dict and isinstance(whois_data_dict[date_field], list):
+                                    whois_data_dict[date_field] = whois_data_dict[date_field][0] if whois_data_dict[date_field] else None
+
+                            # Update domain_obj with WHOIS info
+                            domain_obj.registrar = whois_data_dict.get('registrar')
+                            domain_obj.registration_date = whois_data_dict.get('creation_date')
+                            domain_obj.expiration_date = whois_data_dict.get('expiration_date')
+                            registrant_name = whois_data_dict.get('name') # 'name' often holds registrant
+                            if not registrant_name and 'org' in whois_data_dict: # Fallback for some TLDs
+                                registrant_name = whois_data_dict['org']
+                            domain_obj.owner = str(registrant_name) if registrant_name else None
+                            domain_obj.updated_at = datetime.now()
+                            session.commit() # Commit WHOIS updates
+
+                            related_domains_set = self._find_related_domains(whois_data_dict, session)
+
+                    except whois.parser.PywhoisError as e:
+                        self.logger.warning(f"WHOIS parsing error for {domain}: {e}")
+                        # Continue without WHOIS info if parsing fails
+                    except Exception as e:
+                        self.logger.error(f"Error getting WHOIS for {domain}: {e}")
+            
             return DomainInfo(
                 domain_name=domain,
                 is_valid=True,
-                registrar=whois_info.get('registrar'),
-                registrant=whois_info.get('registrant'),
-                registration_date=whois_info.get('creation_date'),
-                expiration_date=whois_info.get('expiration_date'),
-                status=whois_info.get('status', []),
-                nameservers=whois_info.get('nameservers', []),
-                dns_records=dns_records,
+                registrar=whois_data_dict.get('registrar'),
+                registrant=str(whois_data_dict.get('name') or whois_data_dict.get('org')) if whois_data_dict else None,
+                registration_date=whois_data_dict.get('creation_date'),
+                expiration_date=whois_data_dict.get('expiration_date'),
+                status=whois_data_dict.get('status', []),
+                nameservers=whois_data_dict.get('name_servers', []),
+                dns_records=dns_records_list,
                 domain_type=self._get_domain_type(domain),
-                related_domains=related_domains
+                related_domains=related_domains_set
             )
-            
         except ImportError as e:
             self.logger.error(f"Import error scanning domain {domain}: {str(e)}")
             return DomainInfo(
                 domain_name=domain,
-                is_valid=True,
+                is_valid=True, # Or False? If imports fail, can't really scan.
                 error=f"Import error: {str(e)}"
             )
         except Exception as e:
             self.logger.exception(f"Unexpected error scanning domain {domain}: {str(e)}")
             return DomainInfo(
                 domain_name=domain,
-                is_valid=True,
+                is_valid=True, # Or False?
                 error=str(e)
             ) 

@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
             "rate_limit": 30  # Certificate scan rate limit (requests per minute)
         },
         "default_rate_limit": 60,             # Default to 1 request per second
+        "offline_mode": False,                # New setting for offline scanning mode
         "whois": {
             "rate_limit": 30,                 # 30 requests per minute (1 every 2 seconds)
             "timeout": 10                     # 10 second timeout for WHOIS queries
@@ -441,6 +442,8 @@ class Settings:
                 return isinstance(value, (int, float)) and value >= 0
             elif "domains" in key:
                 return isinstance(value, list) and all(isinstance(d, str) for d in value)
+            elif key == "scanning.offline_mode":
+                return isinstance(value, bool)
                 
         # Validate alert settings
         elif key.startswith("alerts."):

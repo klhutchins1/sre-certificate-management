@@ -36,7 +36,7 @@ import streamlit as st
 from infra_mgmt.backup import create_backup
 from ..settings import Settings
 from infra_mgmt.services.SettingsService import SettingsService
-from infra_mgmt.notifications import initialize_notifications, show_notifications, notify
+from infra_mgmt.notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 from ..static.styles import load_warning_suppression, load_css
 from sqlalchemy.engine import Engine
 from datetime import datetime
@@ -44,6 +44,8 @@ import re
 from infra_mgmt.components.page_header import render_page_header
 
 logger = logging.getLogger(__name__)
+
+SETTINGS_PAGE_KEY = "settings"
 
 def render_settings_view(engine) -> None:
     """
@@ -99,10 +101,14 @@ def render_settings_view(engine) -> None:
     """
     load_warning_suppression()
     load_css()
-    initialize_notifications()
+    initialize_page_notifications(SETTINGS_PAGE_KEY)
     render_page_header(title="Settings")
+    
+    # Create a placeholder for notifications at the top of settings page
+    notification_placeholder = st.empty()
+    with notification_placeholder.container():
+        show_notifications(SETTINGS_PAGE_KEY)
  
-
     settings = Settings()
     tabs = st.tabs([
         "Paths", "Scanning", "Alerts", "Exports", "Ignore Lists", "Proxy Detection", "Backup & Restore"
@@ -122,15 +128,26 @@ def render_settings_view(engine) -> None:
             help="Path for storing backup files"
         )
         if st.button("Save Path Settings"):
+            clear_page_notifications(SETTINGS_PAGE_KEY)
             success = SettingsService.save_path_settings(settings, database_path, backup_path)
             if success:
-                notify("Path settings updated successfully!", "success")
+                notify("Path settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
             else:
-                notify("Failed to save path settings", "error")
+                notify("Failed to save path settings", "error", page_key=SETTINGS_PAGE_KEY)
 
     # Scanning Settings Tab
     with tabs[1]:
         st.header("Scanning Settings")
+        
+        # Offline Mode Toggle
+        offline_mode_enabled = settings.get("scanning.offline_mode", False)
+        offline_mode_checkbox = st.checkbox(
+            "Enable Offline Scanning Mode (disables external lookups like CT logs, public Whois)",
+            value=offline_mode_enabled,
+            help="If enabled, scans will not attempt to reach external services for information like Certificate Transparency logs or public Whois records."
+        )
+        st.markdown("---")
+        
         st.markdown("""
         Configure rate limits for certificate scanning. Values represent requests per minute.
         Examples:
@@ -148,7 +165,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             default_rate_limit = 60
-            notify("Invalid default rate limit value, using default: 60", "warning")
+            notify("Invalid default rate limit value, using default: 60", "warning", page_key=SETTINGS_PAGE_KEY)
         st.divider()
         st.subheader("Internal Domain Settings")
         st.markdown("""
@@ -164,7 +181,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             internal_rate_limit = 60
-            notify("Invalid internal rate limit value, using default: 60", "warning")
+            notify("Invalid internal rate limit value, using default: 60", "warning", page_key=SETTINGS_PAGE_KEY)
         internal_domains = st.text_area(
             "Custom Internal Domains (one per line)",
             value="\n".join(settings.get("scanning.internal.domains", [])),
@@ -184,7 +201,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             external_rate_limit = 30
-            notify("Invalid external rate limit value, using default: 30", "warning")
+            notify("Invalid external rate limit value, using default: 30", "warning", page_key=SETTINGS_PAGE_KEY)
         external_domains = st.text_area(
             "Custom External Domains (one per line)",
             value="\n".join(settings.get("scanning.external.domains", [])),
@@ -209,7 +226,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             whois_rate_limit = 10
-            notify("Invalid WHOIS rate limit value, using default: 10", "warning")
+            notify("Invalid WHOIS rate limit value, using default: 10", "warning", page_key=SETTINGS_PAGE_KEY)
         try:
             current_dns_rate = int(settings.get("scanning.dns.rate_limit", 30))
             dns_rate_limit = st.number_input(
@@ -220,7 +237,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             dns_rate_limit = 30
-            notify("Invalid DNS rate limit value, using default: 30", "warning")
+            notify("Invalid DNS rate limit value, using default: 30", "warning", page_key=SETTINGS_PAGE_KEY)
         try:
             current_ct_rate = int(settings.get("scanning.ct.rate_limit", 10))
             ct_rate_limit = st.number_input(
@@ -231,7 +248,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             ct_rate_limit = 10
-            notify("Invalid CT rate limit value, using default: 10", "warning")
+            notify("Invalid CT rate limit value, using default: 10", "warning", page_key=SETTINGS_PAGE_KEY)
         # Global CT enable/disable option
         ct_enabled = settings.get("scanning.ct.enabled", True)
         enable_ct_checkbox = st.checkbox(
@@ -259,7 +276,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             socket_timeout = 10
-            notify("Invalid socket timeout value, using default: 10", "warning")
+            notify("Invalid socket timeout value, using default: 10", "warning", page_key=SETTINGS_PAGE_KEY)
         try:
             current_request_timeout = int(settings.get("scanning.timeouts.request", 15))
             request_timeout = st.number_input(
@@ -271,7 +288,7 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             request_timeout = 15
-            notify("Invalid request timeout value, using default: 15", "warning")
+            notify("Invalid request timeout value, using default: 15", "warning", page_key=SETTINGS_PAGE_KEY)
         try:
             current_dns_timeout = float(settings.get("scanning.timeouts.dns", 5.0))
             dns_timeout = st.number_input(
@@ -285,10 +302,11 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             dns_timeout = 5.0
-            notify("Invalid DNS timeout value, using default: 5.0", "warning")
+            notify("Invalid DNS timeout value, using default: 5.0", "warning", page_key=SETTINGS_PAGE_KEY)
         if st.button("Save Scanning Settings"):
+            clear_page_notifications(SETTINGS_PAGE_KEY)
             if default_rate_limit < 1 or internal_rate_limit < 1 or external_rate_limit < 1 or whois_rate_limit < 1 or dns_rate_limit < 1 or ct_rate_limit < 1:
-                notify("Invalid rate limit: All rate limits must be at least 1", "error")
+                notify("Invalid rate limit: All rate limits must be at least 1", "error", page_key=SETTINGS_PAGE_KEY)
                 return
             success = SettingsService.save_scanning_settings(
                 settings,
@@ -303,12 +321,13 @@ def render_settings_view(engine) -> None:
                 socket_timeout,
                 request_timeout,
                 dns_timeout,
-                ct_enabled=enable_ct_checkbox
+                ct_enabled=enable_ct_checkbox,
+                offline_mode=offline_mode_checkbox
             )
             if success:
-                notify("Scanning settings updated successfully!", "success")
+                notify("Scanning settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
             else:
-                notify("Failed to save scanning settings", "error")
+                notify("Failed to save scanning settings", "error", page_key=SETTINGS_PAGE_KEY)
 
     # Alert Settings Tab
     with tabs[2]:
@@ -355,13 +374,14 @@ def render_settings_view(engine) -> None:
             )
         except ValueError:
             consecutive_failures = 3
-            notify("Invalid consecutive failures value, using default: 3", "warning")
+            notify("Invalid consecutive failures value, using default: 3", "warning", page_key=SETTINGS_PAGE_KEY)
         if st.button("Save Alert Settings"):
+            clear_page_notifications(SETTINGS_PAGE_KEY)
             success = SettingsService.save_alert_settings(settings, updated_warnings, consecutive_failures)
             if success:
-                notify("Alert settings updated successfully!", "success")
+                notify("Alert settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
             else:
-                notify("Failed to save alert settings", "error")
+                notify("Failed to save alert settings", "error", page_key=SETTINGS_PAGE_KEY)
 
     # Export Settings Tab
     with tabs[3]:
@@ -378,42 +398,47 @@ def render_settings_view(engine) -> None:
             help="Character encoding for CSV files"
         )
         if st.button("Save Export Settings"):
+            clear_page_notifications(SETTINGS_PAGE_KEY)
             success = SettingsService.save_export_settings(settings, csv_delimiter, csv_encoding)
             if success:
-                notify("Export settings updated successfully!", "success")
+                notify("Export settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
             else:
-                notify("Failed to save export settings", "error")
+                notify("Failed to save export settings", "error", page_key=SETTINGS_PAGE_KEY)
         st.divider()
         st.subheader("Generate Reports")
         col1, col2 = st.columns(2)
         with col1:
             st.write("Certificate Reports")
             if st.button("Export Certificates to CSV"):
+                clear_page_notifications(SETTINGS_PAGE_KEY)
                 success, result = SettingsService.export_certificates_to_csv(engine)
                 if success:
-                    notify(f"Certificates exported to CSV: {result}", "success")
+                    notify(f"Certificates exported to CSV: {result}", "success", page_key=SETTINGS_PAGE_KEY)
                 else:
-                    notify(f"Failed to export certificates to CSV: {result}", "error")
+                    notify(f"Failed to export certificates to CSV: {result}", "error", page_key=SETTINGS_PAGE_KEY)
             if st.button("Export Certificates to PDF"):
+                clear_page_notifications(SETTINGS_PAGE_KEY)
                 success, result = SettingsService.export_certificates_to_pdf(engine)
                 if success:
-                    notify(f"Certificates exported to PDF: {result}", "success")
+                    notify(f"Certificates exported to PDF: {result}", "success", page_key=SETTINGS_PAGE_KEY)
                 else:
-                    notify(f"Failed to export certificates to PDF: {result}", "error")
+                    notify(f"Failed to export certificates to PDF: {result}", "error", page_key=SETTINGS_PAGE_KEY)
         with col2:
             st.write("Host Reports")
             if st.button("Export Hosts to CSV"):
+                clear_page_notifications(SETTINGS_PAGE_KEY)
                 success, result = SettingsService.export_hosts_to_csv(engine)
                 if success:
-                    notify(f"Hosts exported to CSV: {result}", "success")
+                    notify(f"Hosts exported to CSV: {result}", "success", page_key=SETTINGS_PAGE_KEY)
                 else:
-                    notify(f"Failed to export hosts to CSV: {result}", "error")
+                    notify(f"Failed to export hosts to CSV: {result}", "error", page_key=SETTINGS_PAGE_KEY)
             if st.button("Export Hosts to PDF"):
+                clear_page_notifications(SETTINGS_PAGE_KEY)
                 success, result = SettingsService.export_hosts_to_pdf(engine)
                 if success:
-                    notify(f"Hosts exported to PDF: {result}", "success")
+                    notify(f"Hosts exported to PDF: {result}", "success", page_key=SETTINGS_PAGE_KEY)
                 else:
-                    notify(f"Failed to export hosts to PDF: {result}", "error")
+                    notify(f"Failed to export hosts to PDF: {result}", "error", page_key=SETTINGS_PAGE_KEY)
 
     # Ignore Lists Tab
     with tabs[4]:
@@ -445,15 +470,16 @@ def render_settings_view(engine) -> None:
                 with col2:
                     submit_domain = st.form_submit_button("Add Domain")
                 if submit_domain:
+                    clear_page_notifications(SETTINGS_PAGE_KEY)
                     if new_domain_pattern:
                         success, message = SettingsService.add_ignored_domain(engine, new_domain_pattern, domain_reason)
                         if success:
-                            notify(message, "success")
+                            notify(message, "success", page_key=SETTINGS_PAGE_KEY)
                             st.rerun()
                         else:
-                            notify(message, "error")
+                            notify(message, "error", page_key=SETTINGS_PAGE_KEY)
                     else:
-                        notify("Please enter a domain pattern", "error")
+                        notify("Please enter a domain pattern", "error", page_key=SETTINGS_PAGE_KEY)
             st.divider()
             try:
                 ignored_domains = SettingsService.get_ignored_domains(engine)
@@ -467,16 +493,17 @@ def render_settings_view(engine) -> None:
                             st.caption(f"Added: {domain.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
                         with col2:
                             if st.button("Remove", key=f"remove_domain_{domain.id}"):
+                                clear_page_notifications(SETTINGS_PAGE_KEY)
                                 success, message = SettingsService.remove_ignored_domain(engine, domain.id)
                                 if success:
-                                    notify(message, "success")
+                                    notify(message, "success", page_key=SETTINGS_PAGE_KEY)
                                     st.rerun()
                                 else:
-                                    notify(message, "error")
+                                    notify(message, "error", page_key=SETTINGS_PAGE_KEY)
                 else:
-                    notify("No custom ignored domains configured.", "info")
+                    notify("No custom ignored domains configured.", "info", page_key=SETTINGS_PAGE_KEY)
             except Exception as e:
-                notify(f"Error loading ignored domains: {str(e)}", "error")
+                notify(f"Error loading ignored domains: {str(e)}", "error", page_key=SETTINGS_PAGE_KEY)
         # Ignored Certificates tab
         with ignore_tabs[1]:
             st.subheader("Ignored Certificates")
@@ -505,15 +532,16 @@ def render_settings_view(engine) -> None:
                 with col2:
                     submit_cert = st.form_submit_button("Add Pattern")
                 if submit_cert:
+                    clear_page_notifications(SETTINGS_PAGE_KEY)
                     if new_pattern:
                         success, message = SettingsService.add_ignored_certificate(engine, new_pattern, cert_reason)
                         if success:
-                            notify(message, "success")
+                            notify(message, "success", page_key=SETTINGS_PAGE_KEY)
                             st.rerun()
                         else:
-                            notify(message, "error")
+                            notify(message, "error", page_key=SETTINGS_PAGE_KEY)
                     else:
-                        notify("Please enter a certificate pattern", "error")
+                        notify("Please enter a certificate pattern", "error", page_key=SETTINGS_PAGE_KEY)
             st.divider()
             try:
                 ignored_certs = SettingsService.get_ignored_certificates(engine)
@@ -527,16 +555,17 @@ def render_settings_view(engine) -> None:
                             st.caption(f"Added: {cert.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
                         with col2:
                             if st.button("Remove", key=f"remove_cert_{cert.id}"):
+                                clear_page_notifications(SETTINGS_PAGE_KEY)
                                 success, message = SettingsService.remove_ignored_certificate(engine, cert.id)
                                 if success:
-                                    notify(message, "success")
+                                    notify(message, "success", page_key=SETTINGS_PAGE_KEY)
                                     st.rerun()
                                 else:
-                                    notify(message, "error")
+                                    notify(message, "error", page_key=SETTINGS_PAGE_KEY)
                 else:
-                    notify("No ignored certificate patterns configured.", "info")
+                    notify("No ignored certificate patterns configured.", "info", page_key=SETTINGS_PAGE_KEY)
             except Exception as e:
-                notify(f"Error loading ignored certificates: {str(e)}", "error")
+                notify(f"Error loading ignored certificates: {str(e)}", "error", page_key=SETTINGS_PAGE_KEY)
 
     # Proxy Detection Tab
     with tabs[5]:
@@ -606,6 +635,7 @@ def render_settings_view(engine) -> None:
             help="Add serial numbers of known proxy CA certificates. One per line."
         )
         if st.button("Save Proxy Detection Settings"):
+            clear_page_notifications(SETTINGS_PAGE_KEY)
             SettingsService.save_proxy_detection_settings(
                 settings,
                 proxy_enabled,
@@ -613,12 +643,11 @@ def render_settings_view(engine) -> None:
                 [s.strip() for s in ca_subjects.split("\n") if s.strip()],
                 [sn.strip() for sn in ca_serials.split("\n") if sn.strip()]
             )
-            notify("Proxy detection settings updated successfully!", "success")
+            notify("Proxy detection settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
 
     # Backup & Restore Tab
     with tabs[6]:
         render_backup_restore_section(engine, settings)
-    show_notifications()
 
 def render_backup_restore_section(engine, settings):
     st.subheader("Backup and Restore")
@@ -626,17 +655,18 @@ def render_backup_restore_section(engine, settings):
     with col1:
         st.write("Create Backup")
         if st.button("Create Backup"):
+            clear_page_notifications(SETTINGS_PAGE_KEY)
             success, message = create_backup()
             if success:
-                notify(message, "success")
+                notify(message, "success", page_key=SETTINGS_PAGE_KEY)
             else:
-                notify(message, "error")
+                notify(message, "error", page_key=SETTINGS_PAGE_KEY)
     with col2:
         st.write("Available Backups")
         try:
             backups = SettingsService.list_backups(settings)
             if not backups:
-                notify("No backups available.", "info")
+                notify("No backups available.", "info", page_key=SETTINGS_PAGE_KEY)
             else:
                 backup_options = []
                 for b in backups:
@@ -648,12 +678,13 @@ def render_backup_restore_section(engine, settings):
                     index=0 if backup_options else None
                 )
                 if selected_backup and st.button("Restore Selected Backup"):
+                    clear_page_notifications(SETTINGS_PAGE_KEY)
                     selected_idx = backup_options.index(selected_backup)
                     manifest_file = backups[selected_idx]["manifest_file"]
                     success, message = SettingsService.restore_backup(manifest_file, settings)
                     if success:
-                        notify(message, "success")
+                        notify(message, "success", page_key=SETTINGS_PAGE_KEY)
                     else:
-                        notify(message, "error")
+                        notify(message, "error", page_key=SETTINGS_PAGE_KEY)
         except Exception as e:
-            notify(f"Error loading backups: {str(e)}", "error") 
+            notify(f"Error loading backups: {str(e)}", "error", page_key=SETTINGS_PAGE_KEY) 

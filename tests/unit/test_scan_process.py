@@ -136,7 +136,7 @@ def test_scan_process_with_errors(scan_manager, test_session, mock_status_contai
             ip_addresses=["192.168.1.1"]
         )
         return ScanResult(certificate_info=cert_info)
-    def mock_scan(domain, port):
+    def mock_scan(domain, port, offline_mode=False):
         if domain == "invalid.domain":
             return None
         return make_scan_result(domain)

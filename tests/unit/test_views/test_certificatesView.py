@@ -12,7 +12,8 @@ from infra_mgmt.views.certificatesView import (
     render_certificate_overview,
     render_certificate_details,
     render_certificate_bindings,
-    render_certificate_tracking
+    render_certificate_tracking,
+    render_manual_entry_form
 )
 import json
 from unittest import mock
@@ -21,6 +22,7 @@ from unittest.mock import call
 import builtins
 import itertools
 from unittest.mock import ANY
+from infra_mgmt.utils.SessionManager import SessionManager
 
 @pytest.fixture(scope="function")
 def mock_aggrid():
@@ -202,8 +204,8 @@ def test_render_certificate_list_empty(mock_streamlit, engine):
             def mock_get(key, default=None):
                 return mock_state.get(key, default)
             with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
-                def notify_side_effect(msg, level):
-                    mock_state['notifications'].append({'message': msg, 'level': level})
+                def notify_side_effect(msg, level, page_key=None):
+                    mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
                 mock_notify.side_effect = notify_side_effect
                 render_certificate_list(engine)
             print("Notifications:", mock_state['notifications'])
@@ -225,6 +227,27 @@ def test_render_certificate_list_with_data(mock_streamlit, mock_aggrid, engine, 
     """Test rendering certificate list with sample data"""
     session.add(sample_certificate)
     session.commit()
+    mock_aggrid.reset_mock()
+
+    # Add a sample binding to ensure AG Grid is rendered
+    host = Host(name="test.example.com")
+    session.add(host)
+    session.commit()
+    
+    binding = CertificateBinding(
+        id=1,
+        host=host,
+        port=443,
+        platform="F5",
+        last_seen=datetime(2024, 1, 1, 12, 0)
+    )
+    session.add(binding)
+    session.commit()
+    
+    # Associate binding with certificate
+    sample_certificate.certificate_bindings.append(binding)
+    session.commit()
+
     mock_placeholder = MagicMock()
     mock_st, mock_header_st = mock_streamlit
     mock_st.empty.return_value = mock_placeholder
@@ -328,7 +351,9 @@ def test_render_certificate_bindings(mock_streamlit, sample_certificate, sample_
     # Patch columns in the actual view module
     with patch('infra_mgmt.views.certificatesView.st.columns', return_value=[MagicMock(), MagicMock(), MagicMock()]):
         with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
-            mock_notify.side_effect = lambda msg, level: None
+            def notify_side_effect(msg, level, page_key=None):
+                pass
+            mock_notify.side_effect = notify_side_effect
             print("Certificate:", sample_certificate)
             print("Binding:", sample_binding)
             # Patch render_manual_entry_form to a no-op to avoid MagicMock issues
@@ -409,8 +434,8 @@ def test_render_certificate_tracking(mock_streamlit, sample_certificate, session
     mock_st.columns.return_value = [mock_col1, mock_col2]
     
     with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
-        def notify_side_effect(msg, level):
-            mock_state['notifications'].append({'message': msg, 'level': level})
+        def notify_side_effect(msg, level, page_key=None):
+            mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
         mock_notify.side_effect = notify_side_effect
         render_certificate_tracking(sample_certificate, session)
     
@@ -433,6 +458,7 @@ def test_render_certificate_tracking(mock_streamlit, sample_certificate, session
     assert len(mock_state['notifications']) == 1, "Notification not added"
     assert mock_state['notifications'][0]['message'] == "No change entries found for this certificate", "Incorrect notification message"
     assert mock_state['notifications'][0]['level'] == 'info', "Incorrect notification level"
+    assert mock_state['notifications'][0]['page_key'] == 'certificates', "Incorrect page key"
 
 def test_render_certificate_card(mock_streamlit, sample_certificate, session):
     """Test rendering certificate details card"""
@@ -482,7 +508,9 @@ def test_render_certificate_card(mock_streamlit, sample_certificate, session):
         mock_st.expander.return_value = mock_expander
         
         with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
-            mock_notify.side_effect = lambda msg, level: None
+            def notify_side_effect(msg, level, page_key=None):
+                mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
+            mock_notify.side_effect = notify_side_effect
             render_certificate_card(sample_certificate, session)
         
         # Verify tabs were created with all expected tabs including Danger Zone
@@ -524,153 +552,117 @@ def test_render_certificate_overview_with_sans(mock_streamlit, sample_certificat
         label_visibility="collapsed"
     )
 
-def test_render_certificate_bindings_add_new(mock_streamlit, sample_certificate, session):
-    """Test adding a new binding"""
-    mock_form = MagicMock()
-    mock_form.__enter__ = MagicMock(return_value=mock_form)
-    mock_form.__exit__ = MagicMock(return_value=None)
-    mock_st, mock_header_st = mock_streamlit
-    mock_st.form.return_value = mock_form
-    mock_st.text_input.side_effect = ["test.example.com"]
-    mock_st.number_input.return_value = 443
-    mock_st.selectbox.side_effect = ["IP-Based Usage", "F5"]
-    mock_st.form_submit_button.return_value = True
-    mock_state = {'notifications': []}
-    def mock_setitem(key, value):
-        if key == 'notifications':
-            mock_state[key].append(value)
-        else:
-            mock_state[key] = value
-    def mock_getitem(key):
-        return mock_state.get(key)
-    def mock_get(key, default=None):
-        return mock_state.get(key, default)
-    mock_st.session_state.__setitem__ = mock_setitem
-    mock_st.session_state.__getitem__ = mock_getitem
-    mock_st.session_state.get = mock_get
-    # Patch number_input in the actual view module
-    with patch('infra_mgmt.views.certificatesView.st.number_input', return_value=443):
-        with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
-            mock_notify.side_effect = lambda msg, level: None
-            # Patch render_manual_entry_form to a no-op to avoid MagicMock issues
-            with patch('infra_mgmt.views.certificatesView.render_manual_entry_form', lambda session: None):
-                render_certificate_bindings(sample_certificate, session)
-        # Instead of checking for number_input calls, just assert no exception and notification logic
-        assert True
-
-def test_add_certificate_button(mock_streamlit, engine):
-    class StreamlitRerunException(Exception):
-        pass
-    mock_st, mock_header_st = mock_streamlit
-    session_state = SessionStateMock()
-    mock_st.session_state = session_state
-
-    with patch('infra_mgmt.views.certificatesView.st', mock_st), \
-         patch('infra_mgmt.components.page_header.st', mock_st), \
-         patch('infra_mgmt.components.metrics_row.st', mock_st):
-
-        # Prepare to capture the callback
-        captured_callback = {}
-
-        def render_page_header_patch(*args, **kwargs):
-            print(f"DEBUG: render_page_header_patch called with args={args}, kwargs={kwargs}")
-            cb = kwargs.get('button_callback')
-            if cb is None and len(args) >= 3:
-                cb = args[2]
-            if cb:
-                print("DEBUG: Capturing callback")
-                captured_callback['cb'] = cb
-            else:
-                print("DEBUG: No callback found in this call")
-            return None
-
-        with patch('infra_mgmt.views.certificatesView.render_page_header', render_page_header_patch):
-            # Patch ViewDataService.get_certificate_list_view_data to always succeed
-            dummy_df = pd.DataFrame([{
-                '_id': 1,
-                'Common Name': 'test.example.com',
-                'Serial Number': '123456',
-                'Valid From': '2024-01-01',
-                'Valid Until': '2025-01-01',
-                'Status': 'Valid',
-                'Bindings': 0,
-            }])
-            dummy_metrics = {
-                'total_certs': 1,
-                'valid_certs': 1,
-                'total_bindings': 0,
-            }
-            dummy_result = {
-                'success': True,
-                'data': {
-                    'metrics': dummy_metrics,
-                    'df': dummy_df,
-                }
-            }
-            with patch('infra_mgmt.views.certificatesView.ViewDataService.get_certificate_list_view_data', return_value=dummy_result):
-                # Patch render_manual_entry_form to a no-op to avoid early return
-                with patch('infra_mgmt.views.certificatesView.render_manual_entry_form', lambda session: None):
-                    # Patch Streamlit form inputs to return real values for both renders
-                    import itertools
-                    counter = itertools.count(1)
-                    last_serial = {"value": None}
-                    last_thumb = {"value": None}
-                    def text_input_side_effect(*args, **kwargs):
-                        key = kwargs.get('key', '')
-                        n = next(counter)
-                        if 'common_name' in key:
-                            return f"test.example.com"
-                        elif 'serial_number' in key:
-                            val = f"test_serial_{n}"
-                            last_serial["value"] = val
-                            return val
-                        elif 'thumbprint' in key:
-                            val = f"test_thumb_{n}"
-                            last_thumb["value"] = val
-                            return val
-                        return "default"
-                    mock_st.text_input.side_effect = text_input_side_effect
-                    from datetime import date
-                    mock_st.date_input.return_value = date(2024, 1, 1)
-                    mock_st.selectbox.return_value = "SSL/TLS"
-
-                    print(f"DEBUG: session_state before first render: {dict(session_state)}")
-                    # First render: capture the callback, ignore rerun
-                    try:
-                        render_certificate_list(engine)
-                    except StreamlitRerunException:
-                        pass
-                    # Simulate the button click by calling the captured callback
-                    print(f"DEBUG: captured_callback: {captured_callback}")
-                    captured_callback['cb']()
-
-                    # Manually set show_manual_entry to True for the second render
-                    mock_st.session_state['show_manual_entry'] = True
-
-                    # Now render again, state should be toggled
-                    try:
-                        render_certificate_list(engine)
-                    except StreamlitRerunException:
-                        # This is expected, now check the state
-                        assert mock_st.session_state.get('show_manual_entry') is True, (
-                            f"Manual entry form not shown after button click, session_state: {dict(mock_st.session_state)}"
-                        )
-                        return  # Test passes
-
-                    # If rerun was not called, check state here
-                    assert mock_st.session_state.get('show_manual_entry') is True, (
-                        f"Manual entry form not shown after button click, session_state: {dict(mock_st.session_state)}"
-                    )
-
-def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certificate, session):
+def test_certificate_bindings_add_new(mock_streamlit, mock_aggrid, engine, sample_certificate, session):
+    """Test adding new certificate binding"""
     # Add certificate to session
     session.add(sample_certificate)
     session.commit()
     mock_aggrid.reset_mock()
+
     # Mock SessionManager
     mock_session_manager = MagicMock()
     mock_session_manager.__enter__ = MagicMock(return_value=session)
     mock_session_manager.__exit__ = MagicMock(return_value=None)
+
+    # Create a sample host
+    host = Host(
+        id=1,
+        name="test.example.com",
+        host_type="server",
+        environment="production",
+        last_seen=datetime.now()
+    )
+    session.add(host)
+    session.commit()
+
+    # Create a sample binding
+    binding = CertificateBinding(
+        id=1,
+        host_id=host.id,
+        certificate_id=sample_certificate.id,
+        port=443,
+        binding_type="IP",
+        platform="IIS",
+        last_seen=datetime.now()
+    )
+    session.add(binding)
+    session.commit()
+
+    # Associate binding with certificate and refresh
+    sample_certificate.certificate_bindings.append(binding)
+    session.commit()
+    session.refresh(sample_certificate)
+
+    # Mock session state
+    session_state = SessionStateMock()
+    mock_st, mock_header_st = mock_streamlit
+    mock_st.session_state = session_state
+
+    # Mock tabs to return the correct number of tabs
+    def mock_tabs(*args):
+        tabs = [MagicMock() for _ in range(len(args[0]))]
+        for tab in tabs:
+            tab.__enter__ = MagicMock(return_value=tab)
+            tab.__exit__ = MagicMock(return_value=None)
+        return tabs
+    mock_st.tabs.side_effect = mock_tabs
+
+    # Mock text area and other inputs to return proper values
+    mock_st.text_area.return_value = "Test notes"
+    mock_st.text_input.return_value = "test.example.com"
+    mock_st.date_input.return_value = date(2024, 1, 1)
+    mock_st.selectbox.return_value = "SSL/TLS"
+    mock_st.button.return_value = True  # Add this line to simulate button click
+
+    with patch('infra_mgmt.views.certificatesView.st', mock_st), \
+         patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager), \
+         patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime, \
+         patch('infra_mgmt.views.certificatesView.notify') as mock_notify, \
+         patch('infra_mgmt.views.certificatesView.CertificateService') as mock_service:
+
+        mock_datetime.now.return_value = datetime(2024, 6, 1)
+        mock_datetime.strptime = datetime.strptime
+
+        def notify_side_effect(msg, level, page_key=None):
+            pass
+        mock_notify.side_effect = notify_side_effect
+
+        # Mock the service to return our binding
+        mock_service_instance = MagicMock()
+        mock_service.return_value = mock_service_instance
+        mock_service_instance.get_certificate_bindings.return_value = [{
+            'id': binding.id,
+            'binding_type': binding.binding_type,
+            'platform': binding.platform,
+            'host_name': host.name,
+            'port': binding.port,
+            'last_seen': binding.last_seen,
+            'obj': binding
+        }]
+
+        render_certificate_bindings(sample_certificate, session)
+
+        # Verify that the binding was displayed
+        mock_st.write.assert_any_call(f"**Hostname/IP:** {host.name}:{binding.port} (IP-Based)")
+        mock_st.selectbox.assert_any_call(
+            "Platform",
+            ["F5", "IIS", "Akamai", "Cloudflare", "Connection"],
+            key=f"platform_{binding.id}",
+            index=1  # IIS is at index 1
+        )
+
+def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certificate, session):
+    """Test certificate selection from grid"""
+    # Add certificate to session
+    session.add(sample_certificate)
+    session.commit()
+    mock_aggrid.reset_mock()
+    
+    # Mock SessionManager
+    mock_session_manager = MagicMock()
+    mock_session_manager.__enter__ = MagicMock(return_value=session)
+    mock_session_manager.__exit__ = MagicMock(return_value=None)
+    
     # Configure mock_aggrid to return selected row and non-empty DataFrame
     def mock_aggrid_with_selection(*args, **kwargs):
         df = args[0] if args else pd.DataFrame()
@@ -686,31 +678,53 @@ def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certi
             'grid_options': kwargs.get('gridOptions', {})
         }
     mock_aggrid.side_effect = mock_aggrid_with_selection
+    
+    # Mock session state
     session_state = SessionStateMock()
     mock_st, mock_header_st = mock_streamlit
     mock_st.session_state = session_state
+    
+    # Mock tabs to return the correct number of tabs
+    def mock_tabs(*args):
+        tabs = [MagicMock() for _ in range(len(args[0]))]
+        for tab in tabs:
+            tab.__enter__ = MagicMock(return_value=tab)
+            tab.__exit__ = MagicMock(return_value=None)
+        return tabs
+    mock_st.tabs.side_effect = mock_tabs
+    
+    # Mock text area and other inputs to return proper values
+    mock_st.text_area.return_value = "Test notes"
+    mock_st.text_input.return_value = "test.example.com"
+    mock_st.date_input.return_value = date(2024, 1, 1)
+    mock_st.selectbox.return_value = "SSL/TLS"
+    
     with patch('infra_mgmt.views.certificatesView.st', mock_st), \
-         patch('infra_mgmt.views.certificatesView.AgGrid', mock_aggrid):
-        with patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager):
-            with patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime:
-                mock_datetime.now.return_value = datetime(2024, 6, 1)
-                mock_datetime.strptime = datetime.strptime
-                with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
-                    mock_notify.side_effect = lambda msg, level: None
-                    mock_st.text_input.return_value = "test.example.com"
-                    mock_st.date_input.return_value = date(2024, 1, 1)
-                    mock_st.selectbox.return_value = "SSL/TLS"
-                    render_certificate_list(engine)
-    # Verify grid configuration
-    grid_calls = mock_aggrid.call_args_list
-    assert len(grid_calls) > 0, "AG Grid was not created"
-    grid_options = grid_calls[0][1].get('gridOptions', {})
-    assert grid_options.get('defaultColDef', {}).get('resizable') is True
-    assert grid_options.get('defaultColDef', {}).get('sortable') is True
-    assert grid_options.get('defaultColDef', {}).get('filter') is True
-    # Verify certificate card was rendered for selection
-    mock_header_st.divider.assert_called()
-    mock_st.subheader.assert_any_call(f"📜 {sample_certificate.common_name}")
+         patch('infra_mgmt.views.certificatesView.AgGrid', mock_aggrid), \
+         patch('infra_mgmt.views.certificatesView.SessionManager', return_value=mock_session_manager), \
+         patch('infra_mgmt.views.certificatesView.datetime') as mock_datetime, \
+         patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
+        
+        mock_datetime.now.return_value = datetime(2024, 6, 1)
+        mock_datetime.strptime = datetime.strptime
+        
+        def notify_side_effect(msg, level, page_key=None):
+            pass
+        mock_notify.side_effect = notify_side_effect
+        
+        render_certificate_list(engine)
+        
+        # Verify grid configuration
+        grid_calls = mock_aggrid.call_args_list
+        assert len(grid_calls) > 0, "AG Grid was not created"
+        grid_options = grid_calls[0][1].get('gridOptions', {})
+        assert grid_options.get('defaultColDef', {}).get('resizable') is True
+        assert grid_options.get('defaultColDef', {}).get('sortable') is True
+        assert grid_options.get('defaultColDef', {}).get('filter') is True
+        
+        # Verify certificate card was rendered for selection
+        mock_header_st.divider.assert_called()
+        mock_st.subheader.assert_any_call(f"📜 {sample_certificate.common_name}")
 
 def test_expired_certificate_styling(mock_streamlit, mock_aggrid, engine, session):
     # Create an expired certificate
@@ -829,4 +843,75 @@ def test_new_certificate_appears_in_list(mock_streamlit, mock_aggrid, engine, se
     final_df = final_grid_call[0][0]
     assert len(final_df) == 2
     assert "test1.com" in final_df["Common Name"].values
-    assert "test2.com" in final_df["Common Name"].values 
+    assert "test2.com" in final_df["Common Name"].values
+
+def test_add_certificate_button(mock_streamlit, engine):
+    """Test the add certificate button functionality"""
+    class StreamlitRerunException(Exception):
+        pass
+    
+    mock_st, mock_header_st = mock_streamlit
+    session_state = SessionStateMock()
+    mock_st.session_state = session_state
+    
+    # Mock ViewDataService to return test data
+    dummy_df = pd.DataFrame([{
+        '_id': 1,
+        'Common Name': 'test.example.com',
+        'Serial Number': '123456',
+        'Valid From': '2024-01-01',
+        'Valid Until': '2025-01-01',
+        'Status': 'Valid',
+        'Bindings': 0,
+    }])
+    dummy_metrics = {
+        'total_certs': 1,
+        'valid_certs': 1,
+        'total_bindings': 0,
+    }
+    dummy_result = {
+        'success': True,
+        'data': {
+            'metrics': dummy_metrics,
+            'df': dummy_df,
+        }
+    }
+    
+    # Mock form inputs
+    mock_st.text_input.side_effect = ["test.example.com", "test_serial_1", "test_thumb_1"]
+    mock_st.date_input.return_value = date(2024, 1, 1)
+    mock_st.selectbox.return_value = "SSL/TLS"
+    
+    with patch('infra_mgmt.views.certificatesView.st', mock_st), \
+         patch('infra_mgmt.views.certificatesView.ViewDataService.get_certificate_list_view_data', return_value=dummy_result), \
+         patch('infra_mgmt.views.certificatesView.render_manual_entry_form', lambda session: None), \
+         patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
+        
+        def notify_side_effect(msg, level, page_key=None):
+            pass
+        mock_notify.side_effect = notify_side_effect
+        
+        # First render to capture the callback
+        captured_callback = {}
+        def render_page_header_patch(*args, **kwargs):
+            cb = kwargs.get('button_callback')
+            if cb is None and len(args) >= 3:
+                cb = args[2]
+            if cb:
+                captured_callback['cb'] = cb
+            return None
+        
+        with patch('infra_mgmt.views.certificatesView.render_page_header', render_page_header_patch):
+            try:
+                render_certificate_list(engine)
+            except StreamlitRerunException:
+                pass
+            
+            # Simulate button click
+            if 'cb' in captured_callback:
+                captured_callback['cb']()
+            
+            # Verify state was updated
+            assert mock_st.session_state.get('show_manual_entry') is True, (
+                f"Manual entry form not shown after button click, session_state: {dict(mock_st.session_state)}"
+            ) 

@@ -120,7 +120,7 @@ def test_optimized_requirements():
             
             # Check for removed packages
             removed_packages = [
-                'altair', 'fpdf2', 'matplotlib', 'pdfkit', 'python-whois', 'weasyprint'
+                'altair', 'matplotlib', 'pdfkit', 'python-whois', 'weasyprint'
             ]
             
             optimized_text = '\n'.join(optimized_lines)

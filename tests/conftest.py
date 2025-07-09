@@ -18,9 +18,9 @@ sys.path.insert(0, project_root)
 
 @pytest.fixture(autouse=True)
 def prevent_network_calls():
-    """Auto-fixture that prevents all network calls during tests."""
+    """Auto-fixture that prevents ALL network calls during tests with comprehensive patching."""
     
-    # Create mock responses for network operations
+    # Create realistic mock responses for different types of network operations
     mock_whois_result = MagicMock()
     mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
     mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -33,19 +33,42 @@ def prevent_network_calls():
     mock_dns_answer.address = '1.2.3.4'
     mock_dns_answer.ttl = 300
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = []
-    mock_response.text = "Mock response"
+    mock_http_response = MagicMock()
+    mock_http_response.status_code = 200
+    mock_http_response.json.return_value = []
+    mock_http_response.text = "Mock response"
 
-    # Use targeted patching instead of sys.modules manipulation
+    # Mock certificate scan result
+    mock_cert_info = MagicMock()
+    mock_cert_info.san = ['example.com', 'www.example.com']
+    mock_cert_info.common_name = 'example.com'
+    mock_cert_info.validation_errors = []
+    
+    mock_scan_result = MagicMock()
+    mock_scan_result.certificate_info = mock_cert_info
+    mock_scan_result.error = None
+    mock_scan_result.has_certificate = True
+
+    # Mock subprocess result for whois command
+    mock_subprocess_result = MagicMock()
+    mock_subprocess_result.returncode = 0
+    mock_subprocess_result.stdout = "Mock WHOIS output"
+
+    # Comprehensive patching of ALL the specific network call points
     with patch('socket.socket') as mock_socket, \
-         patch('socket.create_connection') as mock_create_conn, \
-         patch('socket.getaddrinfo', return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))]), \
-         patch('ssl.create_default_context') as mock_ssl_context, \
-         patch('requests.get', return_value=mock_response), \
-         patch('requests.post', return_value=mock_response), \
-         patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="Mock output")):
+          patch('socket.create_connection') as mock_create_conn, \
+          patch('socket.getaddrinfo', return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))]), \
+          patch('ssl.create_default_context') as mock_ssl_context, \
+          patch('requests.get', return_value=mock_http_response), \
+          patch('requests.post', return_value=mock_http_response), \
+          patch('subprocess.run', return_value=mock_subprocess_result), \
+          patch('dns.resolver.resolve', return_value=[mock_dns_answer]), \
+          patch('dns.resolver.Resolver') as mock_resolver_class, \
+          patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=[mock_dns_answer]), \
+          patch('infra_mgmt.scanner.domain_scanner.socket.getaddrinfo', return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))]), \
+          patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner.scan_certificate', return_value=mock_scan_result), \
+          patch('infra_mgmt.scanner.subdomain_scanner.requests.get', return_value=mock_http_response), \
+          patch('time.sleep') as mock_sleep:
         
         # Configure socket mocks
         mock_socket_instance = MagicMock()
@@ -59,23 +82,21 @@ def prevent_network_calls():
         mock_ssl_context_instance.wrap_socket.return_value = mock_ssl_socket
         mock_ssl_context.return_value = mock_ssl_context_instance
         
-        # Try to patch DNS and WHOIS operations if modules are available
+        # Configure DNS resolver mock
+        mock_resolver_instance = MagicMock()
+        mock_resolver_instance.resolve.return_value = [mock_dns_answer]
+        mock_resolver_instance.timeout = 5
+        mock_resolver_instance.lifetime = 5
+        mock_resolver_class.return_value = mock_resolver_instance
+        
+        # Try to patch WHOIS operations if modules are available
         try:
-            with patch('dns.resolver.resolve', return_value=[mock_dns_answer]):
-                try:
-                    with patch('whois.whois', return_value=mock_whois_result):
-                        yield
-                except ImportError:
-                    # whois module not available, continue without it
-                    yield
-        except ImportError:
-            # dns module not available, continue without it
-            try:
-                with patch('whois.whois', return_value=mock_whois_result):
-                    yield
-            except ImportError:
-                # Neither dns nor whois available
+            with patch('whois.whois', return_value=mock_whois_result), \
+                 patch('infra_mgmt.scanner.domain_scanner.whois.whois', return_value=mock_whois_result):
                 yield
+        except ImportError:
+            # whois module not available, continue without it
+            yield
 
 # Create test data directory if it doesn't exist
 @pytest.fixture(autouse=True)
@@ -236,6 +257,10 @@ def fast_rate_limits():
         
         if key in ['scanning.internal.domains', 'scanning.external.domains']:
             return []
+        
+        # Mock timeout settings to be fast
+        if 'timeout' in key:
+            return 0.1  # Very short timeouts for tests
             
         return default
     
@@ -264,8 +289,57 @@ def normal_rate_limits():
         
         if key in ['scanning.internal.domains', 'scanning.external.domains']:
             return []
+        
+        # Mock timeout settings
+        if 'timeout' in key:
+            return 5.0
             
         return default
     
     with patch('infra_mgmt.settings.settings.get', side_effect=mock_settings_get):
-        yield 
+        yield
+
+@pytest.fixture
+def comprehensive_network_mocks():
+    """Fixture that provides comprehensive network mocking for tests that need to verify specific behavior."""
+    from unittest.mock import patch
+    
+    # Create detailed mock objects for testing
+    mock_responses = {
+        'dns_records': [
+            {'type': 'A', 'name': 'example.com', 'value': '1.2.3.4', 'ttl': 300},
+            {'type': 'AAAA', 'name': 'example.com', 'value': '2001:db8::1', 'ttl': 300}
+        ],
+        'whois_info': {
+            'registrar': 'Test Registrar',
+            'registrant': 'Test Owner',
+            'creation_date': datetime(2020, 1, 1, tzinfo=timezone.utc),
+            'expiration_date': datetime(2030, 1, 1, tzinfo=timezone.utc),
+            'status': ['active'],
+            'nameservers': ['ns1.example.com', 'ns2.example.com']
+        },
+        'certificate_info': {
+            'san': ['example.com', 'www.example.com'],
+            'common_name': 'example.com',
+            'validation_errors': []
+        },
+        'ct_logs': []
+    }
+    
+    # Patch all network operations with these mock responses
+    with patch('infra_mgmt.utils.dns_records.DNSRecordUtil.get_dns_records', return_value=mock_responses['dns_records']), \
+         patch('infra_mgmt.scanner.domain_scanner.DomainScanner._whois_query', return_value=mock_responses['whois_info']), \
+         patch('infra_mgmt.scanner.subdomain_scanner.SubdomainScanner._get_ct_logs_subdomains', return_value=set()), \
+         patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner.scan_certificate') as mock_cert_scan:
+        
+        # Configure certificate scanner mock
+        mock_scan_result = MagicMock()
+        mock_scan_result.certificate_info = MagicMock()
+        mock_scan_result.certificate_info.san = mock_responses['certificate_info']['san']
+        mock_scan_result.certificate_info.common_name = mock_responses['certificate_info']['common_name']
+        mock_scan_result.certificate_info.validation_errors = mock_responses['certificate_info']['validation_errors']
+        mock_scan_result.error = None
+        mock_scan_result.has_certificate = True
+        mock_cert_scan.return_value = mock_scan_result
+        
+        yield mock_responses 

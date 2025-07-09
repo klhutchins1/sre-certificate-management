@@ -459,8 +459,8 @@ def test_render_scan_interface(mock_session_state):
         pass
 
 @pytest.mark.test_interface
-def test_render_scan_interface_with_input(engine, mock_session_state):
-    """Test scan interface with user input, re-enabling view call for leak isolation"""
+def test_render_scan_interface_with_input(engine, mock_session_state, fast_rate_limits):
+    """Test scan interface with user input - now with comprehensive network mocking and fast rate limits for testing"""
     import tracemalloc
     from memory_profiler import memory_usage
     from unittest.mock import patch

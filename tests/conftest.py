@@ -7,123 +7,75 @@ import os
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
-# Mock all network-related modules before any imports
-def setup_network_mocks():
-    """Setup comprehensive network mocking to prevent hitting real sites."""
-    
-    # Mock whois module
-    mock_whois_module = MagicMock()
-    mock_whois_module.__file__ = 'mock_whois.py'
-    mock_whois_module.__path__ = []
-    
-    # Mock the parser submodule
-    mock_parser = MagicMock()
-    mock_parser.PywhoisError = Exception
-    mock_parser.__file__ = 'mock_whois_parser.py'
-    mock_whois_module.parser = mock_parser
-    
-    # Mock whois function with realistic data
-    def mock_whois_function(domain):
-        result = MagicMock()
-        result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
-        result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
-        result.registrar = "Test Registrar"
-        result.registrant_name = "Test Owner"
-        result.status = "active"
-        result.name_servers = ["ns1.example.com", "ns2.example.com"]
-        return result
-    
-    mock_whois_module.whois = mock_whois_function
-    
-    # Mock DNS module
-    mock_dns = MagicMock()
-    mock_dns.resolver = MagicMock()
-    mock_dns.reversename = MagicMock()
-    
-    # Mock DNS answer
-    mock_dns_answer = MagicMock()
-    mock_dns_answer.address = '1.2.3.4'
-    mock_dns_answer.ttl = 300
-    mock_dns.resolver.resolve.return_value = [mock_dns_answer]
-    
-    # Mock socket module
-    mock_socket = MagicMock()
-    mock_socket.socket = MagicMock()
-    mock_socket.create_connection = MagicMock()
-    mock_socket.getaddrinfo = MagicMock(return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))])
-    mock_socket.gaierror = Exception
-    mock_socket.timeout = Exception
-    mock_socket.IPPROTO_TCP = 6
-    
-    # Mock SSL module
-    mock_ssl = MagicMock()
-    mock_ssl.create_default_context = MagicMock()
-    mock_ssl.SSLError = Exception
-    mock_ssl.CERT_NONE = 0
-    mock_ssl.CERT_REQUIRED = 2
-    
-    # Mock SSL context and socket
-    mock_ssl_context = MagicMock()
-    mock_ssl_socket = MagicMock()
-    mock_ssl_context.wrap_socket.return_value = mock_ssl_socket
-    mock_ssl_socket.getpeercert.return_value = b'MOCK_CERTIFICATE_DATA'
-    mock_ssl.create_default_context.return_value = mock_ssl_context
-    
-    # Mock requests module
-    mock_requests = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = []
-    mock_response.text = "Mock response"
-    mock_requests.get.return_value = mock_response
-    mock_requests.post.return_value = mock_response
-    mock_requests.RequestException = Exception
-    
-    # Mock subprocess to prevent external commands
-    mock_subprocess = MagicMock()
-    mock_subprocess.run = MagicMock(return_value=MagicMock(returncode=0, stdout="Mock output"))
-    mock_subprocess.TimeoutExpired = Exception
-    mock_subprocess.SubprocessError = Exception
-    
-    # Mock urllib3 to prevent connection pooling issues
-    mock_urllib3 = MagicMock()
-    mock_urllib3.disable_warnings = MagicMock()
-    mock_urllib3.exceptions = MagicMock()
-    
-    # Update sys.modules with all mocks
-    sys.modules['whois'] = mock_whois_module
-    sys.modules['whois.parser'] = mock_parser
-    sys.modules['dns'] = mock_dns
-    sys.modules['dns.resolver'] = mock_dns.resolver
-    sys.modules['dns.reversename'] = mock_dns.reversename
-    sys.modules['socket'] = mock_socket
-    sys.modules['ssl'] = mock_ssl
-    sys.modules['requests'] = mock_requests
-    sys.modules['subprocess'] = mock_subprocess
-    sys.modules['urllib3'] = mock_urllib3
-    
-    return {
-        'whois': mock_whois_module,
-        'dns': mock_dns,
-        'socket': mock_socket,
-        'ssl': mock_ssl,
-        'requests': mock_requests,
-        'subprocess': mock_subprocess,
-        'urllib3': mock_urllib3
-    }
-
-# Setup mocks immediately when conftest is imported
-NETWORK_MOCKS = setup_network_mocks()
-
 import pytest
 import logging
-from unittest.mock import MagicMock
 import pandas as pd
 from sqlalchemy import create_engine, NullPool
 
 # Add the project root directory to the Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
+
+@pytest.fixture(autouse=True)
+def prevent_network_calls():
+    """Auto-fixture that prevents all network calls during tests."""
+    
+    # Create mock responses for network operations
+    mock_whois_result = MagicMock()
+    mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    mock_whois_result.registrar = "Test Registrar"
+    mock_whois_result.registrant_name = "Test Owner"
+    mock_whois_result.status = "active"
+    mock_whois_result.name_servers = ["ns1.example.com", "ns2.example.com"]
+
+    mock_dns_answer = MagicMock()
+    mock_dns_answer.address = '1.2.3.4'
+    mock_dns_answer.ttl = 300
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = []
+    mock_response.text = "Mock response"
+
+    # Use targeted patching instead of sys.modules manipulation
+    with patch('socket.socket') as mock_socket, \
+         patch('socket.create_connection') as mock_create_conn, \
+         patch('socket.getaddrinfo', return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))]), \
+         patch('ssl.create_default_context') as mock_ssl_context, \
+         patch('requests.get', return_value=mock_response), \
+         patch('requests.post', return_value=mock_response), \
+         patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="Mock output")):
+        
+        # Configure socket mocks
+        mock_socket_instance = MagicMock()
+        mock_socket.return_value = mock_socket_instance
+        mock_create_conn.return_value = mock_socket_instance
+        
+        # Configure SSL mocks
+        mock_ssl_socket = MagicMock()
+        mock_ssl_socket.getpeercert.return_value = b'MOCK_CERTIFICATE_DATA'
+        mock_ssl_context_instance = MagicMock()
+        mock_ssl_context_instance.wrap_socket.return_value = mock_ssl_socket
+        mock_ssl_context.return_value = mock_ssl_context_instance
+        
+        # Try to patch DNS and WHOIS operations if modules are available
+        try:
+            with patch('dns.resolver.resolve', return_value=[mock_dns_answer]):
+                try:
+                    with patch('whois.whois', return_value=mock_whois_result):
+                        yield
+                except ImportError:
+                    # whois module not available, continue without it
+                    yield
+        except ImportError:
+            # dns module not available, continue without it
+            try:
+                with patch('whois.whois', return_value=mock_whois_result):
+                    yield
+            except ImportError:
+                # Neither dns nor whois available
+                yield
 
 # Create test data directory if it doesn't exist
 @pytest.fixture(autouse=True)
@@ -145,7 +97,7 @@ def setup_test_env(tmp_path):
 components_mock = MagicMock()
 components_mock.v1 = MagicMock()
 
-# Mock Streamlit modules to prevent warnings
+# Mock Streamlit modules to prevent warnings (but don't break built-in types)
 mock_module = MagicMock()
 mock_module.get_script_run_ctx = lambda: None
 mock_module.components = components_mock
@@ -227,7 +179,15 @@ def pytest_configure(config):
     
     # Suppress specific Streamlit warnings
     logging.getLogger('streamlit').setLevel(logging.ERROR)
-    logging.getLogger('streamlit.runtime').setLevel(logging.ERROR) 
+    logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+
+    # Add network test markers
+    config.addinivalue_line(
+        "markers", "network: marks tests that require network access (deselect with '-m \"not network\"')"
+    )
+    config.addinivalue_line(
+        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
+    )
 
 @pytest.fixture
 def mock_engine():
@@ -243,16 +203,6 @@ def mock_engine():
     yield engine
     engine.dispose()
 
-# Test configuration - add to existing pytest_configure if it exists
-def configure_network_test_markers(config):
-    """Configure pytest with network-related markers."""
-    config.addinivalue_line(
-        "markers", "network: marks tests that require network access (deselect with '-m \"not network\"')"
-    )
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
-
 def pytest_collection_modifyitems(config, items):
     """Automatically mark certain tests based on patterns."""
     for item in items:
@@ -264,8 +214,58 @@ def pytest_collection_modifyitems(config, items):
         if 'integration' in item.nodeid.lower():
             item.add_marker(pytest.mark.slow)
 
-# Provide network mock access for individual tests
 @pytest.fixture
-def network_mocks():
-    """Access to network mocks for custom test scenarios."""
-    return NETWORK_MOCKS 
+def fast_rate_limits():
+    """Fixture to speed up rate limiting for tests by setting very high rate limits."""
+    from unittest.mock import patch
+    
+    # Mock settings to return very high rate limits (effectively disabling rate limiting for tests)
+    def mock_settings_get(key, default=None):
+        rate_limit_keys = [
+            'scanning.certificate.rate_limit',
+            'scanning.default_rate_limit', 
+            'scanning.internal.rate_limit',
+            'scanning.external.rate_limit',
+            'scanning.whois.rate_limit',
+            'scanning.dns.rate_limit',
+            'scanning.ct.rate_limit'
+        ]
+        
+        if any(rate_key in key for rate_key in rate_limit_keys):
+            return 36000  # 600 requests per second - effectively no rate limiting
+        
+        if key in ['scanning.internal.domains', 'scanning.external.domains']:
+            return []
+            
+        return default
+    
+    with patch('infra_mgmt.settings.settings.get', side_effect=mock_settings_get):
+        yield
+
+@pytest.fixture
+def normal_rate_limits():
+    """Fixture to test actual rate limiting behavior."""
+    from unittest.mock import patch
+    
+    # Mock settings to return realistic rate limits for testing rate limiting functionality
+    def mock_settings_get(key, default=None):
+        rate_limits = {
+            'scanning.certificate.rate_limit': 10,   # 10 per minute
+            'scanning.default_rate_limit': 10,
+            'scanning.internal.rate_limit': 10,
+            'scanning.external.rate_limit': 10,
+            'scanning.whois.rate_limit': 10,
+            'scanning.dns.rate_limit': 10,
+            'scanning.ct.rate_limit': 10
+        }
+        
+        if key in rate_limits:
+            return rate_limits[key]
+        
+        if key in ['scanning.internal.domains', 'scanning.external.domains']:
+            return []
+            
+        return default
+    
+    with patch('infra_mgmt.settings.settings.get', side_effect=mock_settings_get):
+        yield 

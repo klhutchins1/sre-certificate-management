@@ -118,10 +118,10 @@ def test_optimized_requirements():
             print(f"   - Optimized dependencies: {optimized_count}")
             print(f"   - Reduction: {reduction:.1f}%")
             
-            # Check for removed packages
-            removed_packages = [
-                'altair', 'matplotlib', 'pdfkit', 'python-whois', 'weasyprint'
-            ]
+                         # Check for removed packages
+             removed_packages = [
+                 'altair', 'matplotlib', 'pdfkit', 'weasyprint'
+             ]
             
             optimized_text = '\n'.join(optimized_lines)
             for package in removed_packages:

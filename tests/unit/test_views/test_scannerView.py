@@ -433,7 +433,8 @@ def test_render_scan_interface(mock_session_state):
         col1.__exit__ = MagicMock(return_value=None)
         col2.__enter__ = MagicMock(return_value=col2)
         col2.__exit__ = MagicMock(return_value=None)
-        mock_st.columns.side_effect = lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)]
+        # Use safer hasattr checks instead of isinstance to avoid TypeError
+        mock_st.columns.side_effect = lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2]
         mock_st.session_state = mock_session_state
         mock_expander = MagicMock()
         mock_expander.__enter__ = MagicMock(return_value=mock_expander)
@@ -480,7 +481,8 @@ def test_render_scan_interface_with_input(engine, mock_session_state):
     col1.__exit__ = MagicMock(return_value=None)
     col2.__enter__ = MagicMock(return_value=col2)
     col2.__exit__ = MagicMock(return_value=None)
-    mock_st.columns.side_effect = lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)]
+    # Use safer hasattr checks instead of isinstance to avoid TypeError
+    mock_st.columns.side_effect = lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2]
     mock_st.session_state = mock_session_state
     mock_expander = MagicMock()
     mock_expander.__enter__ = MagicMock(return_value=mock_expander)
@@ -683,7 +685,8 @@ def test_recent_scans_display(engine, mock_session_state):
         col1.__exit__ = MagicMock(return_value=None)
         col2.__enter__ = MagicMock(return_value=col2)
         col2.__exit__ = MagicMock(return_value=None)
-        mock_st.columns.side_effect = lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)]
+        # Use safer hasattr checks instead of isinstance to avoid TypeError  
+        mock_st.columns.side_effect = lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2]
         mock_header_st.columns.side_effect = mock_st.columns.side_effect
         mock_st.text_area.return_value = "example.com"
         mock_st.button.return_value = False
@@ -753,7 +756,8 @@ def test_input_validation_scenarios(engine, mock_session_state):
         col1.__exit__ = MagicMock(return_value=None)
         col2.__enter__ = MagicMock(return_value=col2)
         col2.__exit__ = MagicMock(return_value=None)
-        mock_st.columns = MagicMock(side_effect=lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)])
+        # Use safer hasattr checks instead of isinstance to avoid TypeError
+        mock_st.columns = MagicMock(side_effect=lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2])
         mock_expander = MagicMock()
         mock_expander.__enter__ = MagicMock(return_value=mock_expander)
         mock_expander.__exit__ = MagicMock(return_value=None)

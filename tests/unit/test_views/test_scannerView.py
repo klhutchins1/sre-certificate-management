@@ -5,17 +5,52 @@ print(">>> sys.path adjusted for infra_mgmt import")
 
 # Mock the whois module before any imports to prevent AttributeError
 from unittest.mock import MagicMock, patch
+
+# Create comprehensive whois module mock
 mock_whois_module = MagicMock()
 mock_whois_module.whois = MagicMock()
+mock_whois_module.__file__ = 'mock_whois.py'
+mock_whois_module.__path__ = []
+
+# Mock the parser submodule
 mock_parser = MagicMock()
 mock_parser.PywhoisError = Exception
+mock_parser.__file__ = 'mock_whois_parser.py'
 mock_whois_module.parser = mock_parser
 
-# Patch sys.modules to include our mock
-if 'whois' not in sys.modules:
-    sys.modules['whois'] = mock_whois_module
-if 'whois.parser' not in sys.modules:
-    sys.modules['whois.parser'] = mock_parser
+# Ensure whois.whois is callable and returns something useful
+def mock_whois_function(domain):
+    result = MagicMock()
+    result.creation_date = None
+    result.expiration_date = None
+    result.registrar = None
+    result.registrant_name = None
+    result.status = []
+    result.name_servers = []
+    return result
+
+mock_whois_module.whois = mock_whois_function
+
+# Patch sys.modules comprehensively
+sys.modules['whois'] = mock_whois_module
+sys.modules['whois.parser'] = mock_parser
+
+# Also mock dns modules to prevent issues
+mock_dns = MagicMock()
+mock_dns.resolver = MagicMock()
+mock_dns.reversename = MagicMock()
+sys.modules['dns'] = mock_dns
+sys.modules['dns.resolver'] = mock_dns.resolver
+sys.modules['dns.reversename'] = mock_dns.reversename
+
+# Mock subprocess to prevent any subprocess.run calls
+mock_subprocess = MagicMock()
+mock_subprocess.run = MagicMock()
+mock_subprocess.TimeoutExpired = Exception
+mock_subprocess.SubprocessError = Exception
+sys.modules['subprocess'] = mock_subprocess
+
+print(">>> Whois, DNS, and subprocess modules mocked in sys.modules")
 
 print(">>> Top of test_scannerView.py")
 import pytest
@@ -86,25 +121,19 @@ def mock_network_calls():
     mock_whois_result.registrant_name = "Test Owner"
     mock_whois_result.status = "active"
     mock_whois_result.name_servers = ["ns1.example.com", "ns2.example.com"]
-    # Add any other fields your code expects as needed
 
-    # Create a more complete whois module mock
-    mock_whois_module = MagicMock()
-    mock_whois_module.whois = MagicMock(return_value=mock_whois_result)
+    # Update the global mock whois function to return our test result
+    def mock_whois_function(domain):
+        return mock_whois_result
     
-    # Mock the parser submodule
-    mock_parser = MagicMock()
-    mock_parser.PywhoisError = Exception
-    mock_whois_module.parser = mock_parser
+    # Update the global mocked whois module
+    setattr(sys.modules['whois'], 'whois', mock_whois_function)
 
     with patch('socket.socket'), \
          patch('dns.resolver.resolve', return_value=[MagicMock(address='1.2.3.4')]), \
          patch('requests.get'), \
          patch('requests.post'), \
          patch('ssl.create_default_context'), \
-         patch('whois.whois', return_value=mock_whois_result), \
-         patch('whois.parser.PywhoisError', Exception), \
-         patch.dict('sys.modules', {'whois': mock_whois_module, 'whois.parser': mock_parser}), \
          patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner._get_certificate', return_value=b""):
         yield
 
@@ -259,8 +288,8 @@ def mock_cert_info():
         valid_from=now,
         expiration_date=now + timedelta(days=365),
         san=['test.example.com', 'www.test.example.com'],
-        key_usage=None,
-        signature_algorithm=None,
+        key_usage=[],
+        signature_algorithm='sha256WithRSAEncryption',
         common_name='test.example.com',
         chain_valid=True,
         ip_addresses=['192.168.1.1'],
@@ -281,8 +310,8 @@ def mock_scan_result():
         valid_from=now,
         expiration_date=now + timedelta(days=365),
         san=['test.example.com', 'www.test.example.com'],
-        key_usage=None,
-        signature_algorithm=None,
+        key_usage=[],
+        signature_algorithm='sha256WithRSAEncryption',
         common_name='test.example.com',
         chain_valid=True,
         ip_addresses=['192.168.1.1'],

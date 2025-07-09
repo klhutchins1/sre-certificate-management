@@ -98,7 +98,7 @@ class SubdomainScanner:
             self.status_container.text(message)
         logger.info(message)
 
-    def _get_certificate_sans(self, domain: str, port: int = 443) -> Set[str]:
+    def _get_certificate_sans(self, domain: str, port: int = 443, offline_mode: bool = False) -> Set[str]:
         """
         Get subdomains from SSL certificate's Subject Alternative Names (SANs).
         
@@ -120,7 +120,7 @@ class SubdomainScanner:
             base_domain = domain.lstrip('*.')
             
             # Use CertificateScanner to get certificate
-            scan_result = self.infra_mgmt.scan_certificate(domain, port)
+            scan_result = self.infra_mgmt.scan_certificate(domain, port, offline_mode=offline_mode)
             if scan_result:
                 if scan_result.error:
                     logger.warning(f"[CERT] Error scanning certificate for {domain}: {scan_result.error}")
@@ -268,7 +268,7 @@ class SubdomainScanner:
         methods_to_use = methods or self.methods
         discovered = set()
         if 'cert' in methods_to_use:
-            discovered |= self._get_certificate_sans(domain)
+            discovered |= self._get_certificate_sans(domain, 443, offline_mode)
         if 'ct' in methods_to_use:
             discovered |= self._discover_subdomains_ct(domain, offline_mode=offline_mode, enable_ct=enable_ct)
         # Save discovered subdomains to DB

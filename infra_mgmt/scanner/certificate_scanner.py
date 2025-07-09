@@ -446,7 +446,7 @@ class CertificateScanner:
         self.request_timestamps.append(current_time)
         self.last_scan_time = current_time
     
-    def scan_certificate(self, address: str, port: int = 443) -> ScanResult:
+    def scan_certificate(self, address: str, port: int = 443, offline_mode: bool = False) -> ScanResult:
         """
         Scan a host for SSL/TLS certificates.
         
@@ -457,6 +457,7 @@ class CertificateScanner:
         Args:
             address (str): The hostname or IP to scan
             port (int): The port to scan (default 443)
+            offline_mode (bool): If True, skips network operations (default False)
         
         Returns:
             ScanResult: Scan result containing certificate info or error
@@ -466,7 +467,14 @@ class CertificateScanner:
             >>> result = scanner.scan_certificate('example.com', 443)
             >>> if result.has_certificate:
             ...     print(result.certificate_info.to_dict())
+            >>> # Offline mode for testing
+            >>> result = scanner.scan_certificate('example.com', 443, offline_mode=True)
         """
+        # Handle offline mode
+        if offline_mode:
+            self.logger.info(f"Offline mode: Skipping certificate scan for {address}:{port}")
+            return ScanResult(error=f"Certificate scan skipped - offline mode enabled")
+        
         # Check certificate cache first
         if self.session_cache:
             cached = self.session_cache.get_certificate_meta(address, port)

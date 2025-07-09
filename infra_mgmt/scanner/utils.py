@@ -101,7 +101,7 @@ def get_ip_info(ip: str) -> Dict[str, Any]:
             try:
                 import whois
                 # Check if this is python-whois package by testing for whois.whois function
-                if hasattr(whois, 'whois'):
+                if hasattr(whois, 'whois') and callable(getattr(whois, 'whois', None)):
                     # Use python-whois package
                     whois_info = whois.whois(ip)  # type: ignore
                     if whois_info:
@@ -115,7 +115,7 @@ def get_ip_info(ip: str) -> Dict[str, Any]:
                 else:
                     # whois package doesn't support IP lookups in the same way
                     logger.debug(f"WHOIS package doesn't support IP lookups for {ip}")
-            except ImportError:
+            except (ImportError, AttributeError, ModuleNotFoundError):
                 logger.debug(f"WHOIS module not available for {ip}")
         except Exception as e:
             logger.debug(f"WHOIS lookup failed for {ip}: {str(e)}")

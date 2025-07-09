@@ -16,7 +16,11 @@ try:
     # Check if this is python-whois package by testing for whois.whois function
     if hasattr(whois, 'whois'):
         WHOIS_PACKAGE = 'python-whois'
-        from whois.parser import PywhoisError
+        try:
+            from whois.parser import PywhoisError
+        except (ImportError, AttributeError):
+            # Fallback if parser module is not available
+            PywhoisError = Exception
     else:
         WHOIS_PACKAGE = 'whois'
         # whois package doesn't have PywhoisError, so we'll use a generic exception
@@ -527,7 +531,7 @@ class DomainScanner:
         cached = self.session_cache.get_dns(domain)
         if cached is not None:
             return cached
-        records = DNSRecordUtil.get_dns_records(domain, self.dns_record_types)
+        records = DNSRecordUtil.get_dns_records(domain)
         self.session_cache.set_dns(domain, records)
         return records
 
@@ -604,7 +608,7 @@ class DomainScanner:
                     try:
                         cached_whois = self.session_cache.get_whois(domain)
                         if cached_whois:
-                            whois_data_obj = cached_whois
+                            whois_data_dict = cached_whois
                             self.logger.info(f"[DOMAIN SCAN] Using cached WHOIS for {domain}")
                         else:
                             whois_data_dict = self._whois_query(domain)
@@ -632,11 +636,11 @@ class DomainScanner:
                 domain_name=domain,
                 is_valid=True,
                 registrar=whois_data_dict.get('registrar'),
-                registrant=str(whois_data_dict.get('name') or whois_data_dict.get('org')) if whois_data_dict else None,
+                registrant=whois_data_dict.get('registrant'),
                 registration_date=whois_data_dict.get('creation_date'),
                 expiration_date=whois_data_dict.get('expiration_date'),
                 status=whois_data_dict.get('status', []),
-                nameservers=whois_data_dict.get('name_servers', []),
+                nameservers=whois_data_dict.get('nameservers', []),
                 dns_records=dns_records_list,
                 domain_type=self._get_domain_type(domain),
                 related_domains=related_domains_set

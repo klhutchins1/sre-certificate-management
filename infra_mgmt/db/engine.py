@@ -5,6 +5,7 @@ Handles:
 - Engine instantiation
 - Path normalization
 - Network path detection
+- Cache management for file-share optimization
 """
 
 import logging
@@ -18,6 +19,9 @@ from ..settings import Settings
 from infra_mgmt.exceptions import DatabaseError
 
 logger = logging.getLogger(__name__)
+
+# Global cache manager instance
+_cache_manager = None
 
 def is_network_path(path: Path) -> bool:
     """
@@ -83,8 +87,10 @@ def get_engine(db_path: str) -> 'Engine':
     db_path = normalize_path(db_path)
     return create_engine(f"sqlite:///{db_path}")
 
-def init_database(db_path=None):
+def init_database(db_path=None, enable_cache: bool = True):
     """Initialize the database and perform migrations."""
+    global _cache_manager
+    
     try:
         # Get database path from parameter or settings
         if db_path is None:
@@ -155,9 +161,25 @@ def init_database(db_path=None):
         else:
             logger.info(f"Database file does not exist at: {db_path}")
         
-        # Create new database engine
-        logger.info(f"Creating database engine at: {db_path}")
-        engine = create_engine(f"sqlite:///{db_path}")
+        # Initialize cache manager if enabled and path is network path
+        if enable_cache and is_network_path(db_path):
+            try:
+                from .cache_manager import DatabaseCacheManager
+                sync_interval = settings.get("database.sync_interval", 30) if 'settings' in locals() else 30
+                _cache_manager = DatabaseCacheManager(str(db_path), sync_interval)
+                logger.info(f"Cache manager initialized with sync interval: {sync_interval}s")
+                
+                # Use cache manager's local engine
+                engine = _cache_manager.local_engine
+                
+            except Exception as e:
+                logger.warning(f"Failed to initialize cache manager: {str(e)}")
+                logger.info("Falling back to direct database access")
+                engine = create_engine(f"sqlite:///{db_path}")
+        else:
+            # Create new database engine (direct access)
+            logger.info(f"Creating database engine at: {db_path}")
+            engine = create_engine(f"sqlite:///{db_path}")
         
         # Create tables and update schema
         logger.info("Creating database tables...")
@@ -188,3 +210,23 @@ def init_database(db_path=None):
     except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
         raise
+
+def get_cache_manager():
+    """Get the global cache manager instance if available."""
+    return _cache_manager
+
+def is_cache_enabled():
+    """Check if caching is enabled."""
+    return _cache_manager is not None
+
+def force_sync():
+    """Force an immediate sync operation if cache is enabled."""
+    if _cache_manager:
+        return _cache_manager.force_sync()
+    return None
+
+def get_sync_status():
+    """Get sync status if cache is enabled."""
+    if _cache_manager:
+        return _cache_manager.get_sync_status()
+    return None

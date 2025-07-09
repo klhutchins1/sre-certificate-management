@@ -103,7 +103,6 @@ def render_host_certificate_history(engine) -> None:
     """
     result = HistoryService.get_host_certificate_history(engine)
     if not result['success']:
-        st.warning(result['error'])
         notify(result['error'], "warning", page_key=HISTORY_PAGE_KEY)
         return
     hosts = result['data']['hosts']
@@ -156,7 +155,6 @@ def render_host_certificate_history(engine) -> None:
                 use_container_width=True
             )
         else:
-            st.info("No certificate history found for this host")
             notify("No certificate history found for this host", "info", page_key=HISTORY_PAGE_KEY)
 
 def create_timeline_chart(data: dict) -> "plotly.graph_objs._figure.Figure":
@@ -246,7 +244,6 @@ def render_scan_history(engine) -> None:
     with SessionManager(engine) as session:
         scans = HistoryService.get_scan_history(session)
         if not scans:
-            st.warning("No scan history found")
             notify("No scan history found", "warning", page_key=HISTORY_PAGE_KEY)
             return
         scan_data = []
@@ -505,12 +502,10 @@ def render_certificate_tracking(cert: Certificate, session: Session) -> None:
                     notes
                 )
                 if result['success']:
-                    st.success("Change entry added!")
                     notify("Change entry added!", "success", page_key=HISTORY_PAGE_KEY)
                     st.session_state.show_tracking_entry = False
                     st.rerun()
                 else:
-                    st.error(f"Error saving change entry: {result['error']}")
                     notify(f"Error saving change entry: {result['error']}", "error", page_key=HISTORY_PAGE_KEY)
     
     # Display existing tracking entries
@@ -628,7 +623,6 @@ def render_certificate_tracking(cert: Certificate, session: Session) -> None:
             height=400
         )
     else:
-        st.info("No change entries found for this certificate")
         notify("No change entries found for this certificate", "info", page_key=HISTORY_PAGE_KEY)
         
 def render_cn_history(engine) -> None:
@@ -669,7 +663,6 @@ def render_cn_history(engine) -> None:
     with SessionManager(engine) as session:
         cn_options = HistoryService.get_cn_history(session)
         if not cn_options:
-            st.warning("No certificate data found")
             notify("No certificate data found", "warning", page_key=HISTORY_PAGE_KEY)
             return
         selected_cn = st.selectbox(
@@ -904,10 +897,8 @@ def render_cn_history(engine) -> None:
                                     for san in sorted(set(san_list)):
                                         st.text(san)
                                 except Exception as e:
-                                    st.error(f"Error parsing SANs: {str(e)}")
                                     notify(f"Error parsing SANs: {str(e)}", "error", page_key=HISTORY_PAGE_KEY)
             else:
-                st.info("No certificates found with this common name")
                 notify("No certificates found with this common name", "info", page_key=HISTORY_PAGE_KEY)
 
         

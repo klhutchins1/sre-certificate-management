@@ -137,16 +137,17 @@ def test_render_search_view_empty(mock_streamlit, engine):
         "All",          # Status filter
         "All"           # Platform filter
     ]
-    render_search_view(engine)
-    # Check that the header was rendered
-    found = False
-    for call in mock_header_st.markdown.call_args_list:
-        if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Search</h1>" and call.kwargs.get('unsafe_allow_html'):
-            found = True
-            break
-    assert found, "Expected header markdown call not found"
-    # Verify empty state message
-    mock_st.info.assert_called_once_with("No results found")
+    with patch('infra_mgmt.views.searchView.notify') as mock_notify:
+        render_search_view(engine)
+        # Check that the header was rendered
+        found = False
+        for call in mock_header_st.markdown.call_args_list:
+            if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Search</h1>" and call.kwargs.get('unsafe_allow_html'):
+                found = True
+                break
+        assert found, "Expected header markdown call not found"
+        # Verify empty state message
+        mock_notify.assert_any_call("No results found for the current filters", "info", page_key="search")
 
 def test_render_search_view_with_data(mock_streamlit, engine, sample_data):
     mock_st, mock_header_st = mock_streamlit

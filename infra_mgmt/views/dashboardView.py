@@ -301,7 +301,7 @@ def render_performance_metrics():
         # Option to clear metrics
         if st.button("Clear Performance Metrics"):
             performance_metrics.clear_metrics()
-            st.success("Performance metrics cleared")
+            notify("Performance metrics cleared", "success", page_key=DASHBOARD_PAGE_KEY)
 
 @monitor_rendering("dashboard")
 def render_dashboard(engine) -> None:

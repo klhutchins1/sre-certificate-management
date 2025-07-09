@@ -60,10 +60,18 @@ def main():
         app_main()
     except ImportError as e:
         logger.error(f"Failed to import application: {str(e)}")
-        st.error("Failed to start the application. Please check the logs for details.")
+        # Use the notification system for startup errors
+        from infra_mgmt.notifications import initialize_page_notifications, notify, show_notifications
+        initialize_page_notifications("startup")
+        notify("Failed to start the application. Please check the logs for details.", "error", page_key="startup")
+        show_notifications("startup")
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
-        st.error(f"An error occurred: {str(e)}")
+        # Use the notification system for startup errors
+        from infra_mgmt.notifications import initialize_page_notifications, notify, show_notifications
+        initialize_page_notifications("startup")
+        notify(f"An error occurred: {str(e)}", "error", page_key="startup")
+        show_notifications("startup")
 
 if __name__ == "__main__":
     main() 

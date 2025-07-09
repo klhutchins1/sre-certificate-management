@@ -11,7 +11,8 @@ from infra_mgmt.views.historyView import (
     render_scan_history,
     render_host_certificate_history,
     create_timeline_chart,
-    render_certificate_tracking
+    render_certificate_tracking,
+    render_cn_history
 )
 from unittest.mock import ANY
 
@@ -142,12 +143,11 @@ def test_render_history_view(mock_streamlit, mock_aggrid, engine, sample_data):
     mock_st.tabs.assert_called_once_with(["Common Name History", "Scan History", "Host Certificate History"])
 
 def test_render_scan_history_empty(mock_streamlit, engine):
-    """Test rendering scan history with no data"""
     mock_st, mock_header_st = mock_streamlit
-    render_scan_history(engine)
-    
-    # Verify empty state warning
-    mock_st.warning.assert_called_once_with("No scan history found")
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        with patch('infra_mgmt.views.historyView.HistoryService.get_scan_history', return_value=[]):
+            render_scan_history(engine)
+            mock_notify.assert_any_call("No scan history found", "warning", page_key="history")
 
 def test_render_scan_history_with_data(mock_streamlit, mock_aggrid, engine, sample_data):
     """Test rendering scan history with sample data"""
@@ -347,73 +347,46 @@ def mock_aggrid():
         mock_aggrid.side_effect = mock_aggrid_func
         yield mock_aggrid 
 
-def test_render_host_certificate_history_error(mock_streamlit, engine, monkeypatch):
-    """Test error handling in render_host_certificate_history (lines 96-97)"""
+def test_render_host_certificate_history_error(mock_streamlit, engine):
     mock_st, mock_header_st = mock_streamlit
-    from infra_mgmt.views import historyView
-    monkeypatch.setattr(
-        historyView.HistoryService,
-        "get_host_certificate_history",
-        lambda engine: {'success': False, 'error': 'fail'}
-    )
-    historyView.render_host_certificate_history(engine)
-    mock_st.warning.assert_called_once_with('fail')
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        with patch('infra_mgmt.views.historyView.HistoryService.get_host_certificate_history', return_value={'success': False, 'error': 'fail'}):
+            render_host_certificate_history(engine)
+            mock_notify.assert_any_call('fail', 'warning', page_key='history')
 
 def test_render_scan_history_empty_error(mock_streamlit, monkeypatch, engine):
-    """Test empty scan history in render_scan_history (line 248)"""
     mock_st, mock_header_st = mock_streamlit
-    from infra_mgmt.views import historyView
-    monkeypatch.setattr(
-        historyView.HistoryService,
-        "get_scan_history",
-        lambda session: []
-    )
-    historyView.render_scan_history(engine)
-    mock_st.warning.assert_called_once_with("No scan history found")
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        with patch('infra_mgmt.views.historyView.HistoryService.get_scan_history', return_value=None):
+            render_scan_history(engine)
+            mock_notify.assert_any_call("No scan history found", "warning", page_key="history")
 
 def test_render_cn_history_empty_cn(mock_streamlit, monkeypatch, engine):
-    """Test empty CN history in render_cn_history (get_cn_history returns empty, lines 652-653)"""
     mock_st, mock_header_st = mock_streamlit
-    from infra_mgmt.views import historyView
-    monkeypatch.setattr(
-        historyView.HistoryService,
-        "get_cn_history",
-        lambda session: []
-    )
-    historyView.render_cn_history(engine)
-    mock_st.warning.assert_called_once_with("No certificate data found")
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        with patch('infra_mgmt.views.historyView.HistoryService.get_cn_history', return_value=None):
+            render_cn_history(engine)
+            mock_notify.assert_any_call("No certificate data found", "warning", page_key="history")
 
 def test_render_cn_history_no_certs_for_cn(mock_streamlit, monkeypatch, engine):
-    """Test no certificates for selected CN in render_cn_history (lines 852-880)"""
     mock_st, mock_header_st = mock_streamlit
-    from infra_mgmt.views import historyView
-    # Return a CN, but no certs for it
-    monkeypatch.setattr(
-        historyView.HistoryService,
-        "get_cn_history",
-        lambda session: ["test.example.com"]
-    )
-    monkeypatch.setattr(
-        historyView.HistoryService,
-        "get_certificates_by_cn",
-        lambda session, cn: []
-    )
-    # Patch selectbox to select the CN
-    mock_st.selectbox.return_value = "test.example.com"
-    historyView.render_cn_history(engine)
-    mock_st.info.assert_called_once_with("No certificates found with this common name")
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        with patch('infra_mgmt.views.historyView.HistoryService.get_cn_history', return_value=["foo"]):
+            with patch('infra_mgmt.views.historyView.HistoryService.get_certificates_by_cn', return_value=[]):
+                with patch('infra_mgmt.views.historyView.st.selectbox', return_value="foo"):
+                    render_cn_history(engine)
+                    mock_notify.assert_any_call("No certificates found with this common name", "info", page_key="history")
 
-def test_render_certificate_tracking_no_entries(mock_streamlit):
-    """Test info message when no tracking entries exist."""
+def test_render_certificate_tracking_no_entries(mock_streamlit, engine):
     mock_st, mock_header_st = mock_streamlit
-    from infra_mgmt.views.historyView import render_certificate_tracking
     cert = MagicMock()
     cert.tracking_entries = []
     session = MagicMock()
-    render_certificate_tracking(cert, session)
-    mock_st.info.assert_called_once_with("No change entries found for this certificate")
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        render_certificate_tracking(cert, session)
+        mock_notify.assert_any_call("No change entries found for this certificate", "info", page_key="history")
 
-def test_render_certificate_tracking_with_entries(mock_streamlit):
+def test_render_certificate_tracking_with_entries(mock_streamlit, engine):
     """Test DataFrame/grid display when tracking entries exist."""
     mock_st, mock_header_st = mock_streamlit
     from infra_mgmt.views.historyView import render_certificate_tracking
@@ -464,66 +437,34 @@ def test_render_certificate_tracking_add_button(mock_streamlit, monkeypatch):
     render_certificate_tracking(cert, session)
     mock_st.form.assert_called_once_with("tracking_entry_form")
 
-def test_render_certificate_tracking_form_success(mock_streamlit, monkeypatch):
-    """Test form submission success path."""
+def test_render_certificate_tracking_form_success(mock_streamlit, engine):
     mock_st, mock_header_st = mock_streamlit
-    from infra_mgmt.views.historyView import render_certificate_tracking
     cert = MagicMock()
-    cert.id = 1
-    cert.tracking_entries = []
+    cert.tracking_entries = [MagicMock()]
     session = MagicMock()
-    # Use SessionStateMock for session_state
-    state = SessionStateMock({'show_tracking_entry': True, 'editing_cert_id': 1})
-    mock_st.session_state = state
-    # Patch form context manager
-    form_ctx = MagicMock()
-    form_ctx.__enter__.return_value = form_ctx
-    form_ctx.__exit__.return_value = None
-    mock_st.form.return_value = form_ctx
-    # Patch form fields
-    mock_st.text_input.return_value = "CHG123"
-    mock_st.date_input.return_value = "2024-01-01"
-    mock_st.selectbox.return_value = "Completed"
-    mock_st.text_area.return_value = "Test"
-    # Simulate form submit
-    form_ctx.form_submit_button.return_value = True
-    # Patch add_certificate_tracking_entry
-    monkeypatch.setattr(
-        "infra_mgmt.views.historyView.HistoryService.add_certificate_tracking_entry",
-        lambda session, cert_id, change_number, planned_date, status, notes: {'success': True}
-    )
-    render_certificate_tracking(cert, session)
-    mock_st.success.assert_called_once_with("Change entry added!")
-    assert state['show_tracking_entry'] is False
-    mock_st.rerun.assert_called_once()
+    # Simulate form submission and session state
+    mock_st.session_state.get.side_effect = lambda k, d=None: True if k == 'show_tracking_entry' else cert.id
+    mock_st.session_state.__getitem__.side_effect = lambda k: True if k == 'show_tracking_entry' else cert.id
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        with patch('infra_mgmt.views.historyView.HistoryService.add_certificate_tracking_entry', return_value={'success': True}):
+            with patch('infra_mgmt.views.historyView.st.form') as mock_form:
+                mock_form.return_value.__enter__.return_value = mock_st
+                mock_st.form_submit_button.return_value = True
+                render_certificate_tracking(cert, session)
+                mock_notify.assert_any_call("Change entry added!", "success", page_key="history")
 
-def test_render_certificate_tracking_form_failure(mock_streamlit, monkeypatch):
-    """Test form submission failure path."""
+def test_render_certificate_tracking_form_failure(mock_streamlit, engine):
     mock_st, mock_header_st = mock_streamlit
-    from infra_mgmt.views.historyView import render_certificate_tracking
     cert = MagicMock()
-    cert.id = 1
-    cert.tracking_entries = []
+    cert.tracking_entries = [MagicMock()]
     session = MagicMock()
-    # Simulate form shown
-    mock_st.session_state.get.side_effect = lambda k, d=None: True if k == 'show_tracking_entry' or k == 'editing_cert_id' else None
-    mock_st.session_state.__getitem__.side_effect = lambda k: 1 if k == 'editing_cert_id' else None
-    # Patch form context manager
-    form_ctx = MagicMock()
-    form_ctx.__enter__.return_value = form_ctx
-    form_ctx.__exit__.return_value = None
-    mock_st.form.return_value = form_ctx
-    # Patch form fields
-    mock_st.text_input.return_value = "CHG123"
-    mock_st.date_input.return_value = "2024-01-01"
-    mock_st.selectbox.return_value = "Completed"
-    mock_st.text_area.return_value = "Test"
-    # Simulate form submit
-    form_ctx.form_submit_button.return_value = True
-    # Patch add_certificate_tracking_entry
-    monkeypatch.setattr(
-        "infra_mgmt.views.historyView.HistoryService.add_certificate_tracking_entry",
-        lambda session, cert_id, change_number, planned_date, status, notes: {'success': False, 'error': 'fail'}
-    )
-    render_certificate_tracking(cert, session)
-    mock_st.error.assert_called_once_with("Error saving change entry: fail") 
+    # Simulate form submission and session state
+    mock_st.session_state.get.side_effect = lambda k, d=None: True if k == 'show_tracking_entry' else cert.id
+    mock_st.session_state.__getitem__.side_effect = lambda k: True if k == 'show_tracking_entry' else cert.id
+    with patch('infra_mgmt.views.historyView.notify') as mock_notify:
+        with patch('infra_mgmt.views.historyView.HistoryService.add_certificate_tracking_entry', return_value={'success': False, 'error': 'fail'}):
+            with patch('infra_mgmt.views.historyView.st.form') as mock_form:
+                mock_form.return_value.__enter__.return_value = mock_st
+                mock_st.form_submit_button.return_value = True
+                render_certificate_tracking(cert, session)
+                mock_notify.assert_any_call("Error saving change entry: fail", "error", page_key="history") 

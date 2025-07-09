@@ -23,6 +23,8 @@ def render_deletion_dialog(
 ) -> None:
     """Legacy deletion dialog - maintained for backward compatibility"""
     with st.expander("🗑️ Delete", expanded=False):
+        # Note: This component doesn't have access to page_key, so we'll use a generic approach
+        # The warning and error messages here are part of the UI flow, not notifications
         st.warning(f"⚠️ You are about to delete: **{item_name}**")
         
         # Show dependencies if any exist

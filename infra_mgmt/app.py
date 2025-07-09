@@ -45,6 +45,7 @@ from .constants import (
     platform_options
 )
 from .db import init_database
+from .notifications import initialize_page_notifications, notify, show_notifications
 # View imports
 from .views.dashboardView import render_dashboard
 from .views.certificatesView import render_certificate_list
@@ -185,6 +186,9 @@ def main():
     # Load CSS styles
     load_css()
     
+    # Initialize notifications for the main app
+    initialize_page_notifications("main_app")
+    
     # Get current view from sidebar
     current_view = render_sidebar()
     
@@ -207,6 +211,9 @@ def main():
         render_history_view(st.session_state.engine)
     elif current_view == "Settings":
         render_settings_view(st.session_state.engine)
+    else:
+        notify(f"Unknown view: {current_view}", "error", page_key="main_app")
+        show_notifications("main_app")
 
 # Make main function available for import
 __all__ = ['main']

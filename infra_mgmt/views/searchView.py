@@ -130,7 +130,6 @@ def render_search_view(engine) -> None:
             if search_type == "Certificates":
                 st.subheader("Certificates")
                 if df.empty:
-                    st.info("No results found") # Convert to notify
                     notify("No results found for Certificates", "info", page_key=SEARCH_PAGE_KEY)
                 else:
                     st.dataframe(
@@ -142,7 +141,6 @@ def render_search_view(engine) -> None:
             elif search_type == "Hosts" or search_type == "IP Addresses":
                 st.subheader("Hosts")
                 if df.empty:
-                    st.info("No results found") # Convert to notify
                     notify("No results found for Hosts/IP Addresses", "info", page_key=SEARCH_PAGE_KEY)
                 else:
                     st.dataframe(
@@ -174,7 +172,6 @@ def render_search_view(engine) -> None:
                     )
                     shown = True
                 if not shown:
-                    st.info("No results found") # Convert to notify
                     notify("No results found for the current filters", "info", page_key=SEARCH_PAGE_KEY)
         except Exception as e:
             logger.exception(f"Error in search view: {str(e)}")

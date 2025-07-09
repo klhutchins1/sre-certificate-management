@@ -473,6 +473,19 @@ class Settings:
             elif key == "exports.default_format":
                 return value in ["CSV", "JSON", "YAML"]
                 
+        # Validate database/cache settings
+        elif key.startswith("database."):
+            if key == "database.sync_interval":
+                return isinstance(value, int) and value > 0
+            elif key == "database.enable_cache":
+                return isinstance(value, bool)
+            elif key == "database.cache_directory":
+                return isinstance(value, str) and value.strip()
+            elif key == "database.max_pending_writes":
+                return isinstance(value, int) and value > 0
+            # Unknown sub-key under database
+            return False
+            
         # Validate proxy detection settings
         elif key.startswith("proxy_detection."):
             if key == "proxy_detection.enabled":

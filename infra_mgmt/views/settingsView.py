@@ -38,6 +38,7 @@ from ..settings import Settings
 from infra_mgmt.services.SettingsService import SettingsService
 from infra_mgmt.notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
 from ..static.styles import load_warning_suppression, load_css
+from ..db.engine import get_cache_manager, is_cache_enabled, force_sync, get_sync_status
 from sqlalchemy.engine import Engine
 from datetime import datetime
 import re
@@ -101,6 +102,7 @@ def render_settings_view(engine) -> None:
     """
     load_warning_suppression()
     load_css()
+    clear_page_notifications(SETTINGS_PAGE_KEY)  # Clear notifications at the start
     initialize_page_notifications(SETTINGS_PAGE_KEY)
     render_page_header(title="Settings")
     
@@ -111,7 +113,7 @@ def render_settings_view(engine) -> None:
  
     settings = Settings()
     tabs = st.tabs([
-        "Paths", "Scanning", "Alerts", "Exports", "Ignore Lists", "Proxy Detection", "Backup & Restore"
+        "Paths", "Scanning", "Alerts", "Exports", "Ignore Lists", "Proxy Detection", "Cache", "Backup & Restore"
     ])
 
     # Path Settings Tab
@@ -570,46 +572,20 @@ def render_settings_view(engine) -> None:
     # Proxy Detection Tab
     with tabs[5]:
         st.header("Proxy Detection Settings")
-        # Robust summary block
         try:
-            current_enabled = settings.get("proxy_detection.enabled", True)
-            current_fingerprints = settings.get("proxy_detection.ca_fingerprints") or []
-            current_subjects = settings.get("proxy_detection.ca_subjects") or []
-            current_serials = settings.get("proxy_detection.ca_serials") or []
-            # Ensure all are lists of strings
-            if not isinstance(current_fingerprints, list):
-                current_fingerprints = []
-            else:
-                current_fingerprints = [str(fp) for fp in current_fingerprints if isinstance(fp, str) or fp is not None]
-            if not isinstance(current_subjects, list):
-                current_subjects = []
-            else:
-                current_subjects = [str(subj) for subj in current_subjects if isinstance(subj, str) or subj is not None]
-            if not isinstance(current_serials, list):
-                current_serials = []
-            else:
-                current_serials = [str(sn) for sn in current_serials if isinstance(sn, str) or sn is not None]
+            current_fingerprints = settings.get("proxy_detection.fingerprints", [])
+            current_subjects = settings.get("proxy_detection.subjects", [])
+            current_serials = settings.get("proxy_detection.serials", [])
+            proxy_enabled = settings.get("proxy_detection.enabled", True)
             summary_md = f"""
-            **Proxy Detection Enabled:** `{current_enabled}`  
-            **Known Proxy CA Fingerprints:** {len(current_fingerprints)} configured  
-            """
-            if current_fingerprints:
-                summary_md += "\n" + "\n".join([f"- `{fp[:16]}...`" for fp in current_fingerprints[:5]])
-                if len(current_fingerprints) > 5:
-                    summary_md += "\n..."
-            summary_md += f"\n**Known Proxy CA Subjects:** {len(current_subjects)} configured  "
-            if current_subjects:
-                summary_md += "\n" + "\n".join([f"- `{subj}`" for subj in current_subjects[:5]])
-                if len(current_subjects) > 5:
-                    summary_md += "\n..."
-            summary_md += f"\n**Known Proxy CA Serial Numbers:** {len(current_serials)} configured  "
-            if current_serials:
-                summary_md += "\n" + "\n".join([f"- `{sn}`" for sn in current_serials[:5]])
-                if len(current_serials) > 5:
-                    summary_md += "\n..."
+**Proxy Detection Enabled:** {proxy_enabled}
+**Known Proxy CA Fingerprints:** {len(current_fingerprints)} configured  
+**Known Proxy CA Subjects:** {len(current_subjects)} configured  
+**Known Proxy CA Serial Numbers:** {len(current_serials)} configured  
+"""
             st.info(summary_md)
         except Exception as e:
-            st.warning(f"Could not display proxy detection summary: {e}")
+            notify(f"Could not display proxy detection summary: {e}", "warning", page_key=SETTINGS_PAGE_KEY)
 
         st.markdown("""
         Configure detection of proxy/MITM certificates. If enabled, the system will check scanned certificates against known proxy CA fingerprints, subjects, and serial numbers.
@@ -645,9 +621,193 @@ def render_settings_view(engine) -> None:
             )
             notify("Proxy detection settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
 
-    # Backup & Restore Tab
+    # Cache Management Tab
     with tabs[6]:
+        render_cache_management_section(engine, settings)
+
+    # Backup & Restore Tab
+    with tabs[7]:
         render_backup_restore_section(engine, settings)
+
+def render_cache_management_section(engine, settings):
+    """Render the cache management section."""
+    st.subheader("Database Cache Management")
+    
+    # Check if cache is enabled
+    if not is_cache_enabled():
+        notify("⚠️ Database caching is not enabled", "warning", page_key=SETTINGS_PAGE_KEY)
+        notify(
+            """
+Caching is only enabled when:
+- The database path is a network (UNC) path
+- Cache initialization was successful
+
+To enable caching, ensure your database is located on a network share.
+            """,
+            "info",
+            page_key=SETTINGS_PAGE_KEY
+        )
+        return
+    
+    # Get cache manager
+    cache_manager = get_cache_manager()
+    if not cache_manager:
+        notify("❌ Cache manager not available", "error", page_key=SETTINGS_PAGE_KEY)
+        return
+    
+    # Cache status overview
+    st.markdown("### 📊 Cache Status")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            label="Sync Status",
+            value=cache_manager.sync_status.value.upper(),
+            delta=None
+        )
+    
+    with col2:
+        st.metric(
+            label="Pending Writes",
+            value=len(cache_manager.pending_writes),
+            delta=None
+        )
+    
+    with col3:
+        if cache_manager.last_sync:
+            st.metric(
+                label="Last Sync",
+                value=cache_manager.last_sync.strftime("%H:%M:%S"),
+                delta=None
+            )
+        else:
+            st.metric(
+                label="Last Sync",
+                value="Never",
+                delta=None
+            )
+    
+    with col4:
+        st.metric(
+            label="Sync Interval",
+            value=f"{cache_manager.sync_interval}s",
+            delta=None
+        )
+    
+    st.markdown("---")
+    
+    # Network status
+    st.markdown("### 🌐 Network Status")
+    
+    network_available = cache_manager._is_network_available()
+    if network_available:
+        notify("✅ Network connection available", "success", page_key=SETTINGS_PAGE_KEY)
+    else:
+        notify("❌ Network connection unavailable - operating in offline mode", "error", page_key=SETTINGS_PAGE_KEY)
+    
+    st.markdown("---")
+    
+    # Manual sync controls
+    st.markdown("### 🔄 Manual Sync")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🔄 Force Sync Now", type="primary"):
+            with st.spinner("Syncing..."):
+                result = force_sync()
+                if result:
+                    if result.status.value == "success":
+                        notify(f"Sync completed successfully! {result.records_synced} records synced.", 
+                              "success", page_key=SETTINGS_PAGE_KEY)
+                    else:
+                        notify(f"Sync failed: {result.errors[0] if result.errors else 'Unknown error'}", 
+                              "error", page_key=SETTINGS_PAGE_KEY)
+    
+    with col2:
+        if st.button("🗑️ Clear Cache"):
+            if st.checkbox("I understand this will clear all local cached data"):
+                with st.spinner("Clearing cache..."):
+                    cache_manager.clear_cache()
+                    notify("Cache cleared successfully!", "success", page_key=SETTINGS_PAGE_KEY)
+    
+    st.markdown("---")
+    
+    # Cache configuration
+    st.markdown("### ⚙️ Cache Configuration")
+    
+    # Display current settings
+    st.write("**Current Settings:**")
+    st.write(f"- **Local Cache Path:** `{cache_manager.local_db_path}`")
+    st.write(f"- **Remote Database Path:** `{cache_manager.remote_db_path}`")
+    st.write(f"- **Sync Interval:** {cache_manager.sync_interval} seconds")
+    
+    # Sync interval adjustment
+    st.write("**Adjust Sync Interval:**")
+    new_interval = st.slider(
+        "Sync Interval (seconds)",
+        min_value=10,
+        max_value=300,
+        value=cache_manager.sync_interval,
+        step=10,
+        help="How often to sync with the remote database"
+    )
+    
+    if new_interval != cache_manager.sync_interval:
+        if st.button("Update Sync Interval"):
+            cache_manager.sync_interval = new_interval
+            notify(f"Sync interval updated to {new_interval} seconds", "success", page_key=SETTINGS_PAGE_KEY)
+    
+    st.markdown("---")
+    
+    # Recent sync history
+    st.markdown("### 📋 Recent Sync History")
+    
+    if cache_manager.sync_results:
+        # Create DataFrame for sync results
+        import pandas as pd
+        sync_data = []
+        for result in cache_manager.sync_results[-10:]:  # Last 10 results
+            sync_data.append({
+                'Timestamp': result.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                'Status': result.status.value.upper(),
+                'Records Synced': result.records_synced,
+                'Conflicts Resolved': result.conflicts_resolved,
+                'Duration (s)': f"{result.duration:.2f}",
+                'Errors': '; '.join(result.errors) if result.errors else 'None'
+            })
+        
+        df = pd.DataFrame(sync_data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        notify("No sync history available", "info", page_key=SETTINGS_PAGE_KEY)
+    
+    st.markdown("---")
+    
+    # Cache statistics
+    st.markdown("### 📈 Cache Statistics")
+    
+    # Get sync status details
+    status_details = get_sync_status()
+    if status_details:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Sync Performance:**")
+            if status_details.get('recent_results'):
+                recent_results = status_details['recent_results']
+                if recent_results:
+                    avg_duration = sum(r.get('duration', 0) for r in recent_results) / len(recent_results)
+                    st.write(f"- Average sync duration: {avg_duration:.2f} seconds")
+                    
+                    successful_syncs = sum(1 for r in recent_results if r.get('status') == 'success')
+                    st.write(f"- Success rate: {successful_syncs}/{len(recent_results)} ({successful_syncs/len(recent_results)*100:.1f}%)")
+        
+        with col2:
+            st.write("**Network Status:**")
+            st.write(f"- Network available: {'Yes' if status_details.get('network_available') else 'No'}")
+            st.write(f"- Pending writes: {status_details.get('pending_writes', 0)}")
 
 def render_backup_restore_section(engine, settings):
     st.subheader("Backup and Restore")

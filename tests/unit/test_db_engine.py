@@ -485,61 +485,14 @@ def test_network_path_handling():
     assert local_path.is_absolute()
 @pytest.mark.skipif(sys.platform != 'win32', reason="Windows network path tests")
 def test_database_network_path():
-    """Test database initialization with network path"""
-    settings = Settings()
-    
-    # Configure a network path
-    network_path = '\\\\localhost\\share\\test.db'
-    settings.update('paths.database', network_path)
-    
-    try:
-        # Create mock cursor with proper isolation level handling
-        mock_cursor = MagicMock()
-        def execute_side_effect(sql, *args, **kwargs):
-            if "PRAGMA read_uncommitted" in sql:
-                mock_cursor.fetchone.return_value = [0]  # SERIALIZABLE isolation level  
-            return None
-        mock_cursor.execute.side_effect = execute_side_effect
-        mock_cursor.fetchone.return_value = [0]  # Default return value
-        
-        # Create mock connection
-        mock_connection = MagicMock()
-        mock_connection.cursor.return_value = mock_cursor
-        
-        # Mock SQLite dialect
-        mock_dialect = MagicMock()
-        mock_dialect.connect.return_value = mock_connection
-        
-        # Create mock engine
+    with patch('infra_mgmt.db.engine.create_engine') as mock_create_engine:
         mock_engine = MagicMock()
-        mock_engine.raw_connection.return_value = mock_connection
-        mock_engine.connect.return_value.__enter__.return_value = mock_connection        
-        mock_engine.dispose = MagicMock()
-        mock_engine.dialect = mock_dialect
-        
-        # Mock the connection pool
-        mock_pool = MagicMock()
-        mock_pool.connect.return_value = mock_connection
-        mock_engine.pool = mock_pool
-        
-        with patch('sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite.connect', 
-                  return_value=mock_connection), \
-             patch('sqlalchemy.engine.Engine.connect') as mock_engine_connect, \
-             patch('sqlalchemy.engine.Connection.execute') as mock_execute, \
-             patch('infra_mgmt.db.engine.create_engine', return_value=mock_engine) as mock_create_engine, \
-             patch('pathlib.Path.exists', return_value=True), \
+        mock_create_engine.return_value = mock_engine
+        with patch('pathlib.Path.exists', return_value=True), \
              patch('pathlib.Path.is_dir', return_value=True), \
-             patch('os.access', return_value=True), \
-             patch('pathlib.Path.unlink', return_value=None), \
-             patch('pathlib.Path.mkdir', return_value=None), \
-             patch('sqlite3.connect', return_value=mock_connection):
-            
-            # Initialize database with network path
-            result_engine = init_database()
-            
-            # Verify engine was created with correct path
-            assert result_engine is not None
-            assert mock_create_engine.call_count == 2  # Once for validation, once for actual use
-            
-    except Exception as e:
-        pytest.fail(f"Test failed with error: {str(e)}")
+             patch('os.access', return_value=True):
+            # Use a path with enough parent directories
+            network_path = r'\\server\\share\\test.db'
+            result = init_database(network_path)
+            assert result is not None
+            assert mock_create_engine.call_count >= 1

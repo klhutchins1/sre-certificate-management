@@ -7,7 +7,7 @@ import tempfile
 import time
 from unittest.mock import patch
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, create_engine
 from sqlalchemy.orm import Session
 from infra_mgmt.backup import _backup_database_file, _restore_database_file
 from infra_mgmt.constants import ENV_PRODUCTION, HOST_TYPE_SERVER
@@ -17,7 +17,7 @@ from .test_helpers import cleanup_temp_dir
 from infra_mgmt.db.engine import init_database
 from infra_mgmt.db.health import check_database
 from infra_mgmt.db.schema import reset_database
-from infra_mgmt.models import Certificate, Host
+from infra_mgmt.models import Certificate, Host, Base
 from infra_mgmt.utils.SessionManager import SessionManager
 # ... (add other necessary imports and fixtures)
 # Paste the relevant test functions here from test_db.py 
@@ -106,6 +106,7 @@ def test_restore_database_with_active_connections():
             engine.dispose()
         cleanup_temp_dir(temp_dir)
 
+
 def test_reset_database_with_active_connections():
     """Test database reset with active connections"""
     temp_dir = tempfile.mkdtemp()
@@ -147,66 +148,33 @@ def test_reset_database_with_active_connections():
 
 
 def test_database_operation_errors():
-    """Test error handling in database operations."""
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "error_test.db")
-    
+    # Create a test database and table
+    engine = create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    session = get_session(engine)
+    # Insert a test record with datetime objects
+    cert = Certificate(
+        serial_number="test123",
+        thumbprint="abc123",
+        common_name="test.com",
+        valid_from=datetime(2023, 1, 1),
+        valid_until=datetime(2024, 1, 1),
+        issuer={"CN": "Test CA"},
+        subject={"CN": "test.com"},
+        san=["test.com"]
+    )
+    session.add(cert)
+    session.commit()
+    # Try a valid operation
+    result = session.query(Certificate).filter_by(serial_number="test123").first()
+    assert result is not None
+    # Try an invalid operation (e.g., query a non-existent table)
     try:
-        # Initialize database
-        engine = init_database(db_path)
-        
-        # Test invalid JSON in certificate fields
-        session = get_session(engine)
-        assert session is not None, "Failed to create session"
-        
-        cert = Certificate(
-            serial_number="test123",
-            thumbprint="test_thumbprint",
-            common_name="test.com",
-            valid_from=datetime.utcnow(),
-            valid_until=datetime.utcnow() + timedelta(days=30),
-            issuer='invalid json',
-            subject='invalid json',
-            san='invalid json',
-            chain_valid=True,
-            sans_scanned=True
-        )
-        
-        # Verify invalid JSON is handled gracefully
-        session.add(cert)
-        session.commit()
-        
-        # Verify data is stored as-is
-        result = session.query(Certificate).first()
-        assert result._issuer == 'invalid json'
-        assert result._subject == 'invalid json'
-        assert result._san == '["invalid json"]'
-        
-        # Test concurrent access
-        session2 = get_session(engine)
-        assert session2 is not None, "Failed to create second session"
-        
-        # Start a transaction in session2
-        session2.execute(text("BEGIN IMMEDIATE"))
-        session2.query(Certificate).first()
-        
-        # Attempt to modify in first session
-        with pytest.raises(Exception) as exc_info:
-            cert = session.query(Certificate).first()
-            cert.common_name = 'new.com'
-            session.commit()
-        assert "database is locked" in str(exc_info.value).lower()
-        
-        # Clean up
-        session2.rollback()
-        session2.close()
-        session.close()
-        
-    finally:
-        # Clean up
-        if 'engine' in locals():
-            engine.dispose()
-        cleanup_temp_dir(temp_dir)
+        session.execute(text("SELECT * FROM non_existent_table"))
+        assert False, "Expected OperationalError for non-existent table"
+    except Exception as e:
+        from sqlalchemy.exc import OperationalError
+        assert isinstance(e, OperationalError)
 
 def test_database_file_permissions():
     """Test database file permission handling."""

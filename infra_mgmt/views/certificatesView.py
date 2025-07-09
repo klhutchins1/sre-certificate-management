@@ -315,7 +315,7 @@ def render_certificate_overview(cert: Certificate, session) -> None:
     
     # Proxy/MITM indicator
     if getattr(cert, 'proxied', False):
-        st.warning(f"⚠️ This certificate is flagged as a PROXY/MITM certificate!\n\nReason: {cert.proxy_info or 'Matched proxy CA'}")
+        notify(f"⚠️ This certificate is flagged as a PROXY/MITM certificate!\n\nReason: {cert.proxy_info or 'Matched proxy CA'}", "warning", page_key=CERTIFICATES_PAGE_KEY)
     
     # Create columns for layout
     col1, col2 = st.columns(2)
@@ -718,7 +718,7 @@ def render_certificate_scans(cert):
     - Historical scan data in tabular format
     """
     if not cert.scans:
-        st.warning("No scan history found for this certificate.")
+        notify("No scan history found for this certificate.", "warning", page_key=CERTIFICATES_PAGE_KEY)
         return
 
     scan_data = []
@@ -733,7 +733,7 @@ def render_certificate_scans(cert):
         df = pd.DataFrame(scan_data)
         st.dataframe(df)
     else:
-        st.warning("No scan history found for this certificate.")
+        notify("No scan history found for this certificate.", "warning", page_key=CERTIFICATES_PAGE_KEY)
 
 def execute_scan(scan_targets, session):
     """Execute certificate scanning for the given targets."""

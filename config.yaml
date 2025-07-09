@@ -9,6 +9,11 @@ alerts:
   failed_scans:
     consecutive_failures: 3
   persistence_file: data/alerts.json
+database:
+  cache_directory: ~/.ims_cache
+  enable_cache: true
+  max_pending_writes: 1000
+  sync_interval: 30
 exports:
   csv:
     delimiter: ','

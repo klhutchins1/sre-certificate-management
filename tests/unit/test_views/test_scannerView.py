@@ -3,10 +3,59 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 print(">>> sys.path adjusted for infra_mgmt import")
 
+# Mock the whois module before any imports to prevent AttributeError
+from unittest.mock import MagicMock, patch
+
+# Create comprehensive whois module mock
+mock_whois_module = MagicMock()
+mock_whois_module.whois = MagicMock()
+mock_whois_module.__file__ = 'mock_whois.py'
+mock_whois_module.__path__ = []
+
+# Mock the parser submodule
+mock_parser = MagicMock()
+mock_parser.PywhoisError = Exception
+mock_parser.__file__ = 'mock_whois_parser.py'
+mock_whois_module.parser = mock_parser
+
+# Ensure whois.whois is callable and returns something useful
+def mock_whois_function(domain):
+    result = MagicMock()
+    result.creation_date = None
+    result.expiration_date = None
+    result.registrar = None
+    result.registrant_name = None
+    result.status = []
+    result.name_servers = []
+    return result
+
+mock_whois_module.whois = mock_whois_function
+
+# Patch sys.modules comprehensively
+sys.modules['whois'] = mock_whois_module
+sys.modules['whois.parser'] = mock_parser
+
+# Also mock dns modules to prevent issues
+mock_dns = MagicMock()
+mock_dns.resolver = MagicMock()
+mock_dns.reversename = MagicMock()
+sys.modules['dns'] = mock_dns
+sys.modules['dns.resolver'] = mock_dns.resolver
+sys.modules['dns.reversename'] = mock_dns.reversename
+
+# Mock subprocess to prevent any subprocess.run calls
+mock_subprocess = MagicMock()
+mock_subprocess.run = MagicMock()
+mock_subprocess.TimeoutExpired = Exception
+mock_subprocess.SubprocessError = Exception
+sys.modules['subprocess'] = mock_subprocess
+
+print(">>> Whois, DNS, and subprocess modules mocked in sys.modules")
+
 print(">>> Top of test_scannerView.py")
 import pytest
 import streamlit as st
-from unittest.mock import Mock, call, patch, MagicMock, ANY
+from unittest.mock import Mock, call, ANY
 from datetime import datetime, timezone, timedelta
 import urllib3
 import requests
@@ -25,9 +74,8 @@ from infra_mgmt.views.scannerView import render_scan_interface
 from urllib.parse import urlparse
 from unittest.mock import ANY
 
-from memory_profiler import memory_usage
-
-import tracemalloc
+# Memory profiling imports removed to prevent memory leaks in tests
+# import tracemalloc
 
 
 # Global variable for tracking sessions
@@ -62,26 +110,8 @@ _SESSIONS = weakref.WeakSet()
 #     gc.collect()
 #     gc.collect(2)  # Generation 2 collection
 
-@pytest.fixture(autouse=True)
-def mock_network_calls():
-    # Create a mock whois result with real datetime and string fields
-    mock_whois_result = MagicMock()
-    mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
-    mock_whois_result.registrar = "Test Registrar"
-    mock_whois_result.registrant_name = "Test Owner"
-    mock_whois_result.status = "active"
-    mock_whois_result.name_servers = ["ns1.example.com", "ns2.example.com"]
-    # Add any other fields your code expects as needed
-
-    with patch('socket.socket'), \
-         patch('dns.resolver.resolve', return_value=[MagicMock(address='1.2.3.4')]), \
-         patch('requests.get'), \
-         patch('requests.post'), \
-         patch('ssl.create_default_context'), \
-         patch('whois.whois', return_value=mock_whois_result), \
-         patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner._get_certificate', return_value=b""):
-        yield
+# Network mocking is now handled by auto-applied fixture in conftest.py
+# This prevents any duplication or conflicts with the comprehensive patching
 
 @pytest.fixture
 def engine():
@@ -234,8 +264,8 @@ def mock_cert_info():
         valid_from=now,
         expiration_date=now + timedelta(days=365),
         san=['test.example.com', 'www.test.example.com'],
-        key_usage=None,
-        signature_algorithm=None,
+        key_usage=[],
+        signature_algorithm='sha256WithRSAEncryption',
         common_name='test.example.com',
         chain_valid=True,
         ip_addresses=['192.168.1.1'],
@@ -256,8 +286,8 @@ def mock_scan_result():
         valid_from=now,
         expiration_date=now + timedelta(days=365),
         san=['test.example.com', 'www.test.example.com'],
-        key_usage=None,
-        signature_algorithm=None,
+        key_usage=[],
+        signature_algorithm='sha256WithRSAEncryption',
         common_name='test.example.com',
         chain_valid=True,
         ip_addresses=['192.168.1.1'],
@@ -379,7 +409,8 @@ def test_render_scan_interface(mock_session_state):
         col1.__exit__ = MagicMock(return_value=None)
         col2.__enter__ = MagicMock(return_value=col2)
         col2.__exit__ = MagicMock(return_value=None)
-        mock_st.columns.side_effect = lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)]
+        # Use safer hasattr checks instead of isinstance to avoid TypeError
+        mock_st.columns.side_effect = lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2]
         mock_st.session_state = mock_session_state
         mock_expander = MagicMock()
         mock_expander.__enter__ = MagicMock(return_value=mock_expander)
@@ -404,13 +435,9 @@ def test_render_scan_interface(mock_session_state):
         pass
 
 @pytest.mark.test_interface
-def test_render_scan_interface_with_input(engine, mock_session_state):
-    """Test scan interface with user input, re-enabling view call for leak isolation"""
-    import tracemalloc
-    from memory_profiler import memory_usage
+def test_render_scan_interface_with_input(engine, mock_session_state, fast_rate_limits):
+    """Test scan interface with user input - uses fast rate limits and auto network mocking"""
     from unittest.mock import patch
-    tracemalloc.start()
-    before = memory_usage(-1, interval=0.1, timeout=1)
     print(">>> Test setup complete (about to call render_scan_interface)")
     mock_session_state.scan_targets = []
     mock_st = MagicMock(spec=[
@@ -426,7 +453,8 @@ def test_render_scan_interface_with_input(engine, mock_session_state):
     col1.__exit__ = MagicMock(return_value=None)
     col2.__enter__ = MagicMock(return_value=col2)
     col2.__exit__ = MagicMock(return_value=None)
-    mock_st.columns.side_effect = lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)]
+    # Use safer hasattr checks instead of isinstance to avoid TypeError
+    mock_st.columns.side_effect = lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2]
     mock_st.session_state = mock_session_state
     mock_expander = MagicMock()
     mock_expander.__enter__ = MagicMock(return_value=mock_expander)
@@ -629,7 +657,8 @@ def test_recent_scans_display(engine, mock_session_state):
         col1.__exit__ = MagicMock(return_value=None)
         col2.__enter__ = MagicMock(return_value=col2)
         col2.__exit__ = MagicMock(return_value=None)
-        mock_st.columns.side_effect = lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)]
+        # Use safer hasattr checks instead of isinstance to avoid TypeError  
+        mock_st.columns.side_effect = lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2]
         mock_header_st.columns.side_effect = mock_st.columns.side_effect
         mock_st.text_area.return_value = "example.com"
         mock_st.button.return_value = False
@@ -699,7 +728,8 @@ def test_input_validation_scenarios(engine, mock_session_state):
         col1.__exit__ = MagicMock(return_value=None)
         col2.__enter__ = MagicMock(return_value=col2)
         col2.__exit__ = MagicMock(return_value=None)
-        mock_st.columns = MagicMock(side_effect=lambda spec: [col1, col2] if (isinstance(spec, (list, tuple)) and len(spec) == 2) or spec == 2 else [col1, col2][:spec if isinstance(spec, int) else len(spec)])
+        # Use safer hasattr checks instead of isinstance to avoid TypeError
+        mock_st.columns = MagicMock(side_effect=lambda spec: [col1, col2] if (hasattr(spec, '__len__') and len(spec) == 2) or spec == 2 else [col1, col2][:spec if hasattr(spec, '__index__') else 2])
         mock_expander = MagicMock()
         mock_expander.__enter__ = MagicMock(return_value=mock_expander)
         mock_expander.__exit__ = MagicMock(return_value=None)

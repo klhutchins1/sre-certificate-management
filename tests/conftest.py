@@ -18,9 +18,9 @@ _network_patches = []
 
 @pytest.fixture(autouse=True)
 def prevent_network_calls_for_scanner_tests(request):
-    """Auto-applied fixture that prevents network calls for scanner-related tests."""
-    # Only apply to scanner tests
-    if 'scannerView' in request.node.nodeid or 'scanner' in request.node.nodeid.lower():
+    """Auto-applied fixture that prevents network calls for scanner VIEW tests only."""
+    # Only apply to scanner VIEW tests, not unit tests of scanner modules
+    if 'scannerView' in request.node.nodeid or 'test_views' in request.node.nodeid:
         from datetime import datetime, timezone
         
         # Create comprehensive mock responses
@@ -99,10 +99,8 @@ def prevent_network_calls_for_scanner_tests(request):
         except (ImportError, AttributeError):
             pass
             
-        try:
-            _network_patches.append(patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner.scan_certificate', return_value=mock_cert_result))
-        except (ImportError, AttributeError):
-            pass
+        # Note: Not patching CertificateScanner.scan_certificate to allow unit tests to work
+        # The certificate scanner unit tests should control their own mocking
 
         # Start all patches
         for p in _network_patches:

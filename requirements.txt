@@ -1,3 +1,7 @@
+# Infrastructure Management Application - Complete Requirements
+# Single comprehensive requirements file with all dependencies
+
+# Core Application Dependencies
 alembic==1.14.1
 altair==4.2.2
 asttokens==3.0.0
@@ -128,3 +132,13 @@ whois==0.9.27
 yarg==0.1.9
 zipp==3.20.2
 zopfli==0.2.3.post1
+
+# Testing and Development Dependencies
+memory_profiler==0.61.0
+
+# Package Summary:
+# - Total packages: 132
+# - Core functionality: altair (required), matplotlib (charts), weasyprint (PDF)
+# - Testing: memory_profiler, pytest suite
+# - Whois: both python-whois and whois for compatibility
+# - Streamlit: full UI framework with aggrid

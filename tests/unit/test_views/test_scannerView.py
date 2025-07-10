@@ -459,8 +459,8 @@ def test_render_scan_interface(mock_session_state):
         pass
 
 @pytest.mark.test_interface
-def test_render_scan_interface_with_input(engine, mock_session_state, fast_rate_limits):
-    """Test scan interface with user input - now with comprehensive network mocking and fast rate limits for testing"""
+def test_render_scan_interface_with_input(engine, mock_session_state, fast_rate_limits, prevent_network_calls):
+    """Test scan interface with user input - uses fast rate limits and prevents network calls"""
     import tracemalloc
     from memory_profiler import memory_usage
     from unittest.mock import patch
@@ -718,7 +718,7 @@ def test_recent_scans_display(engine, mock_session_state):
             render_scan_interface(engine)
 
 @pytest.mark.test_input_validation
-def test_input_validation_scenarios(engine, mock_session_state):
+def test_input_validation_scenarios(engine, mock_session_state, prevent_network_calls):
     """Test various input validation scenarios"""
     mock_session_state.scan_targets = []
     test_cases = [

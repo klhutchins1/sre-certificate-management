@@ -74,9 +74,8 @@ from infra_mgmt.views.scannerView import render_scan_interface
 from urllib.parse import urlparse
 from unittest.mock import ANY
 
-from memory_profiler import memory_usage
-
-import tracemalloc
+# Memory profiling imports removed to prevent memory leaks in tests
+# import tracemalloc
 
 
 # Global variable for tracking sessions
@@ -111,31 +110,8 @@ _SESSIONS = weakref.WeakSet()
 #     gc.collect()
 #     gc.collect(2)  # Generation 2 collection
 
-@pytest.fixture(autouse=True)
-def mock_network_calls():
-    # Create a mock whois result with real datetime and string fields
-    mock_whois_result = MagicMock()
-    mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
-    mock_whois_result.registrar = "Test Registrar"
-    mock_whois_result.registrant_name = "Test Owner"
-    mock_whois_result.status = "active"
-    mock_whois_result.name_servers = ["ns1.example.com", "ns2.example.com"]
-
-    # Update the global mock whois function to return our test result
-    def mock_whois_function(domain):
-        return mock_whois_result
-    
-    # Update the global mocked whois module
-    setattr(sys.modules['whois'], 'whois', mock_whois_function)
-
-    with patch('socket.socket'), \
-         patch('dns.resolver.resolve', return_value=[MagicMock(address='1.2.3.4')]), \
-         patch('requests.get'), \
-         patch('requests.post'), \
-         patch('ssl.create_default_context'), \
-         patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner._get_certificate', return_value=b""):
-        yield
+# Network mocking is now handled by auto-applied fixture in conftest.py
+# This prevents any duplication or conflicts with the comprehensive patching
 
 @pytest.fixture
 def engine():
@@ -459,13 +435,9 @@ def test_render_scan_interface(mock_session_state):
         pass
 
 @pytest.mark.test_interface
-def test_render_scan_interface_with_input(engine, mock_session_state, fast_rate_limits, prevent_network_calls):
-    """Test scan interface with user input - uses fast rate limits and prevents network calls"""
-    import tracemalloc
-    from memory_profiler import memory_usage
+def test_render_scan_interface_with_input(engine, mock_session_state, fast_rate_limits):
+    """Test scan interface with user input - uses fast rate limits and auto network mocking"""
     from unittest.mock import patch
-    tracemalloc.start()
-    before = memory_usage(-1, interval=0.1, timeout=1)
     print(">>> Test setup complete (about to call render_scan_interface)")
     mock_session_state.scan_targets = []
     mock_st = MagicMock(spec=[
@@ -718,7 +690,7 @@ def test_recent_scans_display(engine, mock_session_state):
             render_scan_interface(engine)
 
 @pytest.mark.test_input_validation
-def test_input_validation_scenarios(engine, mock_session_state, prevent_network_calls):
+def test_input_validation_scenarios(engine, mock_session_state):
     """Test various input validation scenarios"""
     mock_session_state.scan_targets = []
     test_cases = [

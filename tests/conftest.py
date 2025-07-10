@@ -1,17 +1,123 @@
 """
-Comprehensive test configuration with network mocking.
-Ensures no real external sites are hit during testing.
+Test configuration with comprehensive network mocking.
+Prevents all real external network calls during testing.
 """
 import os
 import sys
 import pytest
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pandas as pd
 
 # Add the project root directory to the Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
+
+# Global patches to prevent network calls during scanner tests
+_network_patches = []
+
+@pytest.fixture(autouse=True)
+def prevent_network_calls_for_scanner_tests(request):
+    """Auto-applied fixture that prevents network calls for scanner-related tests."""
+    # Only apply to scanner tests
+    if 'scannerView' in request.node.nodeid or 'scanner' in request.node.nodeid.lower():
+        from datetime import datetime, timezone
+        
+        # Create comprehensive mock responses
+        mock_whois_result = MagicMock()
+        mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        mock_whois_result.registrar = "Test Registrar"
+        mock_whois_result.registrant_name = "Test Owner"
+        mock_whois_result.status = "active"
+        mock_whois_result.name_servers = ["ns1.example.com", "ns2.example.com"]
+
+        mock_dns_answer = MagicMock()
+        mock_dns_answer.address = '1.2.3.4'
+        mock_dns_answer.ttl = 300
+
+        mock_http_response = MagicMock()
+        mock_http_response.status_code = 200
+        mock_http_response.json.return_value = []
+        mock_http_response.text = "Mock response"
+
+        mock_subprocess_result = MagicMock()
+        mock_subprocess_result.returncode = 0
+        mock_subprocess_result.stdout = "Mock WHOIS output"
+        
+        # Mock certificate scan result
+        mock_cert_result = MagicMock()
+        mock_cert_result.has_certificate = False
+        mock_cert_result.error = "Mocked - no real network access"
+
+        # Comprehensive patching at the lowest level
+        global _network_patches
+        _network_patches = [
+            # Socket level
+            patch('socket.socket'),
+            patch('socket.create_connection'),
+            patch('socket.getaddrinfo', return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))]),
+            
+            # DNS level
+            patch('dns.resolver.resolve', return_value=[mock_dns_answer]),
+            patch('dns.resolver.Resolver'),
+            
+            # HTTP level
+            patch('requests.get', return_value=mock_http_response),
+            patch('requests.post', return_value=mock_http_response),
+            
+            # Subprocess (for command-line tools)
+            patch('subprocess.run', return_value=mock_subprocess_result),
+            patch('subprocess.Popen'),
+            
+            # SSL/TLS
+            patch('ssl.create_default_context'),
+            
+            # Time delays
+            patch('time.sleep'),
+        ]
+        
+        # Try to patch whois if available
+        try:
+            _network_patches.append(patch('whois.whois', return_value=mock_whois_result))
+        except ImportError:
+            pass
+        
+        # Try to patch specific application modules
+        try:
+            _network_patches.append(patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=[mock_dns_answer]))
+        except (ImportError, AttributeError):
+            pass
+            
+        try:
+            _network_patches.append(patch('infra_mgmt.scanner.domain_scanner.whois.whois', return_value=mock_whois_result))
+        except (ImportError, AttributeError):
+            pass
+            
+        try:
+            _network_patches.append(patch('infra_mgmt.scanner.subdomain_scanner.requests.get', return_value=mock_http_response))
+        except (ImportError, AttributeError):
+            pass
+            
+        try:
+            _network_patches.append(patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner.scan_certificate', return_value=mock_cert_result))
+        except (ImportError, AttributeError):
+            pass
+
+        # Start all patches
+        for p in _network_patches:
+            p.start()
+    
+    yield
+    
+    # Stop all patches
+    if _network_patches:
+        for p in _network_patches:
+            try:
+                p.stop()
+            except:
+                pass
+        _network_patches.clear()
 
 # Create test data directory if it doesn't exist
 @pytest.fixture(autouse=True)
@@ -116,58 +222,6 @@ def pytest_configure(config):
     # Suppress specific Streamlit warnings
     logging.getLogger('streamlit').setLevel(logging.ERROR)
     logging.getLogger('streamlit.runtime').setLevel(logging.ERROR) 
-
-@pytest.fixture
-def prevent_network_calls():
-    """Optional fixture for tests that need to prevent network calls."""
-    from unittest.mock import patch
-    from datetime import datetime, timezone
-    
-    # Create mock responses
-    mock_whois_result = MagicMock()
-    mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
-    mock_whois_result.registrar = "Test Registrar"
-    mock_whois_result.registrant_name = "Test Owner"
-    mock_whois_result.status = "active"
-    mock_whois_result.name_servers = ["ns1.example.com", "ns2.example.com"]
-
-    mock_dns_answer = MagicMock()
-    mock_dns_answer.address = '1.2.3.4'
-    mock_dns_answer.ttl = 300
-
-    mock_http_response = MagicMock()
-    mock_http_response.status_code = 200
-    mock_http_response.json.return_value = []
-    mock_http_response.text = "Mock response"
-
-    # Only patch the specific modules that cause network calls
-    patches = []
-    
-    try:
-        patches.append(patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=[mock_dns_answer]))
-    except ImportError:
-        pass
-        
-    try:
-        patches.append(patch('infra_mgmt.scanner.domain_scanner.whois.whois', return_value=mock_whois_result))
-    except ImportError:
-        pass
-        
-    try:
-        patches.append(patch('infra_mgmt.scanner.subdomain_scanner.requests.get', return_value=mock_http_response))
-    except ImportError:
-        pass
-    
-    # Start all patches
-    for p in patches:
-        p.start()
-    
-    yield
-    
-    # Stop all patches
-    for p in patches:
-        p.stop()
 
 @pytest.fixture
 def fast_rate_limits():

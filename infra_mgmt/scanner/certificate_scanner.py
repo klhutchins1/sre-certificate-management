@@ -98,7 +98,9 @@ class CertificateInfo:
                  ip_addresses: List[str] = None,
                  validation_errors: List[str] = None,
                  platform: str = None,
-                 headers: Dict[str, str] = None):
+                 headers: Dict[str, str] = None,
+                 proxied: bool = False,
+                 proxy_info: Optional[str] = None):
         """
         Initialize certificate information.
         
@@ -119,6 +121,8 @@ class CertificateInfo:
         self.validation_errors = validation_errors or []
         self.platform = platform
         self.headers = headers or {}
+        self.proxied = proxied
+        self.proxy_info = proxy_info
         
         # Validate the certificate
         self._validate()
@@ -208,7 +212,9 @@ class CertificateInfo:
             'is_valid': self.is_valid,
             'validation_status': self.validation_status,
             'platform': self.platform,
-            'headers': self.headers
+            'headers': self.headers,
+            'proxied': self.proxied,
+            'proxy_info': self.proxy_info
         }
 
 class ScanResult:
@@ -502,10 +508,57 @@ class CertificateScanner:
         if cert_binary:
             cert_info = self._process_certificate(cert_binary, address, port)
             if cert_info:
-                result = ScanResult(certificate_info=cert_info)
+                # Enhanced proxy detection and validation
+                from infra_mgmt.utils.proxy_detection import (
+                    detect_proxy_certificate, 
+                    validate_certificate_authenticity,
+                    detect_certificate_hostname_mismatch
+                )
+                
+                warnings = []
+                
+                # Basic proxy detection
+                is_proxy, proxy_reason = detect_proxy_certificate(cert_info, settings)
+                if is_proxy:
+                    cert_info.proxied = True
+                    cert_info.proxy_info = proxy_reason
+                    self.logger.warning(f"Proxy certificate detected for {address}:{port}: {proxy_reason}")
+                
+                # Enhanced hostname mismatch detection
+                is_mismatch, mismatch_reason = detect_certificate_hostname_mismatch(cert_info, address, settings)
+                if is_mismatch:
+                    if not cert_info.proxied:
+                        cert_info.proxied = True
+                        cert_info.proxy_info = mismatch_reason
+                    else:
+                        cert_info.proxy_info += f"; {mismatch_reason}"
+                    warnings.append(mismatch_reason)
+                    self.logger.warning(f"Certificate hostname mismatch for {address}:{port}: {mismatch_reason}")
+                
+                # Comprehensive authenticity validation
+                if settings.get("proxy_detection.enable_authenticity_validation", True):
+                    is_authentic, auth_warnings = validate_certificate_authenticity(cert_info, address, settings)
+                    if not is_authentic:
+                        warnings.extend(auth_warnings)
+                        if not cert_info.proxied:
+                            cert_info.proxied = True
+                            cert_info.proxy_info = "; ".join(auth_warnings)
+                        self.logger.warning(f"Certificate authenticity issues for {address}:{port}: {'; '.join(auth_warnings)}")
+                
+                # Create result with warnings if any
+                if warnings:
+                    result = ScanResult(certificate_info=cert_info, warnings=warnings)
+                else:
+                    result = ScanResult(certificate_info=cert_info)
+                
                 # Cache the result if possible
                 if self.session_cache and cert_info.serial_number and cert_info.thumbprint:
                     self.session_cache.set_certificate(address, port, cert_info.serial_number, cert_info.thumbprint, result)
+                
+                # Log proxy detection results
+                if cert_info.proxied:
+                    self.logger.info(f"Certificate for {address}:{port} marked as proxied: {cert_info.proxy_info}")
+                
                 return result
             else:
                 return ScanResult(error="Failed to process certificate.")

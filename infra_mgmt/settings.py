@@ -420,10 +420,20 @@ class Settings:
         
         # Validate key exists in default config structure
         config = DEFAULT_CONFIG
-        for part in key_parts:
-            if part not in config:
+        try:
+            for part in key_parts:
+                if not isinstance(config, dict) or part not in config:
+                    # For timeout settings, allow them even if not in DEFAULT_CONFIG structure
+                    if "timeout" in key:
+                        break
+                    return False
+                config = config[part]
+        except (KeyError, TypeError):
+            # For timeout settings, allow them even if validation fails
+            if "timeout" in key:
+                pass
+            else:
                 return False
-            config = config[part]
 
         # Validate paths
         if key == "paths.database":
@@ -444,6 +454,9 @@ class Settings:
                 return isinstance(value, list) and all(isinstance(d, str) for d in value)
             elif key == "scanning.offline_mode":
                 return isinstance(value, bool)
+            elif "timeout" in key:
+                # Handle both individual timeout settings and nested timeout objects
+                return isinstance(value, (int, float)) and value > 0
                 
         # Validate alert settings
         elif key.startswith("alerts."):

@@ -21,9 +21,11 @@ def prevent_network_calls_for_scanner_tests(request):
     """Auto-applied fixture that prevents network calls for scanner VIEW tests only."""
     # Only apply to scanner VIEW tests, not unit tests of scanner modules
     if 'scannerView' in request.node.nodeid or 'test_views' in request.node.nodeid:
+        print(f"🔒 Applying network mocking to: {request.node.nodeid}")
+        
         from datetime import datetime, timezone
         
-        # Create comprehensive mock responses
+        # Create comprehensive mock responses with proper data types
         mock_whois_result = MagicMock()
         mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
         mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -45,10 +47,21 @@ def prevent_network_calls_for_scanner_tests(request):
         mock_subprocess_result.returncode = 0
         mock_subprocess_result.stdout = "Mock WHOIS output"
         
-        # Mock certificate scan result
+        # Create proper certificate binary data (not MagicMock)
+        mock_cert_binary = b"MOCK_CERTIFICATE_DATA_BYTES"
+        
+        # Mock certificate scan result with proper structure
         mock_cert_result = MagicMock()
-        mock_cert_result.has_certificate = False
-        mock_cert_result.error = "Mocked - no real network access"
+        mock_cert_result.has_certificate = True
+        mock_cert_result.is_valid = True
+        mock_cert_result.error = None
+        mock_cert_result.certificate_info = MagicMock()
+        mock_cert_result.certificate_info.serial_number = "3039"
+        mock_cert_result.certificate_info.common_name = "example.com"
+        mock_cert_result.certificate_info.signature_algorithm = "sha256WithRSAEncryption"
+        mock_cert_result.certificate_info.chain_valid = True
+        mock_cert_result.certificate_info.ip_addresses = ["1.2.3.4"]
+        mock_cert_result.certificate_info.san = ["example.com", "www.example.com"]
 
         # Comprehensive patching at the lowest level
         global _network_patches
@@ -58,9 +71,10 @@ def prevent_network_calls_for_scanner_tests(request):
             patch('socket.create_connection'),
             patch('socket.getaddrinfo', return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))]),
             
-            # DNS level
+            # DNS level - patch ALL dns resolver paths
             patch('dns.resolver.resolve', return_value=[mock_dns_answer]),
             patch('dns.resolver.Resolver'),
+            patch('dns.resolver.query', return_value=[mock_dns_answer]),  # Alternative DNS method
             
             # HTTP level
             patch('requests.get', return_value=mock_http_response),
@@ -75,6 +89,10 @@ def prevent_network_calls_for_scanner_tests(request):
             
             # Time delays
             patch('time.sleep'),
+            
+            # Certificate operations - return proper bytes, not MagicMock
+            patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner._get_certificate', return_value=mock_cert_binary),
+            patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner.scan_certificate', return_value=mock_cert_result),
         ]
         
         # Try to patch whois if available
@@ -83,9 +101,10 @@ def prevent_network_calls_for_scanner_tests(request):
         except ImportError:
             pass
         
-        # Try to patch specific application modules
+        # Try to patch specific application modules for ALL possible DNS paths
         try:
             _network_patches.append(patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=[mock_dns_answer]))
+            _network_patches.append(patch('infra_mgmt.utils.dns_records.dns.resolver.query', return_value=[mock_dns_answer]))
         except (ImportError, AttributeError):
             pass
             
@@ -99,12 +118,20 @@ def prevent_network_calls_for_scanner_tests(request):
         except (ImportError, AttributeError):
             pass
             
-        # Note: Not patching CertificateScanner.scan_certificate to allow unit tests to work
-        # The certificate scanner unit tests should control their own mocking
+        # Patch DNS operations at the scanner level too
+        try:
+            _network_patches.append(patch('infra_mgmt.scanner.domain_scanner.dns.resolver.resolve', return_value=[mock_dns_answer]))
+            _network_patches.append(patch('infra_mgmt.scanner.domain_scanner.dns.resolver.query', return_value=[mock_dns_answer]))
+        except (ImportError, AttributeError):
+            pass
 
         # Start all patches
         for p in _network_patches:
             p.start()
+        
+        print(f"🔒 Applied {len(_network_patches)} network patches")
+    else:
+        print(f"⚪ Skipping network mocking for: {request.node.nodeid}")
     
     yield
     

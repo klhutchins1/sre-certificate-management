@@ -91,9 +91,9 @@ scanning:
     rate_limit: 120
   offline_mode: true
   timeouts:
-    dns: 5.0
-    request: 15
-    socket: 10
+    dns: 2.0
+    request: 2
+    socket: 2
   whois:
     rate_limit: 120
     timeout: 10

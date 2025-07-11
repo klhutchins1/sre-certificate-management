@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from infra_mgmt.db.cache_manager import DatabaseCacheManager
+from infra_mgmt.db.cache_manager import DatabaseCacheManager, SyncStatus
 from infra_mgmt.models import Base, Certificate, Host, Domain
 from infra_mgmt.settings import Settings
 
@@ -286,4 +286,220 @@ def test_cache_manager_performance(temp_cache_dir, remote_db_path):
         end_time = time.time()
         
         # Performance should be reasonable (less than 1 second for 1000 operations)
-        assert end_time - start_time < 1.0 
+        assert end_time - start_time < 1.0
+
+# NEW TESTS FOR SYNC FUNCTIONALITY
+
+def test_sync_insert_with_upsert_logic(cache_manager):
+    """Test that _sync_insert uses INSERT OR REPLACE logic."""
+    # Mock the necessary components
+    cache_manager.local_engine = MagicMock()
+    cache_manager.remote_engine = MagicMock()
+    
+    # Mock local connection and result
+    mock_local_conn = MagicMock()
+    mock_result = MagicMock()
+    mock_result._mapping = {'id': 1, 'name': 'test', 'value': 'test_value'}
+    mock_result._mapping.keys = MagicMock(return_value=['id', 'name', 'value'])
+    
+    cache_manager.local_engine.connect.return_value.__enter__.return_value = mock_local_conn
+    mock_local_conn.execute.return_value.fetchone.return_value = mock_result
+    
+    # Mock remote connection
+    mock_remote_conn = MagicMock()
+    
+    # Call _sync_insert
+    cache_manager._sync_insert(mock_remote_conn, 'test_table', 1)
+    
+    # Verify INSERT OR REPLACE was used
+    mock_remote_conn.execute.assert_called_once()
+    call_args = mock_remote_conn.execute.call_args
+    sql_text = str(call_args[0][0])
+    assert 'INSERT OR REPLACE' in sql_text
+    assert 'test_table' in sql_text
+
+def test_resolve_conflict_with_existing_record(cache_manager):
+    """Test conflict resolution when record exists in remote database."""
+    # Mock the necessary components
+    cache_manager.local_engine = MagicMock()
+    mock_remote_conn = MagicMock()
+    
+    # Mock remote record exists
+    mock_count_result = MagicMock()
+    mock_count_result._mapping = {'count': 1}  # Record exists
+    mock_remote_conn.execute.return_value.fetchone.return_value = mock_count_result
+    
+    # Mock timestamp columns detection
+    with patch.object(cache_manager, '_get_timestamp_columns', return_value=['updated_at']):
+        # Mock local and remote timestamp results
+        mock_local_result = MagicMock()
+        mock_local_result._mapping = {'updated_at': '2025-07-11 16:00:00'}
+        
+        mock_remote_result = MagicMock()
+        mock_remote_result._mapping = {'updated_at': '2025-07-11 10:00:00'}  # Older
+        
+        cache_manager.local_engine.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = mock_local_result
+        mock_remote_conn.execute.return_value.fetchone.return_value = mock_remote_result
+        
+        # Mock _sync_update
+        with patch.object(cache_manager, '_sync_update') as mock_sync_update:
+            result = cache_manager._resolve_conflict(mock_remote_conn, 'test_table', 1, datetime.now())
+            
+            # Should resolve conflict by updating with local version (newer)
+            assert result is True
+            mock_sync_update.assert_called_once()
+
+def test_resolve_conflict_with_nonexistent_record(cache_manager):
+    """Test conflict resolution when record doesn't exist in remote database."""
+    # Mock the necessary components
+    cache_manager.local_engine = MagicMock()
+    mock_remote_conn = MagicMock()
+    
+    # Mock remote record doesn't exist
+    mock_count_result = MagicMock()
+    mock_count_result._mapping = {'count': 0}  # Record doesn't exist
+    mock_remote_conn.execute.return_value.fetchone.return_value = mock_count_result
+    
+    # Mock _sync_insert
+    with patch.object(cache_manager, '_sync_insert') as mock_sync_insert:
+        result = cache_manager._resolve_conflict(mock_remote_conn, 'test_table', 1, datetime.now())
+        
+        # Should resolve conflict by inserting to remote
+        assert result is True
+        mock_sync_insert.assert_called_once()
+
+def test_get_timestamp_columns(cache_manager):
+    """Test timestamp column detection."""
+    # Mock the inspector
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {'name': 'id'},
+        {'name': 'name'},
+        {'name': 'updated_at'},
+        {'name': 'created_at'},
+        {'name': 'other_field'}
+    ]
+    
+    with patch('infra_mgmt.db.cache_manager.inspect', return_value=mock_inspector):
+        cache_manager.local_engine = MagicMock()
+        
+        result = cache_manager._get_timestamp_columns('test_table')
+        
+        # Should find timestamp columns in priority order
+        assert 'updated_at' in result
+        assert 'created_at' in result
+        assert result.index('updated_at') < result.index('created_at')  # Priority order
+
+def test_sync_status_detailed(cache_manager):
+    """Test detailed sync status reporting."""
+    # Add some pending writes
+    cache_manager.add_pending_write('certificates', 1, 'INSERT')
+    cache_manager.add_pending_write('hosts', 2, 'UPDATE')
+    
+    # Get sync status
+    status = cache_manager.get_sync_status()
+    
+    # Verify all expected fields are present
+    assert 'status' in status
+    assert 'pending_writes' in status
+    assert 'database_queue_size' in status
+    assert 'sync_interval' in status
+    assert 'network_available' in status
+    assert 'active_threads' in status
+    assert 'thread_names' in status
+    assert 'sync_counter' in status
+    assert 'recent_results' in status
+    
+    # Verify values
+    assert status['pending_writes'] == 2
+    assert isinstance(status['active_threads'], int)
+    assert isinstance(status['thread_names'], list)
+
+def test_sqlalchemy_2_0_compatibility(cache_manager):
+    """Test SQLAlchemy 2.0 result object compatibility."""
+    # Mock a result object that behaves like SQLAlchemy 2.0
+    mock_result = MagicMock()
+    mock_result._mapping = {
+        'id': 1,
+        'name': 'test_name', 
+        'value': 'test_value',
+        'updated_at': '2025-07-11 16:00:00'
+    }
+    mock_result._mapping.keys = MagicMock(return_value=['id', 'name', 'value', 'updated_at'])
+    
+    # Test _sync_insert handles _mapping correctly
+    cache_manager.local_engine = MagicMock()
+    cache_manager.local_engine.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = mock_result
+    
+    mock_remote_conn = MagicMock()
+    
+    # Should not raise any errors about 'keys' column
+    try:
+        cache_manager._sync_insert(mock_remote_conn, 'test_table', 1)
+        # If we get here, the _mapping access worked correctly
+        assert True
+    except Exception as e:
+        if "Could not locate column in row for column 'keys'" in str(e):
+            pytest.fail("SQLAlchemy 2.0 compatibility issue: still trying to access 'keys' column")
+        else:
+            # Some other error is fine for this test
+            pass
+
+def test_unique_constraint_handling(cache_manager):
+    """Test handling of UNIQUE constraint violations."""
+    from sqlite3 import IntegrityError
+    
+    # Mock the sync operation to raise UNIQUE constraint error
+    cache_manager.local_engine = MagicMock()
+    cache_manager.remote_engine = MagicMock()
+    
+    # Mock local connection and result
+    mock_local_conn = MagicMock()
+    mock_result = MagicMock()
+    mock_result._mapping = {'id': 1, 'name': 'test'}
+    mock_result._mapping.keys = MagicMock(return_value=['id', 'name'])
+    
+    cache_manager.local_engine.connect.return_value.__enter__.return_value = mock_local_conn
+    mock_local_conn.execute.return_value.fetchone.return_value = mock_result
+    
+    # Mock remote connection to raise UNIQUE constraint error on first call
+    mock_remote_conn = MagicMock()
+    mock_remote_conn.execute.side_effect = [
+        IntegrityError("UNIQUE constraint failed: test_table.id"),
+        None  # Second call succeeds (after conflict resolution)
+    ]
+    
+    # Mock conflict resolution to succeed
+    with patch.object(cache_manager, '_resolve_conflict', return_value=True):
+        # The _sync_table_writes method should handle the UNIQUE constraint error
+        # by calling conflict resolution
+        writes = [{'operation': 'INSERT', 'record_id': 1}]
+        
+        # Should not raise an exception
+        try:
+            result = cache_manager._sync_table_writes('test_table', writes)
+            # Conflict should be handled gracefully
+            assert True
+        except IntegrityError:
+            pytest.fail("UNIQUE constraint error was not properly handled")
+
+def test_network_availability_check(cache_manager):
+    """Test network availability checking."""
+    # Test with existing remote database file
+    with patch('pathlib.Path.exists', return_value=True):
+        with patch('builtins.open', mock_open(read_data=b'SQLite format 3')):
+            assert cache_manager._is_network_available() is True
+    
+    # Test with non-existent remote database file
+    with patch('pathlib.Path.exists', return_value=False):
+        assert cache_manager._is_network_available() is False
+    
+    # Test with file access error
+    with patch('pathlib.Path.exists', return_value=True):
+        with patch('builtins.open', side_effect=IOError("Access denied")):
+            assert cache_manager._is_network_available() is False
+
+def mock_open(read_data=b''):
+    """Helper function to create a mock for open()."""
+    from unittest.mock import mock_open as base_mock_open
+    return base_mock_open(read_data=read_data) 

@@ -797,19 +797,20 @@ class DatabaseCacheManager:
         return records_synced, conflicts_resolved
     
     def _sync_insert(self, conn, table_name: str, record_id: int):
-        """Sync an insert operation."""
+        """Sync an insert operation using UPSERT logic."""
         # Get the record from local database
         with self.local_engine.connect() as local_conn:
             result = local_conn.execute(text(f"SELECT * FROM {table_name} WHERE id = :id"), 
                                       {'id': record_id}).fetchone()
             if result:
-                # Insert into remote database
+                # Use INSERT OR REPLACE to handle existing records
                 columns = list(result._mapping.keys())
                 values = [result._mapping[col] for col in columns]
                 placeholders = ', '.join([':' + col for col in columns])
                 column_list = ', '.join(columns)
                 
-                conn.execute(text(f"INSERT INTO {table_name} ({column_list}) VALUES ({placeholders})"),
+                # Use INSERT OR REPLACE to handle UNIQUE constraint conflicts
+                conn.execute(text(f"INSERT OR REPLACE INTO {table_name} ({column_list}) VALUES ({placeholders})"),
                            dict(zip(columns, values)))
     
     def _sync_update(self, conn, table_name: str, record_id: int):
@@ -833,53 +834,59 @@ class DatabaseCacheManager:
         conn.execute(text(f"DELETE FROM {table_name} WHERE id = :id"), {'id': record_id})
     
     def _resolve_conflict(self, conn, table_name: str, record_id: int, local_timestamp: datetime):
-        """Resolve conflicts using timestamp-based resolution."""
+        """Resolve conflicts using timestamp-based resolution and UPSERT logic."""
         try:
-            # First check what timestamp columns are available
-            timestamp_columns = self._get_timestamp_columns(table_name)
+            # For UNIQUE constraint violations, we should use UPSERT logic
+            # Check if the error is due to a UNIQUE constraint on the ID
             
-            if not timestamp_columns:
-                # No timestamp columns available, skip conflict resolution
-                logger.debug(f"No timestamp columns found for {table_name}, skipping conflict resolution for record {record_id}")
-                return False
+            # Check if the record exists in remote database
+            remote_check = conn.execute(text(f"SELECT COUNT(*) as count FROM {table_name} WHERE id = :id"), 
+                                      {'id': record_id}).fetchone()
+            remote_exists = remote_check._mapping['count'] > 0
             
-            # Use the first available timestamp column
-            timestamp_col = timestamp_columns[0]
-            
-            # Get timestamps from both databases
-            with self.local_engine.connect() as local_conn:
-                local_result = local_conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
-                                                {'id': record_id}).fetchone()
-            
-            remote_result = conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
-                                       {'id': record_id}).fetchone()
-            
-            if local_result and remote_result:
-                local_time = local_result._mapping[timestamp_col]
-                remote_time = remote_result._mapping[timestamp_col]
+            if remote_exists:
+                # Record exists in remote, this is a conflict - use timestamp resolution
+                timestamp_columns = self._get_timestamp_columns(table_name)
                 
-                # Use the most recent version
-                if local_time > remote_time:
-                    self._sync_update(conn, table_name, record_id)
-                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - using local version (newer)")
-                    return True
+                if timestamp_columns:
+                    # Use the first available timestamp column
+                    timestamp_col = timestamp_columns[0]
+                    
+                    # Get timestamps from both databases
+                    with self.local_engine.connect() as local_conn:
+                        local_result = local_conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
+                                                        {'id': record_id}).fetchone()
+                    
+                    remote_result = conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
+                                               {'id': record_id}).fetchone()
+                    
+                    if local_result and remote_result:
+                        local_time = local_result._mapping[timestamp_col]
+                        remote_time = remote_result._mapping[timestamp_col]
+                        
+                        # Use the most recent version
+                        if local_time > remote_time:
+                            self._sync_update(conn, table_name, record_id)
+                            logger.debug(f"Conflict resolved for {table_name}:{record_id} - using local version (newer)")
+                            return True
+                        else:
+                            logger.debug(f"Conflict resolved for {table_name}:{record_id} - using remote version (newer, no update needed)")
+                            return True
+                    else:
+                        # Can't compare timestamps, just update with local version
+                        self._sync_update(conn, table_name, record_id)
+                        logger.debug(f"Conflict resolved for {table_name}:{record_id} - updated with local version")
+                        return True
                 else:
-                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - using remote version (newer)")
+                    # No timestamp columns, just update with local version
+                    self._sync_update(conn, table_name, record_id)
+                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - updated with local version (no timestamps)")
                     return True
             else:
-                # One or both records don't exist, handle as insertion/deletion conflict
-                if local_result and not remote_result:
-                    # Local has record, remote doesn't - insert to remote
-                    self._sync_insert(conn, table_name, record_id)
-                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - inserted to remote")
-                    return True
-                elif remote_result and not local_result:
-                    # Remote has record, local doesn't - this shouldn't happen in our sync flow
-                    logger.warning(f"Remote has record {table_name}:{record_id} but local doesn't - skipping")
-                    return False
-                else:
-                    logger.warning(f"Neither local nor remote has record {table_name}:{record_id}")
-                    return False
+                # Record doesn't exist in remote, use INSERT OR REPLACE (which should work now)
+                self._sync_insert(conn, table_name, record_id)
+                logger.debug(f"Conflict resolved for {table_name}:{record_id} - inserted to remote")
+                return True
                     
         except Exception as e:
             logger.error(f"Conflict resolution failed for {table_name}:{record_id}: {str(e)}")

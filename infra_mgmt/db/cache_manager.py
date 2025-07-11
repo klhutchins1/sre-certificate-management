@@ -99,8 +99,40 @@ class DatabaseCacheManager:
         # Initialize databases
         self._initialize_databases()
         
+        # Load any unsynced operations from previous sessions
+        self._load_pending_writes_from_tracking()
+        
         # Start background sync
         self.start_sync()
+    
+    def _load_pending_writes_from_tracking(self):
+        """Load unsynced operations from sync_tracking table."""
+        if not self.local_engine:
+            return
+        
+        try:
+            with self.local_engine.connect() as local_conn:
+                unsynced_ops = local_conn.execute(text("""
+                    SELECT table_name, record_id, operation, timestamp 
+                    FROM sync_tracking 
+                    WHERE synced = FALSE
+                    ORDER BY timestamp ASC
+                """)).fetchall()
+                
+                with self.write_lock:
+                    for op in unsynced_ops:
+                        self.pending_writes.append({
+                            'table_name': op.table_name,
+                            'record_id': op.record_id,
+                            'operation': op.operation,
+                            'timestamp': op.timestamp
+                        })
+                
+                if unsynced_ops:
+                    logger.info(f"Loaded {len(unsynced_ops)} unsynced operations from previous session")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to load pending writes from tracking: {str(e)}")
     
     def _initialize_databases(self):
         """Initialize local and remote database connections."""
@@ -244,6 +276,24 @@ class DatabaseCacheManager:
                 'operation': operation,
                 'timestamp': datetime.now()
             })
+            
+            # Also persist to sync_tracking table for durability
+            if self.local_engine:
+                try:
+                    with self.local_engine.connect() as local_conn:
+                        local_conn.execute(text("""
+                            INSERT OR IGNORE INTO sync_tracking 
+                            (table_name, record_id, operation, timestamp, synced) 
+                            VALUES (:table_name, :record_id, :operation, :timestamp, FALSE)
+                        """), {
+                            'table_name': table_name,
+                            'record_id': record_id,
+                            'operation': operation,
+                            'timestamp': datetime.now()
+                        })
+                        local_conn.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to persist pending write to sync_tracking: {str(e)}")
     
     def start_sync(self):
         """Start the background sync thread."""
@@ -353,20 +403,36 @@ class DatabaseCacheManager:
         try:
             with self.remote_engine.begin() as remote_conn:
                 for write in writes:
-                    # Mark as synced in local tracking
-                    with self.local_engine.connect() as local_conn:
-                        local_conn.execute(text("""
-                            UPDATE sync_tracking 
-                            SET synced = TRUE 
-                            WHERE table_name = :table_name 
-                            AND record_id = :record_id 
-                            AND operation = :operation
-                        """), {
-                            'table_name': table_name,
-                            'record_id': write['record_id'],
-                            'operation': write['operation']
-                        })
-                        local_conn.commit()
+                    try:
+                        # Actually execute the operation on the remote database
+                        if write['operation'] == 'INSERT':
+                            self._sync_insert(remote_conn, table_name, write['record_id'])
+                        elif write['operation'] == 'UPDATE':
+                            self._sync_update(remote_conn, table_name, write['record_id'])
+                        elif write['operation'] == 'DELETE':
+                            self._sync_delete(remote_conn, table_name, write['record_id'])
+                        
+                        # Only mark as synced after successful execution
+                        if self.local_engine:
+                            with self.local_engine.connect() as local_conn:
+                                local_conn.execute(text("""
+                                    UPDATE sync_tracking 
+                                    SET synced = TRUE 
+                                    WHERE table_name = :table_name 
+                                    AND record_id = :record_id 
+                                    AND operation = :operation
+                                """), {
+                                    'table_name': table_name,
+                                    'record_id': write['record_id'],
+                                    'operation': write['operation']
+                                })
+                                local_conn.commit()
+                            
+                    except Exception as op_e:
+                        logger.error(f"Failed to sync {write['operation']} operation for {table_name}:{write['record_id']}: {str(op_e)}")
+                        # Re-add this specific failed write to pending queue
+                        with self.write_lock:
+                            self.pending_writes.append(write)
                         
         except Exception as e:
             logger.error(f"Failed to sync writes for table {table_name}: {str(e)}")
@@ -435,6 +501,8 @@ class DatabaseCacheManager:
         
         try:
             # Get local changes
+            if not self.local_engine:
+                return 0, 0
             with self.local_engine.connect() as local_conn:
                 local_changes = local_conn.execute(text("""
                     SELECT record_id, operation, timestamp 

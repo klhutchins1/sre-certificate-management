@@ -301,11 +301,14 @@ Added proper null checks for `self.local_engine` throughout the code to prevent 
 - ✅ Operations properly executed on remote database during sync
 - ✅ Pending writes count shows actual unsynced operations
 - ✅ Force sync executes operations and updates counts
-- ✅ Sync logs show actual number of records synced
+- ✅ Sync logs show actual number of records synced (no more duplicates)
 - ✅ Data consistency between cache and network database maintained
 - ✅ Operations persist across application restarts
 - ✅ Proper error handling and retry logic
 - ✅ Debug logging for operation tracking
+- ✅ Intelligent sync scheduling (only syncs when needed)
+- ✅ No concurrent sync operations (prevents duplicates)
+- ✅ Accurate sync result recording and display
 
 ### Testing the Fix
 
@@ -351,6 +354,60 @@ The fix is fully backward compatible:
 - No database schema changes required
 - No API changes to existing methods
 - Graceful handling of null/missing data
+
+#### 7. Fixed Duplicate Sync Operations (LATEST)
+**File: `infra_mgmt/db/cache_manager.py`**
+
+Eliminated duplicate sync operations and improved sync result accuracy:
+
+```python
+# Prevent concurrent sync operations
+def _perform_sync(self):
+    if not self.sync_lock.acquire(blocking=False):
+        logger.debug("Sync already in progress, skipping")
+        return
+    
+    try:
+        # Wait for database queue to be processed first
+        self._wait_for_database_queue()
+        
+        # Count actual synced operations
+        pending_writes_synced = self._sync_pending_writes()
+        tracking_synced, conflicts_resolved = self._sync_data()
+        total_synced = pending_writes_synced + tracking_synced
+        
+        # Only log INFO if there's actual work done
+        if total_synced > 0 or conflicts_resolved > 0:
+            logger.info(f"Sync completed: {total_synced} records, {conflicts_resolved} conflicts resolved")
+        else:
+            logger.debug(f"Sync completed: {total_synced} records, {conflicts_resolved} conflicts resolved")
+    finally:
+        self.sync_lock.release()
+
+# Intelligent sync scheduling
+def _sync_worker(self):
+    last_sync_time = 0
+    min_sync_interval = 5  # Minimum 5 seconds between syncs
+    
+    while self.running:
+        current_time = time.time()
+        
+        # Only run sync if there's something to sync or it's been a while
+        has_pending_writes = len(self.pending_writes) > 0
+        has_queue_operations = len(self.db_operation_queue) > 0
+        
+        if has_pending_writes or has_queue_operations or (current_time - last_sync_time > self.sync_interval):
+            self._perform_sync()
+            last_sync_time = current_time
+```
+
+### Latest Issues Resolved
+
+1. **Duplicate Sync Logs**: Fixed concurrent sync operations causing multiple "Sync completed" messages
+2. **Accurate Record Counting**: Sync now properly counts and reports actual synced operations  
+3. **Intelligent Scheduling**: Sync only runs when there's work to do or after the full interval
+4. **Stale Cache Page Data**: Sync results now properly update and display accurate counts
+5. **Concurrent Access Protection**: Non-blocking locks prevent sync collisions
 
 ### Future Considerations
 

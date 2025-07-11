@@ -429,6 +429,28 @@ class DatabaseCacheManager:
         else:
             logger.warning(f"Unknown database operation type: {operation_type}")
     
+    def _wait_for_database_queue(self, max_wait_time=2.0):
+        """Wait for database operation queue to be processed."""
+        import time
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait_time:
+            with self.db_queue_lock:
+                queue_size = len(self.db_operation_queue)
+            
+            if queue_size == 0:
+                break
+            
+            logger.debug(f"Waiting for database queue to clear ({queue_size} operations)")
+            time.sleep(0.1)
+        
+        # Final check
+        with self.db_queue_lock:
+            final_queue_size = len(self.db_operation_queue)
+        
+        if final_queue_size > 0:
+            logger.warning(f"Database queue still has {final_queue_size} operations after waiting")
+    
     def start_sync(self):
         """Start the background sync thread."""
         if self.sync_thread and self.sync_thread.is_alive():
@@ -450,16 +472,37 @@ class DatabaseCacheManager:
     
     def _sync_worker(self):
         """Background worker for syncing data."""
+        last_sync_time = 0
+        min_sync_interval = 5  # Minimum 5 seconds between syncs
+        
         while self.running:
             try:
-                if self._is_network_available():
-                    self._perform_sync()
-                else:
-                    self.sync_status = SyncStatus.OFFLINE
-                    logger.debug("Network unavailable, skipping sync")
+                current_time = time.time()
                 
-                # Wait for next sync interval
-                time.sleep(self.sync_interval)
+                # Check if enough time has passed since last sync
+                if current_time - last_sync_time < min_sync_interval:
+                    time.sleep(0.5)
+                    continue
+                
+                if self._is_network_available():
+                    # Check if there's anything to sync before running
+                    has_pending_writes = len(self.pending_writes) > 0
+                    
+                    with self.db_queue_lock:
+                        has_queue_operations = len(self.db_operation_queue) > 0
+                    
+                    # Only run sync if there's something to sync or it's been a while
+                    if has_pending_writes or has_queue_operations or (current_time - last_sync_time > self.sync_interval):
+                        self._perform_sync()
+                        last_sync_time = current_time
+                    else:
+                        # No work to do, sleep briefly
+                        time.sleep(1)
+                else:
+                    if self.sync_status != SyncStatus.OFFLINE:
+                        self.sync_status = SyncStatus.OFFLINE
+                        logger.debug("Network unavailable, going offline")
+                    time.sleep(self.sync_interval)
                 
             except Exception as e:
                 logger.error(f"Sync worker error: {str(e)}")
@@ -468,20 +511,35 @@ class DatabaseCacheManager:
     
     def _perform_sync(self):
         """Perform a sync operation between local and remote databases."""
-        start_time = time.time()
+        # Prevent concurrent sync operations
+        if not self.sync_lock.acquire(blocking=False):
+            logger.debug("Sync already in progress, skipping")
+            return
         
-        with self.sync_lock:
+        try:
+            if self.sync_status == SyncStatus.IN_PROGRESS:
+                logger.debug("Sync already in progress, skipping")
+                return
+                
+            start_time = time.time()
             self.sync_status = SyncStatus.IN_PROGRESS
+            logger.debug("Starting sync operation")
+            
+            # Wait for database queue to be processed first
+            self._wait_for_database_queue()
             
             try:
                 # Sync pending writes first
-                self._sync_pending_writes()
+                pending_writes_synced = self._sync_pending_writes()
                 
                 # Sync schema changes
                 self._sync_schema()
                 
-                # Sync data changes
-                records_synced, conflicts_resolved = self._sync_data()
+                # Sync data changes from sync_tracking table
+                tracking_synced, conflicts_resolved = self._sync_data()
+                
+                # Total records synced
+                total_synced = pending_writes_synced + tracking_synced
                 
                 self.sync_status = SyncStatus.SUCCESS
                 self.last_sync = datetime.now()
@@ -490,7 +548,7 @@ class DatabaseCacheManager:
                 result = SyncResult(
                     status=SyncStatus.SUCCESS,
                     timestamp=self.last_sync,
-                    records_synced=records_synced,
+                    records_synced=total_synced,
                     conflicts_resolved=conflicts_resolved,
                     duration=time.time() - start_time
                 )
@@ -500,7 +558,10 @@ class DatabaseCacheManager:
                 if len(self.sync_results) > 10:
                     self.sync_results = self.sync_results[-10:]
                 
-                logger.info(f"Sync completed: {records_synced} records, {conflicts_resolved} conflicts resolved")
+                if total_synced > 0 or conflicts_resolved > 0:
+                    logger.info(f"Sync completed: {total_synced} records, {conflicts_resolved} conflicts resolved")
+                else:
+                    logger.debug(f"Sync completed: {total_synced} records, {conflicts_resolved} conflicts resolved")
                 
             except Exception as e:
                 self.sync_status = SyncStatus.FAILED
@@ -512,11 +573,14 @@ class DatabaseCacheManager:
                 )
                 self.sync_results.append(result)
                 logger.error(f"Sync failed: {str(e)}")
+                
+        finally:
+            self.sync_lock.release()
     
     def _sync_pending_writes(self):
         """Sync pending write operations to remote database."""
         if not self.pending_writes or not self.remote_engine:
-            return
+            return 0
         
         with self.write_lock:
             writes_to_sync = self.pending_writes.copy()
@@ -530,13 +594,23 @@ class DatabaseCacheManager:
                 writes_by_table[table] = []
             writes_by_table[table].append(write)
         
+        total_synced = 0
         # Sync each table's writes
         for table_name, writes in writes_by_table.items():
-            self._sync_table_writes(table_name, writes)
+            synced_count = self._sync_table_writes(table_name, writes)
+            total_synced += synced_count
+        
+        return total_synced
     
     def _sync_table_writes(self, table_name: str, writes: List[Dict[str, Any]]):
         """Sync writes for a specific table."""
+        synced_count = 0
+        failed_writes = []
+        
         try:
+            if not self.remote_engine:
+                return 0
+                
             with self.remote_engine.begin() as remote_conn:
                 for write in writes:
                     try:
@@ -547,6 +621,8 @@ class DatabaseCacheManager:
                             self._sync_update(remote_conn, table_name, write['record_id'])
                         elif write['operation'] == 'DELETE':
                             self._sync_delete(remote_conn, table_name, write['record_id'])
+                        
+                        synced_count += 1
                         
                         # Only mark as synced after successful execution
                         if self.local_engine:
@@ -559,15 +635,20 @@ class DatabaseCacheManager:
                             
                     except Exception as op_e:
                         logger.error(f"Failed to sync {write['operation']} operation for {table_name}:{write['record_id']}: {str(op_e)}")
-                        # Re-add this specific failed write to pending queue
-                        with self.write_lock:
-                            self.pending_writes.append(write)
+                        # Add to failed writes list
+                        failed_writes.append(write)
                         
         except Exception as e:
             logger.error(f"Failed to sync writes for table {table_name}: {str(e)}")
-            # Re-add failed writes to pending queue
+            # Add all writes to failed list
+            failed_writes.extend(writes)
+        
+        # Re-add failed writes to pending queue
+        if failed_writes:
             with self.write_lock:
-                self.pending_writes.extend(writes)
+                self.pending_writes.extend(failed_writes)
+        
+        return synced_count
     
     def _sync_schema(self):
         """Sync schema changes between databases."""
@@ -758,28 +839,35 @@ class DatabaseCacheManager:
             )
         
         start_time = time.time()
+        logger.info("Force sync requested")
         
         try:
-            with self.sync_lock:
-                self._perform_sync()
+            # Directly call _perform_sync which has its own locking
+            self._perform_sync()
             
             # Get the last result
             if self.sync_results:
-                return self.sync_results[-1]
+                result = self.sync_results[-1]
+                logger.info(f"Force sync completed: {result.records_synced} records, {result.conflicts_resolved} conflicts")
+                return result
             else:
-                return SyncResult(
+                result = SyncResult(
                     status=SyncStatus.SUCCESS,
                     timestamp=datetime.now(),
                     duration=time.time() - start_time
                 )
+                logger.info("Force sync completed with no results")
+                return result
                 
         except Exception as e:
-            return SyncResult(
+            result = SyncResult(
                 status=SyncStatus.FAILED,
                 timestamp=datetime.now(),
                 errors=[str(e)],
                 duration=time.time() - start_time
             )
+            logger.error(f"Force sync failed: {str(e)}")
+            return result
     
     def clear_cache(self):
         """Clear the local cache database."""

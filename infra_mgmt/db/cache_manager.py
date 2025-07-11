@@ -375,6 +375,30 @@ class DatabaseCacheManager:
             })
             local_conn.commit()
     
+    def _mark_sync_failed(self, table_name: str, record_id: int, operation: str):
+        """Mark an operation as failed in sync_tracking table for retry."""
+        if not self.local_engine:
+            return
+            
+        try:
+            with self.local_engine.connect() as local_conn:
+                # Update the timestamp to retry later
+                local_conn.execute(text("""
+                    UPDATE sync_tracking 
+                    SET timestamp = CURRENT_TIMESTAMP 
+                    WHERE table_name = :table_name 
+                    AND record_id = :record_id 
+                    AND operation = :operation
+                    AND synced = FALSE
+                """), {
+                    'table_name': table_name,
+                    'record_id': record_id,
+                    'operation': operation
+                })
+                local_conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to mark sync as failed for {table_name}:{record_id}: {str(e)}")
+    
     def _queue_database_operation(self, operation_type: str, *args, **kwargs):
         """Queue a database operation for serial execution."""
         with self.db_queue_lock:
@@ -430,6 +454,8 @@ class DatabaseCacheManager:
             self._retry_database_operation(self._persist_sync_tracking, *args, **kwargs)
         elif operation_type == 'mark_sync_completed':
             self._retry_database_operation(self._mark_sync_completed, *args, **kwargs)
+        elif operation_type == 'mark_sync_failed':
+            self._retry_database_operation(self._mark_sync_failed, *args, **kwargs)
         else:
             logger.warning(f"Unknown database operation type: {operation_type}")
     
@@ -756,10 +782,14 @@ class DatabaseCacheManager:
                         records_synced += 1
                         
                     except Exception as e:
-                        logger.warning(f"Conflict resolving for {table_name}:{change.record_id}: {str(e)}")
-                        conflicts_resolved += 1
-                        # Use timestamp-based conflict resolution
-                        self._resolve_conflict(remote_conn, table_name, change.record_id, change.timestamp)
+                        logger.warning(f"Conflict detected for {table_name}:{change.record_id}: {str(e)}")
+                        # Try timestamp-based conflict resolution
+                        if self._resolve_conflict(remote_conn, table_name, change.record_id, change.timestamp):
+                            conflicts_resolved += 1
+                        else:
+                            logger.error(f"Failed to resolve conflict for {table_name}:{change.record_id}")
+                            # Mark the sync tracking record as failed for retry
+                            self._queue_database_operation('mark_sync_failed', table_name, change.record_id, change.operation)
         
         except Exception as e:
             logger.error(f"Failed to sync table {table_name}: {str(e)}")
@@ -805,25 +835,79 @@ class DatabaseCacheManager:
     def _resolve_conflict(self, conn, table_name: str, record_id: int, local_timestamp: datetime):
         """Resolve conflicts using timestamp-based resolution."""
         try:
+            # First check what timestamp columns are available
+            timestamp_columns = self._get_timestamp_columns(table_name)
+            
+            if not timestamp_columns:
+                # No timestamp columns available, skip conflict resolution
+                logger.debug(f"No timestamp columns found for {table_name}, skipping conflict resolution for record {record_id}")
+                return False
+            
+            # Use the first available timestamp column
+            timestamp_col = timestamp_columns[0]
+            
             # Get timestamps from both databases
             with self.local_engine.connect() as local_conn:
-                local_result = local_conn.execute(text(f"SELECT updated_at FROM {table_name} WHERE id = :id"), 
+                local_result = local_conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
                                                 {'id': record_id}).fetchone()
             
-            remote_result = conn.execute(text(f"SELECT updated_at FROM {table_name} WHERE id = :id"), 
+            remote_result = conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
                                        {'id': record_id}).fetchone()
             
             if local_result and remote_result:
-                local_time = local_result.updated_at
-                remote_time = remote_result.updated_at
+                local_time = getattr(local_result, timestamp_col)
+                remote_time = getattr(remote_result, timestamp_col)
                 
                 # Use the most recent version
                 if local_time > remote_time:
                     self._sync_update(conn, table_name, record_id)
-                # If remote is newer, local will be updated on next sync
+                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - using local version (newer)")
+                    return True
+                else:
+                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - using remote version (newer)")
+                    return True
+            else:
+                # One or both records don't exist, handle as insertion/deletion conflict
+                if local_result and not remote_result:
+                    # Local has record, remote doesn't - insert to remote
+                    self._sync_insert(conn, table_name, record_id)
+                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - inserted to remote")
+                    return True
+                elif remote_result and not local_result:
+                    # Remote has record, local doesn't - this shouldn't happen in our sync flow
+                    logger.warning(f"Remote has record {table_name}:{record_id} but local doesn't - skipping")
+                    return False
+                else:
+                    logger.warning(f"Neither local nor remote has record {table_name}:{record_id}")
+                    return False
                     
         except Exception as e:
             logger.error(f"Conflict resolution failed for {table_name}:{record_id}: {str(e)}")
+            return False
+    
+    def _get_timestamp_columns(self, table_name: str):
+        """Get available timestamp columns for a table."""
+        timestamp_candidates = ['updated_at', 'created_at', 'last_seen', 'scan_date', 'timestamp']
+        available_columns = []
+        
+        try:
+            # Get table schema
+            from sqlalchemy import inspect
+            inspector = inspect(self.local_engine)
+            columns = inspector.get_columns(table_name)
+            column_names = [col['name'].lower() for col in columns]
+            
+            # Find available timestamp columns
+            for candidate in timestamp_candidates:
+                if candidate.lower() in column_names:
+                    available_columns.append(candidate)
+            
+            logger.debug(f"Available timestamp columns for {table_name}: {available_columns}")
+            return available_columns
+            
+        except Exception as e:
+            logger.warning(f"Failed to get timestamp columns for {table_name}: {str(e)}")
+            return []
     
     def get_sync_status(self) -> Dict[str, Any]:
         """Get current sync status and statistics."""

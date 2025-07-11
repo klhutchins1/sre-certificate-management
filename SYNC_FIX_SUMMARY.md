@@ -329,12 +329,14 @@ The fix can be tested by:
 3. **Expected Log Behavior:**
    ```
    ✅ Good: Sync #1 completed: 3 records, 0 conflicts resolved (caller: force_sync:MainThread)
-   ✅ Good: Sync #2 completed: 0 records, 0 conflicts resolved (caller: background_worker:CacheSync)
+   ✅ Good: Sync #9 completed: 0 records, 3 conflicts resolved (caller: background_worker:CacheSync)
+   ✅ Good: Available timestamp columns for domain_dns_records: ['created_at', 'last_seen']
+   ✅ Good: Conflict resolved for domain_dns_records:1049 - using local version (newer)
    
    ❌ Bad (should no longer occur): 
-   Sync completed: 0 records, 0 conflicts resolved
-   Sync completed: 0 records, 0 conflicts resolved
-   Sync completed: 0 records, 0 conflicts resolved
+   Conflict resolving for domain_dns_records:1049: Could not locate column in row for column 'keys'
+   Sync completed: 0 records, 0 conflicts resolved (duplicate at same timestamp)
+   Sync completed: 19 conflicts resolved (when conflicts actually failed)
    ```
 
 4. **Production Verification:**
@@ -425,6 +427,15 @@ def _sync_worker(self):
 4. **Stale Cache Page Data**: Sync results now properly update and display accurate counts
 5. **Concurrent Access Protection**: Non-blocking locks prevent sync collisions
 6. **Enhanced Debugging**: Added sync operation tracking and caller identification
+7. **Robust Conflict Resolution**: Fixed schema-aware conflict resolution with proper counting
+
+#### Latest Fix: Schema-Aware Conflict Resolution
+The system was failing to resolve conflicts because it assumed all tables had an `updated_at` column, but many tables (like `domain_dns_records`) don't have timestamp columns. Fixed with:
+
+- **Dynamic Column Detection**: Automatically detects available timestamp columns per table
+- **Fallback Strategy**: Gracefully handles tables without timestamp columns  
+- **Accurate Counting**: Only counts successfully resolved conflicts
+- **Smart Column Priority**: Uses `updated_at`, `created_at`, `last_seen`, `scan_date`, or `timestamp` in order of preference
 
 #### Debug Features Added:
 - **Sync ID**: Each sync operation gets a unique ID for tracking
@@ -435,7 +446,15 @@ def _sync_worker(self):
 
 Example improved log output:
 ```
+# Successful sync with proper record counting
 2025-07-11 12:29:37,993 - INFO - Sync #1 completed: 3 records, 0 conflicts resolved (caller: background_worker:CacheSync)
+
+# Conflict resolution with schema awareness
+2025-07-11 15:54:38,267 - DEBUG - Available timestamp columns for domain_dns_records: ['created_at', 'last_seen']
+2025-07-11 15:54:38,268 - DEBUG - Conflict resolved for domain_dns_records:1049 - using local version (newer)
+2025-07-11 15:54:38,269 - INFO - Sync #9 completed: 0 records, 3 conflicts resolved (caller: background_worker:CacheSync)
+
+# Empty syncs use DEBUG level (won't show unless debug enabled)
 2025-07-11 12:29:54,975 - DEBUG - Sync #2 completed: 0 records, 0 conflicts resolved (caller: background_worker:CacheSync)
 ```
 

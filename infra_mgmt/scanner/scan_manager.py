@@ -16,7 +16,6 @@ from infra_mgmt.utils.dns_records import DNSRecordUtil
 from infra_mgmt.utils.certificate_db import CertificateDBUtil
 from infra_mgmt.utils.cache import ScanSessionCache
 import re
-from infra_mgmt.utils.proxy_detection import detect_proxy_certificate
 
 CertificateScanner = None
 
@@ -290,18 +289,14 @@ class ScanManager:
                 if cert_result and cert_result.certificate_info:
                     cert_info_from_scan = cert_result.certificate_info
                     
-                    is_proxy, proxy_reason = detect_proxy_certificate(cert_info_from_scan, settings)
-                    print(f"DEBUG [ScanManager.scan_target IP FLOW]: detect_proxy_certificate returned: is_proxy={is_proxy}, reason='{proxy_reason}'")
-
-                    if is_proxy:
-                        cert_info_from_scan.proxied = True
-                        cert_info_from_scan.proxy_info = proxy_reason
-                        print(f"DEBUG [ScanManager.scan_target IP FLOW INSIDE if is_proxy]: cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
-                    else:
-                        cert_info_from_scan.proxied = False
-                        cert_info_from_scan.proxy_info = None
+                    # Log proxy detection results
+                    if cert_info_from_scan.proxied:
+                        self.logger.warning(f"Proxy certificate detected for {domain}:{port}: {cert_info_from_scan.proxy_info}")
                     
-                    print(f"DEBUG [ScanManager.scan_target IP FLOW]: About to upsert. cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
+                    # Log any warnings from certificate scan
+                    if hasattr(cert_result, 'warnings') and cert_result.warnings:
+                        for warning in cert_result.warnings:
+                            self.logger.warning(f"Certificate scan warning for {domain}:{port}: {warning}")
 
                     CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info_from_scan, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
                     # --- PATCH: Associate cert with SAN domains if present ---
@@ -384,18 +379,14 @@ class ScanManager:
             if cert_result and cert_result.certificate_info:
                 cert_info_from_scan = cert_result.certificate_info
                 
-                is_proxy, proxy_reason = detect_proxy_certificate(cert_info_from_scan, settings)
-                print(f"DEBUG [ScanManager.scan_target DOMAIN FLOW]: detect_proxy_certificate returned: is_proxy={is_proxy}, reason='{proxy_reason}'")
+                # Log proxy detection results
+                if cert_info_from_scan.proxied:
+                    self.logger.warning(f"Proxy certificate detected for {domain}:{port}: {cert_info_from_scan.proxy_info}")
                 
-                if is_proxy:
-                    cert_info_from_scan.proxied = True
-                    cert_info_from_scan.proxy_info = proxy_reason
-                    print(f"DEBUG [ScanManager.scan_target DOMAIN FLOW INSIDE if is_proxy]: cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
-                else:
-                    cert_info_from_scan.proxied = False
-                    cert_info_from_scan.proxy_info = None
-
-                print(f"DEBUG [ScanManager.scan_target DOMAIN FLOW]: About to upsert. cert_info_from_scan.proxied={getattr(cert_info_from_scan, 'proxied', 'NotSet')}, cert_info_from_scan.proxy_info='{getattr(cert_info_from_scan, 'proxy_info', 'NotSet')}'")
+                # Log any warnings from certificate scan
+                if hasattr(cert_result, 'warnings') and cert_result.warnings:
+                    for warning in cert_result.warnings:
+                        self.logger.warning(f"Certificate scan warning for {domain}:{port}: {warning}")
 
                 CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info_from_scan, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
                 # --- PATCH: Associate cert with SAN domains if present ---

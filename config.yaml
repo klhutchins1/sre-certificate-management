@@ -72,6 +72,26 @@ proxy_detection:
   ca_serials: []
   ca_subjects: null
   enabled: true
+  # Enhanced proxy detection options
+  bypass_external: false  # Attempt to bypass proxy for external domains
+  bypass_patterns:  # Patterns for domains that should bypass proxy
+    - "*.github.com"
+    - "*.google.com"
+    - "*.microsoft.com"
+    - "*.amazon.com"
+    - "*.cloudflare.com"
+  # Additional proxy detection patterns
+  proxy_hostnames:  # Hostnames that indicate proxy certificates
+    - "proxy"
+    - "firewall"
+    - "gateway"
+    - "bluecoat"
+    - "zscaler"
+    - "forcepoint"
+  # Validation settings
+  enable_hostname_validation: true  # Check for hostname mismatches
+  enable_authenticity_validation: true  # Comprehensive authenticity checks
+  warn_on_proxy_detection: true  # Generate warnings for detected proxy certificates
 scanning:
   certificate:
     rate_limit: 30

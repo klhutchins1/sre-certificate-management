@@ -152,8 +152,16 @@ class DatabaseCacheManager:
     def _initialize_databases(self):
         """Initialize local and remote database connections."""
         try:
-            # Initialize local cache database
-            self.local_engine = create_engine(f"sqlite:///{self.local_db_path}")
+            # Initialize local cache database with WAL mode and connection pooling
+            self.local_engine = create_engine(
+                f"sqlite:///{self.local_db_path}",
+                pool_pre_ping=True,
+                pool_recycle=300,
+                connect_args={
+                    "check_same_thread": False,
+                    "timeout": 20
+                }
+            )
             
             # Try to initialize remote database connection first
             if self._is_network_available():
@@ -173,8 +181,14 @@ class DatabaseCacheManager:
                 # Create schema locally
                 Base.metadata.create_all(self.local_engine)
             
-            # Add sync tracking tables to local
+            # Add sync tracking tables to local and enable WAL mode
             with self.local_engine.connect() as conn:
+                # Enable WAL mode for better concurrent access
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+                conn.execute(text("PRAGMA cache_size=10000"))
+                conn.execute(text("PRAGMA temp_store=memory"))
+                
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS sync_tracking (
                         id INTEGER PRIMARY KEY,
@@ -300,21 +314,55 @@ class DatabaseCacheManager:
             
             # Also persist to sync_tracking table for durability
             if self.local_engine:
-                try:
-                    with self.local_engine.connect() as local_conn:
-                        local_conn.execute(text("""
-                            INSERT OR IGNORE INTO sync_tracking 
-                            (table_name, record_id, operation, timestamp, synced) 
-                            VALUES (:table_name, :record_id, :operation, :timestamp, FALSE)
-                        """), {
-                            'table_name': table_name,
-                            'record_id': record_id,
-                            'operation': operation,
-                            'timestamp': datetime.now()
-                        })
-                        local_conn.commit()
-                except Exception as e:
-                    logger.warning(f"Failed to persist pending write to sync_tracking: {str(e)}")
+                self._retry_database_operation(self._persist_sync_tracking, table_name, record_id, operation)
+    
+    def _retry_database_operation(self, operation_func, *args, max_retries=3, **kwargs):
+        """Retry database operations with exponential backoff."""
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                return operation_func(*args, **kwargs)
+            except Exception as e:
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.1  # 0.1, 0.2, 0.4 seconds
+                    logger.debug(f"Database locked, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.warning(f"Database operation failed after {attempt + 1} attempts: {str(e)}")
+                    break
+    
+    def _persist_sync_tracking(self, table_name: str, record_id: int, operation: str):
+        """Persist operation to sync_tracking table."""
+        with self.local_engine.connect() as local_conn:
+            local_conn.execute(text("""
+                INSERT OR IGNORE INTO sync_tracking 
+                (table_name, record_id, operation, timestamp, synced) 
+                VALUES (:table_name, :record_id, :operation, :timestamp, FALSE)
+            """), {
+                'table_name': table_name,
+                'record_id': record_id,
+                'operation': operation,
+                'timestamp': datetime.now()
+            })
+            local_conn.commit()
+    
+    def _mark_sync_completed(self, table_name: str, record_id: int, operation: str):
+        """Mark an operation as completed in sync_tracking table."""
+        with self.local_engine.connect() as local_conn:
+            local_conn.execute(text("""
+                UPDATE sync_tracking 
+                SET synced = TRUE 
+                WHERE table_name = :table_name 
+                AND record_id = :record_id 
+                AND operation = :operation
+            """), {
+                'table_name': table_name,
+                'record_id': record_id,
+                'operation': operation
+            })
+            local_conn.commit()
     
     def start_sync(self):
         """Start the background sync thread."""
@@ -435,19 +483,12 @@ class DatabaseCacheManager:
                         
                         # Only mark as synced after successful execution
                         if self.local_engine:
-                            with self.local_engine.connect() as local_conn:
-                                local_conn.execute(text("""
-                                    UPDATE sync_tracking 
-                                    SET synced = TRUE 
-                                    WHERE table_name = :table_name 
-                                    AND record_id = :record_id 
-                                    AND operation = :operation
-                                """), {
-                                    'table_name': table_name,
-                                    'record_id': write['record_id'],
-                                    'operation': write['operation']
-                                })
-                                local_conn.commit()
+                            self._retry_database_operation(
+                                self._mark_sync_completed, 
+                                table_name, 
+                                write['record_id'], 
+                                write['operation']
+                            )
                             
                     except Exception as op_e:
                         logger.error(f"Failed to sync {write['operation']} operation for {table_name}:{write['record_id']}: {str(op_e)}")

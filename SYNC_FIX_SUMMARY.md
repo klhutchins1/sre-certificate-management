@@ -170,6 +170,41 @@ def after_flush(session, context):
 - Added persistent operation tracking to `sync_tracking` table
 - Added operation recovery from previous sessions
 
+#### 6. Fixed Database Locking Issues
+**File: `infra_mgmt/db/cache_manager.py`**
+
+Added WAL mode and retry logic to handle concurrent database access:
+
+```python
+# Enable WAL mode for better concurrent access
+conn.execute(text("PRAGMA journal_mode=WAL"))
+conn.execute(text("PRAGMA synchronous=NORMAL"))
+conn.execute(text("PRAGMA cache_size=10000"))
+conn.execute(text("PRAGMA temp_store=memory"))
+
+# Connection pooling with timeouts
+self.local_engine = create_engine(
+    f"sqlite:///{self.local_db_path}",
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 20
+    }
+)
+
+# Retry logic with exponential backoff
+def _retry_database_operation(self, operation_func, *args, max_retries=3, **kwargs):
+    for attempt in range(max_retries):
+        try:
+            return operation_func(*args, **kwargs)
+        except Exception as e:
+            if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                wait_time = (2 ** attempt) * 0.1  # 0.1, 0.2, 0.4 seconds
+                time.sleep(wait_time)
+                continue
+```
+
 #### 2. Enhanced `add_pending_write()` Method
 **Before:**
 ```python

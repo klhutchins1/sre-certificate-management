@@ -173,7 +173,7 @@ def after_flush(session, context):
 #### 6. Fixed Database Locking Issues
 **File: `infra_mgmt/db/cache_manager.py`**
 
-Added WAL mode and retry logic to handle concurrent database access:
+Added WAL mode, retry logic, and **database operation queue** to completely eliminate concurrent access conflicts:
 
 ```python
 # Enable WAL mode for better concurrent access
@@ -182,25 +182,52 @@ conn.execute(text("PRAGMA synchronous=NORMAL"))
 conn.execute(text("PRAGMA cache_size=10000"))
 conn.execute(text("PRAGMA temp_store=memory"))
 
-# Connection pooling with timeouts
+# Enhanced connection pooling with better timeouts
 self.local_engine = create_engine(
     f"sqlite:///{self.local_db_path}",
     pool_pre_ping=True,
     pool_recycle=300,
+    pool_timeout=10,
+    max_overflow=10,
     connect_args={
         "check_same_thread": False,
-        "timeout": 20
+        "timeout": 30,
+        "isolation_level": None
     }
 )
 
-# Retry logic with exponential backoff
-def _retry_database_operation(self, operation_func, *args, max_retries=3, **kwargs):
+# Database operation queue for serialization
+def _queue_database_operation(self, operation_type: str, *args, **kwargs):
+    """Queue a database operation for serial execution."""
+    with self.db_queue_lock:
+        self.db_operation_queue.append({
+            'operation_type': operation_type,
+            'args': args,
+            'kwargs': kwargs,
+            'timestamp': datetime.now()
+        })
+
+# Dedicated database worker thread
+def _db_worker(self):
+    """Background worker for processing database operations."""
+    while self.running:
+        operations_to_process = []
+        with self.db_queue_lock:
+            if self.db_operation_queue:
+                operations_to_process = self.db_operation_queue.copy()
+                self.db_operation_queue.clear()
+        
+        for operation in operations_to_process:
+            self._execute_database_operation(operation)
+
+# Enhanced retry logic with faster backoff
+def _retry_database_operation(self, operation_func, *args, max_retries=5, **kwargs):
     for attempt in range(max_retries):
         try:
             return operation_func(*args, **kwargs)
         except Exception as e:
             if "database is locked" in str(e).lower() and attempt < max_retries - 1:
-                wait_time = (2 ** attempt) * 0.1  # 0.1, 0.2, 0.4 seconds
+                wait_time = (2 ** attempt) * 0.05  # 0.05, 0.1, 0.2, 0.4, 0.8 seconds
                 time.sleep(wait_time)
                 continue
 ```

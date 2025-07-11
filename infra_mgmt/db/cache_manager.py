@@ -93,7 +93,10 @@ class DatabaseCacheManager:
         # Threading
         self.sync_lock = threading.Lock()
         self.write_lock = threading.Lock()
+        self.db_operation_queue = []
+        self.db_queue_lock = threading.Lock()
         self.sync_thread = None
+        self.db_worker_thread = None
         self.running = False
         
         # Enhanced session manager for tracking
@@ -108,8 +111,9 @@ class DatabaseCacheManager:
         # Load any unsynced operations from previous sessions
         self._load_pending_writes_from_tracking()
         
-        # Start background sync
+        # Start background sync and database worker
         self.start_sync()
+        self.start_db_worker()
     
     def _setup_enhanced_session_manager(self):
         """Setup the enhanced session manager for operation tracking."""
@@ -157,9 +161,12 @@ class DatabaseCacheManager:
                 f"sqlite:///{self.local_db_path}",
                 pool_pre_ping=True,
                 pool_recycle=300,
+                pool_timeout=10,
+                max_overflow=10,
                 connect_args={
                     "check_same_thread": False,
-                    "timeout": 20
+                    "timeout": 30,
+                    "isolation_level": None
                 }
             )
             
@@ -314,9 +321,9 @@ class DatabaseCacheManager:
             
             # Also persist to sync_tracking table for durability
             if self.local_engine:
-                self._retry_database_operation(self._persist_sync_tracking, table_name, record_id, operation)
+                self._queue_database_operation('persist_sync_tracking', table_name, record_id, operation)
     
-    def _retry_database_operation(self, operation_func, *args, max_retries=3, **kwargs):
+    def _retry_database_operation(self, operation_func, *args, max_retries=5, **kwargs):
         """Retry database operations with exponential backoff."""
         import time
         
@@ -325,7 +332,7 @@ class DatabaseCacheManager:
                 return operation_func(*args, **kwargs)
             except Exception as e:
                 if "database is locked" in str(e).lower() and attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) * 0.1  # 0.1, 0.2, 0.4 seconds
+                    wait_time = (2 ** attempt) * 0.05  # 0.05, 0.1, 0.2, 0.4, 0.8 seconds
                     logger.debug(f"Database locked, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                     continue
@@ -364,6 +371,64 @@ class DatabaseCacheManager:
             })
             local_conn.commit()
     
+    def _queue_database_operation(self, operation_type: str, *args, **kwargs):
+        """Queue a database operation for serial execution."""
+        with self.db_queue_lock:
+            self.db_operation_queue.append({
+                'operation_type': operation_type,
+                'args': args,
+                'kwargs': kwargs,
+                'timestamp': datetime.now()
+            })
+    
+    def start_db_worker(self):
+        """Start the database operation worker thread."""
+        if self.db_worker_thread and self.db_worker_thread.is_alive():
+            return
+        
+        self.db_worker_thread = threading.Thread(target=self._db_worker, daemon=True)
+        self.db_worker_thread.start()
+        logger.info("Database operation worker started")
+    
+    def _db_worker(self):
+        """Background worker for processing database operations."""
+        while self.running:
+            try:
+                operations_to_process = []
+                
+                # Get operations from queue
+                with self.db_queue_lock:
+                    if self.db_operation_queue:
+                        operations_to_process = self.db_operation_queue.copy()
+                        self.db_operation_queue.clear()
+                
+                # Process operations
+                for operation in operations_to_process:
+                    try:
+                        self._execute_database_operation(operation)
+                    except Exception as e:
+                        logger.error(f"Failed to execute database operation {operation['operation_type']}: {str(e)}")
+                
+                # Sleep briefly to prevent tight loop
+                time.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Database worker error: {str(e)}")
+                time.sleep(1)
+    
+    def _execute_database_operation(self, operation):
+        """Execute a single database operation with retry logic."""
+        operation_type = operation['operation_type']
+        args = operation['args']
+        kwargs = operation['kwargs']
+        
+        if operation_type == 'persist_sync_tracking':
+            self._retry_database_operation(self._persist_sync_tracking, *args, **kwargs)
+        elif operation_type == 'mark_sync_completed':
+            self._retry_database_operation(self._mark_sync_completed, *args, **kwargs)
+        else:
+            logger.warning(f"Unknown database operation type: {operation_type}")
+    
     def start_sync(self):
         """Start the background sync thread."""
         if self.sync_thread and self.sync_thread.is_alive():
@@ -375,11 +440,13 @@ class DatabaseCacheManager:
         logger.info("Background sync started")
     
     def stop_sync(self):
-        """Stop the background sync thread."""
+        """Stop the background sync and database worker threads."""
         self.running = False
         if self.sync_thread:
             self.sync_thread.join(timeout=5)
-        logger.info("Background sync stopped")
+        if self.db_worker_thread:
+            self.db_worker_thread.join(timeout=5)
+        logger.info("Background sync and database worker stopped")
     
     def _sync_worker(self):
         """Background worker for syncing data."""
@@ -483,8 +550,8 @@ class DatabaseCacheManager:
                         
                         # Only mark as synced after successful execution
                         if self.local_engine:
-                            self._retry_database_operation(
-                                self._mark_sync_completed, 
+                            self._queue_database_operation(
+                                'mark_sync_completed', 
                                 table_name, 
                                 write['record_id'], 
                                 write['operation']
@@ -658,10 +725,14 @@ class DatabaseCacheManager:
     
     def get_sync_status(self) -> Dict[str, Any]:
         """Get current sync status and statistics."""
+        with self.db_queue_lock:
+            queue_size = len(self.db_operation_queue)
+        
         return {
             'status': self.sync_status.value,
             'last_sync': self.last_sync.isoformat() if self.last_sync else None,
             'pending_writes': len(self.pending_writes),
+            'database_queue_size': queue_size,
             'sync_interval': self.sync_interval,
             'network_available': self._is_network_available(),
             'recent_results': [

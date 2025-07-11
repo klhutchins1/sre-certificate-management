@@ -99,6 +99,10 @@ class DatabaseCacheManager:
         self.db_worker_thread = None
         self.running = False
         
+        # Debug tracking
+        self.sync_counter = 0
+        self.last_sync_caller = None
+        
         # Enhanced session manager for tracking
         self.enhanced_session_manager = None
         
@@ -453,13 +457,15 @@ class DatabaseCacheManager:
     
     def start_sync(self):
         """Start the background sync thread."""
+        # Stop any existing sync thread first
         if self.sync_thread and self.sync_thread.is_alive():
+            logger.warning("Sync thread already running, not starting another")
             return
         
         self.running = True
-        self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True)
+        self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True, name="CacheSync")
         self.sync_thread.start()
-        logger.info("Background sync started")
+        logger.info(f"Background sync started (thread: {self.sync_thread.name})")
     
     def stop_sync(self):
         """Stop the background sync and database worker threads."""
@@ -493,7 +499,7 @@ class DatabaseCacheManager:
                     
                     # Only run sync if there's something to sync or it's been a while
                     if has_pending_writes or has_queue_operations or (current_time - last_sync_time > self.sync_interval):
-                        self._perform_sync()
+                        self._perform_sync("background_worker")
                         last_sync_time = current_time
                     else:
                         # No work to do, sleep briefly
@@ -509,21 +515,34 @@ class DatabaseCacheManager:
                 self.sync_status = SyncStatus.FAILED
                 time.sleep(self.sync_interval)
     
-    def _perform_sync(self):
+    def _perform_sync(self, caller="unknown"):
         """Perform a sync operation between local and remote databases."""
+        import threading
+        import traceback
+        
+        current_thread = threading.current_thread().name
+        self.sync_counter += 1
+        sync_id = self.sync_counter
+        
+        # Get caller info for debugging
+        caller_info = f"{caller}:{current_thread}"
+        stack = traceback.format_stack()
+        caller_stack = [line.strip() for line in stack[-3:-1]]  # Get last 2 stack frames
+        
         # Prevent concurrent sync operations
         if not self.sync_lock.acquire(blocking=False):
-            logger.debug("Sync already in progress, skipping")
+            logger.debug(f"Sync #{sync_id} already in progress, skipping (caller: {caller_info})")
             return
         
         try:
             if self.sync_status == SyncStatus.IN_PROGRESS:
-                logger.debug("Sync already in progress, skipping")
+                logger.debug(f"Sync #{sync_id} already in progress, skipping (caller: {caller_info})")
                 return
                 
             start_time = time.time()
             self.sync_status = SyncStatus.IN_PROGRESS
-            logger.debug("Starting sync operation")
+            self.last_sync_caller = caller_info
+            logger.debug(f"Starting sync #{sync_id} (caller: {caller_info})")
             
             # Wait for database queue to be processed first
             self._wait_for_database_queue()
@@ -558,10 +577,12 @@ class DatabaseCacheManager:
                 if len(self.sync_results) > 10:
                     self.sync_results = self.sync_results[-10:]
                 
+                # Only log INFO for actual sync work, DEBUG for empty syncs
                 if total_synced > 0 or conflicts_resolved > 0:
-                    logger.info(f"Sync completed: {total_synced} records, {conflicts_resolved} conflicts resolved")
+                    logger.info(f"Sync #{sync_id} completed: {total_synced} records, {conflicts_resolved} conflicts resolved (caller: {caller_info})")
                 else:
-                    logger.debug(f"Sync completed: {total_synced} records, {conflicts_resolved} conflicts resolved")
+                    # Don't log empty syncs at all to reduce noise
+                    logger.debug(f"Sync #{sync_id} completed: {total_synced} records, {conflicts_resolved} conflicts resolved (caller: {caller_info})")
                 
             except Exception as e:
                 self.sync_status = SyncStatus.FAILED
@@ -806,8 +827,14 @@ class DatabaseCacheManager:
     
     def get_sync_status(self) -> Dict[str, Any]:
         """Get current sync status and statistics."""
+        import threading
+        
         with self.db_queue_lock:
             queue_size = len(self.db_operation_queue)
+        
+        # Count active threads
+        active_threads = threading.active_count()
+        thread_names = [t.name for t in threading.enumerate()]
         
         return {
             'status': self.sync_status.value,
@@ -816,6 +843,12 @@ class DatabaseCacheManager:
             'database_queue_size': queue_size,
             'sync_interval': self.sync_interval,
             'network_available': self._is_network_available(),
+            'active_threads': active_threads,
+            'thread_names': thread_names,
+            'sync_thread_alive': self.sync_thread.is_alive() if self.sync_thread else False,
+            'db_worker_alive': self.db_worker_thread.is_alive() if self.db_worker_thread else False,
+            'sync_counter': self.sync_counter,
+            'last_sync_caller': self.last_sync_caller,
             'recent_results': [
                 {
                     'status': r.status.value,
@@ -843,7 +876,7 @@ class DatabaseCacheManager:
         
         try:
             # Directly call _perform_sync which has its own locking
-            self._perform_sync()
+            self._perform_sync("force_sync")
             
             # Get the last result
             if self.sync_results:

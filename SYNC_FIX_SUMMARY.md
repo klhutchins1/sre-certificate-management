@@ -317,14 +317,30 @@ The fix can be tested by:
 1. **Manual Testing:**
    - Delete certificates/hosts/domains from the application
    - Check that items are removed from both cache AND network database
-   - Verify sync logs show actual record counts
+   - Verify sync logs show actual record counts with unique IDs
+   - Observe that duplicate logs are eliminated
 
-2. **Automated Testing:**
-   - Run the provided `sync_fix_verification.py` script
-   - Monitor sync status via `cache_manager.get_sync_status()`
+2. **Debug Monitoring:**
+   - Check cache page for sync status with debug information
+   - Monitor `sync_counter` and `last_sync_caller` fields
+   - Verify only one sync thread is active
+   - Watch for improved log format with sync IDs
 
-3. **Production Verification:**
+3. **Expected Log Behavior:**
+   ```
+   ✅ Good: Sync #1 completed: 3 records, 0 conflicts resolved (caller: force_sync:MainThread)
+   ✅ Good: Sync #2 completed: 0 records, 0 conflicts resolved (caller: background_worker:CacheSync)
+   
+   ❌ Bad (should no longer occur): 
+   Sync completed: 0 records, 0 conflicts resolved
+   Sync completed: 0 records, 0 conflicts resolved
+   Sync completed: 0 records, 0 conflicts resolved
+   ```
+
+4. **Production Verification:**
    - Monitor sync logs for non-zero record counts
+   - Verify no duplicate sync operations within milliseconds
+   - Check that empty syncs use DEBUG level (not visible unless debug logging enabled)
    - Verify operations persist after application restarts
    - Check data consistency between cache and network database
 
@@ -408,6 +424,20 @@ def _sync_worker(self):
 3. **Intelligent Scheduling**: Sync only runs when there's work to do or after the full interval
 4. **Stale Cache Page Data**: Sync results now properly update and display accurate counts
 5. **Concurrent Access Protection**: Non-blocking locks prevent sync collisions
+6. **Enhanced Debugging**: Added sync operation tracking and caller identification
+
+#### Debug Features Added:
+- **Sync ID**: Each sync operation gets a unique ID for tracking
+- **Caller Identification**: Shows which component triggered the sync (background_worker vs force_sync)
+- **Thread Tracking**: Monitors active threads and identifies potential duplicates
+- **Cache Manager Singleton**: Prevents multiple cache manager instances
+- **Comprehensive Status**: Sync status now includes debug information
+
+Example improved log output:
+```
+2025-07-11 12:29:37,993 - INFO - Sync #1 completed: 3 records, 0 conflicts resolved (caller: background_worker:CacheSync)
+2025-07-11 12:29:54,975 - DEBUG - Sync #2 completed: 0 records, 0 conflicts resolved (caller: background_worker:CacheSync)
+```
 
 ### Future Considerations
 

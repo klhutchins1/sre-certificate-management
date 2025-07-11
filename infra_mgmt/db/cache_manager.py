@@ -256,7 +256,7 @@ class DatabaseCacheManager:
                 with self.remote_engine.connect() as remote_conn:
                     result = remote_conn.execute(text(f"SELECT * FROM {table_name}"))
                     rows = result.fetchall()
-                    columns = result.keys()
+                    columns = list(result.keys())
                 
                 if rows:
                     with self.local_engine.connect() as local_conn:
@@ -804,8 +804,8 @@ class DatabaseCacheManager:
                                       {'id': record_id}).fetchone()
             if result:
                 # Insert into remote database
-                columns = result.keys()
-                values = [result[col] for col in columns]
+                columns = list(result._mapping.keys())
+                values = [result._mapping[col] for col in columns]
                 placeholders = ', '.join([':' + col for col in columns])
                 column_list = ', '.join(columns)
                 
@@ -820,10 +820,10 @@ class DatabaseCacheManager:
                                       {'id': record_id}).fetchone()
             if result:
                 # Update remote database
-                columns = [col for col in result.keys() if col != 'id']
+                columns = [col for col in list(result._mapping.keys()) if col != 'id']
                 set_clause = ', '.join([f"{col} = :{col}" for col in columns])
                 
-                update_data = {col: result[col] for col in columns}
+                update_data = {col: result._mapping[col] for col in columns}
                 update_data['id'] = record_id
                 
                 conn.execute(text(f"UPDATE {table_name} SET {set_clause} WHERE id = :id"), update_data)
@@ -855,8 +855,8 @@ class DatabaseCacheManager:
                                        {'id': record_id}).fetchone()
             
             if local_result and remote_result:
-                local_time = getattr(local_result, timestamp_col)
-                remote_time = getattr(remote_result, timestamp_col)
+                local_time = local_result._mapping[timestamp_col]
+                remote_time = remote_result._mapping[timestamp_col]
                 
                 # Use the most recent version
                 if local_time > remote_time:

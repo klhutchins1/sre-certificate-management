@@ -96,14 +96,29 @@ class DatabaseCacheManager:
         self.sync_thread = None
         self.running = False
         
+        # Enhanced session manager for tracking
+        self.enhanced_session_manager = None
+        
         # Initialize databases
         self._initialize_databases()
+        
+        # Initialize enhanced session manager after databases are ready
+        self._setup_enhanced_session_manager()
         
         # Load any unsynced operations from previous sessions
         self._load_pending_writes_from_tracking()
         
         # Start background sync
         self.start_sync()
+    
+    def _setup_enhanced_session_manager(self):
+        """Setup the enhanced session manager for operation tracking."""
+        try:
+            from .enhanced_session import EnhancedSessionManager
+            self.enhanced_session_manager = EnhancedSessionManager(self)
+            logger.info("Enhanced session manager initialized for operation tracking")
+        except Exception as e:
+            logger.warning(f"Failed to initialize enhanced session manager: {e}")
     
     def _load_pending_writes_from_tracking(self):
         """Load unsynced operations from sync_tracking table."""
@@ -259,11 +274,17 @@ class DatabaseCacheManager:
             Session: SQLAlchemy session for local or remote database
         """
         if use_cache and self.local_engine:
-            Session = sessionmaker(bind=self.local_engine)
-            return Session()
+            SessionClass = sessionmaker(bind=self.local_engine)
+            session = SessionClass()
+            # Mark session for tracking
+            session._ims_cache_tracking = True
+            return session
         elif self.remote_engine:
-            Session = sessionmaker(bind=self.remote_engine)
-            return Session()
+            SessionClass = sessionmaker(bind=self.remote_engine)
+            session = SessionClass()
+            # Mark session for tracking
+            session._ims_cache_tracking = True
+            return session
         else:
             raise IMSDatabaseError("No database engine available")
     

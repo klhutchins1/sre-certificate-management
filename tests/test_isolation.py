@@ -24,6 +24,7 @@ import os
 import socket
 import subprocess
 import time
+import platform
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch, Mock
 import functools
@@ -32,6 +33,71 @@ import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Windows Python 3.8 compatibility fix for SQLAlchemy
+def _fix_windows_python38_compatibility():
+    """Fix Windows Python 3.8 compatibility issues with SQLAlchemy platform detection"""
+    
+    # Check if we're on Windows with Python 3.8
+    if sys.platform.startswith('win') and sys.version_info[:2] == (3, 8):
+        
+        # Patch platform.machine() to handle bytes vs string issue
+        original_machine = platform.machine
+        
+        def safe_machine():
+            try:
+                result = original_machine()
+                # Ensure we return a string, not bytes
+                if isinstance(result, bytes):
+                    return result.decode('utf-8', errors='ignore')
+                return result
+            except (TypeError, UnicodeDecodeError):
+                # Fallback to a safe default
+                return 'AMD64'
+        
+        platform.machine = safe_machine
+        
+        # Also patch platform.uname() components that might have issues
+        original_uname = platform.uname
+        
+        def safe_uname():
+            try:
+                result = original_uname()
+                # Convert any bytes to strings in the result
+                safe_result = []
+                for item in result:
+                    if isinstance(item, bytes):
+                        safe_result.append(item.decode('utf-8', errors='ignore'))
+                    else:
+                        safe_result.append(str(item))
+                # Return a named tuple-like object
+                return type(result)(*safe_result)
+            except (TypeError, UnicodeDecodeError):
+                # Return safe defaults
+                from collections import namedtuple
+                UnameTuple = namedtuple('uname_result', ['system', 'node', 'release', 'version', 'machine', 'processor'])
+                return UnameTuple('Windows', 'localhost', '10', '10.0.19041', 'AMD64', 'Intel64 Family 6 Model 142 Stepping 10, GenuineIntel')
+        
+        platform.uname = safe_uname
+        
+        # Patch win32_ver as well since that's where the original error occurs
+        try:
+            original_win32_ver = platform.win32_ver
+            
+            def safe_win32_ver():
+                try:
+                    return original_win32_ver()
+                except (TypeError, UnicodeDecodeError, AttributeError):
+                    # Return safe defaults for Windows
+                    return ('10', '10.0.19041', 'SP0', 'Multiprocessor Free')
+            
+            platform.win32_ver = safe_win32_ver
+        except AttributeError:
+            # win32_ver might not exist on non-Windows systems
+            pass
+
+# Apply Windows Python 3.8 compatibility fix
+_fix_windows_python38_compatibility()
 
 # Mock external modules at import time to prevent ImportError
 def _mock_external_modules():

@@ -8,6 +8,19 @@ import pytest
 import logging
 from unittest.mock import MagicMock, patch
 
+# Import compatibility fixes first, before any other imports
+try:
+    # Add project root to path first
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    
+    from infra_mgmt.compatibility import ensure_compatibility
+    ensure_compatibility()
+except ImportError:
+    # If compatibility module not available, continue anyway
+    pass
+
 # Make pandas import optional to avoid ImportError during test collection
 try:
     import pandas as pd

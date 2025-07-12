@@ -184,9 +184,45 @@ class MockSSLContext:
     def __init__(self):
         self.check_hostname = True
         self.verify_mode = True
+        self.options = 0  # SSL context options bitmask
+        self.protocol = 'TLSv1.2'
+        self.ca_certs = None
+        self.cert_store_stats = {'crl': 0, 'x509_ca': 0, 'x509': 0}
+        self.minimum_version = None
+        self.maximum_version = None
+        self.hostname_checks_common_name = True
+        self.keylog_filename = None
         
     def wrap_socket(self, sock, server_hostname=None):
         return MockSocket()
+        
+    def load_default_certs(self, purpose=None):
+        """Mock loading default certificates"""
+        pass
+        
+    def set_ciphers(self, ciphers):
+        """Mock setting SSL ciphers"""
+        pass
+        
+    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+        """Mock loading certificate verification locations"""
+        pass
+        
+    def load_cert_chain(self, certfile, keyfile=None, password=None):
+        """Mock loading certificate chain"""
+        pass
+        
+    def set_alpn_protocols(self, protocols):
+        """Mock setting ALPN protocols"""
+        pass
+        
+    def set_npn_protocols(self, protocols):
+        """Mock setting NPN protocols"""
+        pass
+        
+    def set_servername_callback(self, callback):
+        """Mock setting servername callback"""
+        pass
 
 class NetworkIsolationManager:
     """Manager for network isolation patches"""
@@ -214,7 +250,28 @@ class NetworkIsolationManager:
         patches.extend([
             patch('ssl.create_default_context', return_value=MockSSLContext()),
             patch('ssl.SSLContext', return_value=MockSSLContext()),
+            patch('urllib3.util.ssl_.create_urllib3_context', return_value=MockSSLContext()),
+            patch('urllib3.util.ssl_.create_default_context', return_value=MockSSLContext()),
         ])
+        
+        # SSL constants and options
+        try:
+            import ssl
+            patches.extend([
+                patch.object(ssl, 'OP_NO_SSLv2', 0x01000000),
+                patch.object(ssl, 'OP_NO_SSLv3', 0x02000000),
+                patch.object(ssl, 'OP_NO_TLSv1', 0x04000000),
+                patch.object(ssl, 'OP_NO_TLSv1_1', 0x10000000),
+                patch.object(ssl, 'OP_NO_TLSv1_2', 0x08000000),
+                patch.object(ssl, 'OP_NO_TLSv1_3', 0x20000000),
+                patch.object(ssl, 'OP_NO_COMPRESSION', 0x00020000),
+                patch.object(ssl, 'OP_CIPHER_SERVER_PREFERENCE', 0x00400000),
+                patch.object(ssl, 'OP_SINGLE_DH_USE', 0x00100000),
+                patch.object(ssl, 'OP_SINGLE_ECDH_USE', 0x00080000),
+                patch.object(ssl, 'OP_NO_TICKET', 0x00004000),
+            ])
+        except ImportError:
+            pass
         
         # HTTP requests
         mock_response = MockHTTPResponse()

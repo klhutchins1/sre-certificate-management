@@ -99,64 +99,8 @@ def _fix_windows_python38_compatibility():
 # Apply Windows Python 3.8 compatibility fix
 _fix_windows_python38_compatibility()
 
-# Mock external modules at import time to prevent ImportError
-def _mock_external_modules():
-    """Mock external modules that might not be installed"""
-    
-    # Mock dns module
-    if 'dns' not in sys.modules:
-        dns_mock = MagicMock()
-        dns_mock.resolver = MagicMock()
-        dns_mock.resolver.resolve = MagicMock()
-        dns_mock.resolver.query = MagicMock()
-        dns_mock.resolver.Resolver = MagicMock()
-        dns_mock.resolver.NXDOMAIN = Exception("NXDOMAIN")
-        dns_mock.resolver.NoAnswer = Exception("NoAnswer")
-        dns_mock.resolver.Timeout = Exception("Timeout")
-        dns_mock.resolver.YXDOMAIN = Exception("YXDOMAIN")
-        sys.modules['dns'] = dns_mock
-        sys.modules['dns.resolver'] = dns_mock.resolver
-    
-    # Mock whois module
-    if 'whois' not in sys.modules:
-        whois_mock = MagicMock()
-        whois_mock.whois = MagicMock()
-        whois_mock.query = MagicMock()
-        whois_mock.parser = MagicMock()
-        whois_mock.parser.PywhoisError = Exception("PywhoisError")
-        sys.modules['whois'] = whois_mock
-        sys.modules['whois.parser'] = whois_mock.parser
-    
-    # Mock requests module
-    if 'requests' not in sys.modules:
-        requests_mock = MagicMock()
-        requests_mock.get = MagicMock()
-        requests_mock.post = MagicMock()
-        requests_mock.put = MagicMock()
-        requests_mock.delete = MagicMock()
-        requests_mock.head = MagicMock()
-        requests_mock.patch = MagicMock()
-        requests_mock.Session = MagicMock()
-        sys.modules['requests'] = requests_mock
-    
-    # Mock urllib3 module
-    if 'urllib3' not in sys.modules:
-        urllib3_mock = MagicMock()
-        urllib3_mock.disable_warnings = MagicMock()
-        urllib3_mock.exceptions = MagicMock()
-        urllib3_mock.exceptions.InsecureRequestWarning = Warning
-        urllib3_mock.PoolManager = MagicMock()
-        sys.modules['urllib3'] = urllib3_mock
-        sys.modules['urllib3.exceptions'] = urllib3_mock.exceptions
-    
-    # Mock other network-related modules
-    if 'ipaddress' not in sys.modules:
-        ipaddress_mock = MagicMock()
-        ipaddress_mock.ip_address = MagicMock()
-        sys.modules['ipaddress'] = ipaddress_mock
-
-# Call the mock function at import time
-_mock_external_modules()
+# Don't mock modules at import time to avoid conflicts with real packages
+# The patching will happen during actual test execution via NetworkIsolationManager
 
 class MockWhoisResult:
     """Mock WHOIS result object that mimics python-whois behavior"""
@@ -295,6 +239,8 @@ class NetworkIsolationManager:
             patch('dns.resolver.query', return_value=[mock_dns_answer]),
             patch('dns.resolver.Resolver.resolve', return_value=[mock_dns_answer]),
             patch('dns.resolver.Resolver.query', return_value=[mock_dns_answer]),
+            # Add DNS reversename operations
+            patch('dns.reversename.from_address', return_value='4.3.2.1.in-addr.arpa'),
         ])
         
         # WHOIS operations
@@ -349,6 +295,12 @@ class NetworkIsolationManager:
             ]),
         ])
         
+        # Scanner utils patches (for IP operations)
+        patches.extend([
+            patch('infra_mgmt.scanner.utils.dns.resolver.resolve', return_value=[mock_dns_answer]),
+            patch('infra_mgmt.scanner.utils.dns.reversename.from_address', return_value='4.3.2.1.in-addr.arpa'),
+        ])
+        
         # Subdomain scanner patches
         patches.extend([
             patch('infra_mgmt.scanner.subdomain_scanner.requests.get', return_value=mock_http_response),
@@ -366,6 +318,8 @@ class NetworkIsolationManager:
         patches.extend([
             patch('infra_mgmt.scanner.utils.whois.whois', return_value=mock_whois_result),
             patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=[mock_dns_answer]),
+            # DNS utils patches
+            patch('infra_mgmt.utils.dns_records.dns.resolver.query', return_value=[mock_dns_answer]),
         ])
         
         return patches

@@ -31,38 +31,50 @@ def _get_cached_session_factory():
             _cached_session_factory = CachedSessionFactory(cache_manager)
     return _cached_session_factory
 
-def get_session(engine=None, use_cache: bool = True) -> Session:
+def get_session(engine_param=None, use_cache: bool = True) -> Session:
     """Get a database session.
     
     Args:
-        engine: Optional SQLAlchemy engine. If None, uses global engine.
+        engine_param: Optional SQLAlchemy engine. If None, uses appropriate engine.
         use_cache: Whether to use cache if available (default: True)
         
     Returns:
         Session: A new database session if engine is valid, None otherwise.
     """
-    if engine is None:
-        engine = getattr(settings, '_engine', None)
-        if engine is None:
-            return None
+    # Determine which engine to use
+    target_engine = engine_param
     
-    # Try to use cached session if available
-    if use_cache and is_cache_enabled():
+    # Try to use cached session if available and no specific engine requested
+    if target_engine is None and use_cache and is_cache_enabled():
         cached_factory = _get_cached_session_factory()
         if cached_factory:
             try:
                 return cached_factory(use_cache=True)
-            except Exception:
-                # Fall back to direct session if cache fails
-                pass
+            except Exception as e:
+                # Log the error and fall back
+                import logging
+                logging.warning(f"Failed to create cached session: {e}")
     
-    # Fall back to direct session
+    # If no engine specified, try to get from cache manager first, then global
+    if target_engine is None:
+        cache_manager = get_cache_manager()
+        if cache_manager and use_cache:
+            # Use cache manager's local engine for reads
+            target_engine = cache_manager.local_engine
+        else:
+            # Fall back to global engine
+            target_engine = globals().get('engine')
+    
+    if target_engine is None:
+        return None
+    
+    # Create direct session
     try:
         # Try to create a connection to verify engine is valid
-        with engine.connect() as conn:
+        with target_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return sessionmaker(
-            bind=engine,
+            bind=target_engine,
             expire_on_commit=False,  # Prevent stale data issues
             autoflush=True,  # Enable automatic flushing
             autocommit=False  # Keep transactions explicit

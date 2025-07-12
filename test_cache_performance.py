@@ -10,6 +10,15 @@ import time
 import tempfile
 import shutil
 from pathlib import Path
+
+# Import compatibility fixes before SQLAlchemy
+try:
+    from infra_mgmt.compatibility import ensure_compatibility
+    ensure_compatibility()
+except ImportError:
+    # If compatibility module not available, continue anyway
+    pass
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import logging

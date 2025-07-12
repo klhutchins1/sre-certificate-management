@@ -55,6 +55,7 @@ import logging
 import re
 import socket
 import time
+import ipaddress
 from sqlalchemy.orm import Session
 from ..models import IgnoredDomain, Domain, DomainDNSRecord
 from ..constants import INTERNAL_TLDS, EXTERNAL_TLDS

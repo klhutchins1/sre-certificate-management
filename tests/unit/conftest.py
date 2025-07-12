@@ -4,6 +4,15 @@ import shutil
 import gc
 import time
 import os
+
+# Import compatibility fixes before SQLAlchemy
+try:
+    from infra_mgmt.compatibility import ensure_compatibility
+    ensure_compatibility()
+except ImportError:
+    # If compatibility module not available, continue anyway
+    pass
+
 from sqlalchemy.orm import Session
 from infra_mgmt.models import Base
 from infra_mgmt.db.schema import migrate_database, sync_default_ignore_patterns

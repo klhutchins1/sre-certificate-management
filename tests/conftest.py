@@ -1,5 +1,5 @@
 """
-Test configuration with comprehensive network mocking.
+Test configuration with comprehensive network isolation for ALL tests.
 Prevents all real external network calls during testing.
 """
 import os
@@ -7,142 +7,56 @@ import sys
 import pytest
 import logging
 from unittest.mock import MagicMock, patch
-import pandas as pd
+
+# Import compatibility fixes first, before any other imports
+try:
+    # Add project root to path first
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    
+    from infra_mgmt.compatibility import ensure_compatibility
+    ensure_compatibility()
+except ImportError:
+    # If compatibility module not available, continue anyway
+    pass
+
+# Make pandas import optional to avoid ImportError during test collection
+try:
+    import pandas as pd
+except ImportError:
+    # Create a mock pandas module for test environments without pandas
+    pd = MagicMock()
+    pd.DataFrame = MagicMock
+    sys.modules['pandas'] = pd
 
 # Add the project root directory to the Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-# Global patches to prevent network calls during scanner tests
-_network_patches = []
+# Import our comprehensive isolation system
+from tests.test_isolation import NetworkIsolationManager, ensure_network_isolation
+
+# Global isolation manager
+_isolation_manager = NetworkIsolationManager()
 
 @pytest.fixture(autouse=True)
-def prevent_network_calls_for_scanner_tests(request):
-    """Auto-applied fixture that prevents network calls for scanner VIEW tests only."""
-    # Only apply to scanner VIEW tests, not unit tests of scanner modules
-    if 'scannerView' in request.node.nodeid or 'test_views' in request.node.nodeid:
-        print(f"🔒 Applying network mocking to: {request.node.nodeid}")
-        
-        from datetime import datetime, timezone
-        
-        # Create comprehensive mock responses with proper data types
-        mock_whois_result = MagicMock()
-        mock_whois_result.creation_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
-        mock_whois_result.expiration_date = datetime(2030, 1, 1, tzinfo=timezone.utc)
-        mock_whois_result.registrar = "Test Registrar"
-        mock_whois_result.registrant_name = "Test Owner"
-        mock_whois_result.status = "active"
-        mock_whois_result.name_servers = ["ns1.example.com", "ns2.example.com"]
-
-        mock_dns_answer = MagicMock()
-        mock_dns_answer.address = '1.2.3.4'
-        mock_dns_answer.ttl = 300
-
-        mock_http_response = MagicMock()
-        mock_http_response.status_code = 200
-        mock_http_response.json.return_value = []
-        mock_http_response.text = "Mock response"
-
-        mock_subprocess_result = MagicMock()
-        mock_subprocess_result.returncode = 0
-        mock_subprocess_result.stdout = "Mock WHOIS output"
-        
-        # Create proper certificate binary data (not MagicMock)
-        mock_cert_binary = b"MOCK_CERTIFICATE_DATA_BYTES"
-        
-        # Mock certificate scan result with proper structure
-        mock_cert_result = MagicMock()
-        mock_cert_result.has_certificate = True
-        mock_cert_result.is_valid = True
-        mock_cert_result.error = None
-        mock_cert_result.certificate_info = MagicMock()
-        mock_cert_result.certificate_info.serial_number = "3039"
-        mock_cert_result.certificate_info.common_name = "example.com"
-        mock_cert_result.certificate_info.signature_algorithm = "sha256WithRSAEncryption"
-        mock_cert_result.certificate_info.chain_valid = True
-        mock_cert_result.certificate_info.ip_addresses = ["1.2.3.4"]
-        mock_cert_result.certificate_info.san = ["example.com", "www.example.com"]
-
-        # Comprehensive patching at the lowest level
-        global _network_patches
-        _network_patches = [
-            # Socket level
-            patch('socket.socket'),
-            patch('socket.create_connection'),
-            patch('socket.getaddrinfo', return_value=[('AF_INET', 'SOCK_STREAM', 6, '', ('1.2.3.4', 443))]),
-            
-            # DNS level - patch ALL dns resolver paths
-            patch('dns.resolver.resolve', return_value=[mock_dns_answer]),
-            patch('dns.resolver.Resolver'),
-            patch('dns.resolver.query', return_value=[mock_dns_answer]),  # Alternative DNS method
-            
-            # HTTP level
-            patch('requests.get', return_value=mock_http_response),
-            patch('requests.post', return_value=mock_http_response),
-            
-            # Subprocess (for command-line tools)
-            patch('subprocess.run', return_value=mock_subprocess_result),
-            patch('subprocess.Popen'),
-            
-            # SSL/TLS
-            patch('ssl.create_default_context'),
-            
-            # Time delays
-            patch('time.sleep'),
-            
-            # Certificate operations - return proper bytes, not MagicMock
-            patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner._get_certificate', return_value=mock_cert_binary),
-            patch('infra_mgmt.scanner.certificate_scanner.CertificateScanner.scan_certificate', return_value=mock_cert_result),
-        ]
-        
-        # Try to patch whois if available
-        try:
-            _network_patches.append(patch('whois.whois', return_value=mock_whois_result))
-        except ImportError:
-            pass
-        
-        # Try to patch specific application modules for ALL possible DNS paths
-        try:
-            _network_patches.append(patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=[mock_dns_answer]))
-            _network_patches.append(patch('infra_mgmt.utils.dns_records.dns.resolver.query', return_value=[mock_dns_answer]))
-        except (ImportError, AttributeError):
-            pass
-            
-        try:
-            _network_patches.append(patch('infra_mgmt.scanner.domain_scanner.whois.whois', return_value=mock_whois_result))
-        except (ImportError, AttributeError):
-            pass
-            
-        try:
-            _network_patches.append(patch('infra_mgmt.scanner.subdomain_scanner.requests.get', return_value=mock_http_response))
-        except (ImportError, AttributeError):
-            pass
-            
-        # Patch DNS operations at the scanner level too
-        try:
-            _network_patches.append(patch('infra_mgmt.scanner.domain_scanner.dns.resolver.resolve', return_value=[mock_dns_answer]))
-            _network_patches.append(patch('infra_mgmt.scanner.domain_scanner.dns.resolver.query', return_value=[mock_dns_answer]))
-        except (ImportError, AttributeError):
-            pass
-
-        # Start all patches
-        for p in _network_patches:
-            p.start()
-        
-        print(f"🔒 Applied {len(_network_patches)} network patches")
-    else:
-        print(f"⚪ Skipping network mocking for: {request.node.nodeid}")
+def prevent_all_network_calls(request):
+    """
+    Auto-applied fixture that prevents ALL network calls for ALL tests.
+    This ensures complete test isolation from external services.
+    """
+    test_name = request.node.nodeid
+    print(f"🔒 Activating network isolation for: {test_name}")
+    
+    # Start comprehensive network isolation
+    _isolation_manager.start()
     
     yield
     
-    # Stop all patches
-    if _network_patches:
-        for p in _network_patches:
-            try:
-                p.stop()
-            except:
-                pass
-        _network_patches.clear()
+    # Stop network isolation
+    _isolation_manager.stop()
+    print(f"🔓 Deactivated network isolation for: {test_name}")
 
 # Create test data directory if it doesn't exist
 @pytest.fixture(autouse=True)
@@ -203,8 +117,8 @@ class MockGridOptionsBuilder:
     def from_dataframe(cls, dataframe, **kwargs):
         instance = cls()
         instance.options = {
-            'columnDefs': [{'field': col} for col in dataframe.columns],
-            'rowData': dataframe.to_dict('records')
+            'columnDefs': [{'field': col} for col in dataframe.columns] if hasattr(dataframe, 'columns') else [],
+            'rowData': dataframe.to_dict('records') if hasattr(dataframe, 'to_dict') else []
         }
         return instance
 
@@ -216,7 +130,7 @@ class MockAgGrid:
 
     def __call__(self, *args, **kwargs):
         return {
-            'data': args[0] if args else pd.DataFrame(),
+            'data': args[0] if args else pd.DataFrame() if hasattr(pd, 'DataFrame') else [],
             'selected_rows': [],
             'grid_options': kwargs.get('gridOptions', {})
         }
@@ -229,7 +143,7 @@ mock_aggrid.DataReturnMode = MagicMock()
 sys.modules['st_aggrid'] = mock_aggrid
 
 def pytest_configure(config):
-    """Configure logging based on pytest command line options"""
+    """Configure logging, network isolation, and custom markers for pytest"""
     log_cli_level = config.getoption('--log-cli-level', None)
     
     # Set up root logger with console handler
@@ -246,7 +160,23 @@ def pytest_configure(config):
     
     # Suppress specific Streamlit warnings
     logging.getLogger('streamlit').setLevel(logging.ERROR)
-    logging.getLogger('streamlit.runtime').setLevel(logging.ERROR) 
+    logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+    
+    # Register custom markers
+    config.addinivalue_line(
+        "markers", "networkisolation: mark test as using network isolation"
+    )
+    config.addinivalue_line(
+        "markers", "timeout: mark test with timeout"
+    )
+    
+    # Ensure network isolation is configured
+    print("🔒 Pytest configuration: Network isolation enabled for ALL tests")
+
+def pytest_unconfigure(config):
+    """Clean up network isolation after pytest"""
+    _isolation_manager.stop()
+    print("🔓 Pytest cleanup: Network isolation disabled")
 
 @pytest.fixture
 def fast_rate_limits():
@@ -273,4 +203,68 @@ def fast_rate_limits():
         return default
     
     with patch('infra_mgmt.settings.settings.get', side_effect=mock_settings_get):
-        yield 
+        yield
+
+@pytest.fixture
+def mock_whois_result():
+    """Fixture providing a mock WHOIS result for tests"""
+    from tests.test_isolation import MockWhoisResult
+    return MockWhoisResult()
+
+@pytest.fixture
+def mock_dns_answer():
+    """Fixture providing a mock DNS answer for tests"""
+    from tests.test_isolation import MockDNSAnswer
+    return MockDNSAnswer()
+
+@pytest.fixture
+def mock_http_response():
+    """Fixture providing a mock HTTP response for tests"""
+    from tests.test_isolation import MockHTTPResponse
+    return MockHTTPResponse()
+
+@pytest.fixture
+def isolated_test_environment():
+    """Fixture providing an isolated test environment with all mocks"""
+    from tests.test_isolation import create_mock_whois_result, create_mock_dns_answer, create_mock_http_response
+    
+    return {
+        'whois_result': create_mock_whois_result(),
+        'dns_answer': create_mock_dns_answer(),
+        'http_response': create_mock_http_response(),
+    }
+
+# Session-scoped fixtures for performance
+@pytest.fixture(scope="session")
+def session_isolation_manager():
+    """Session-scoped network isolation manager"""
+    manager = NetworkIsolationManager()
+    manager.start()
+    yield manager
+    manager.stop()
+
+# Configuration validation
+def pytest_collection_modifyitems(config, items):
+    """Modify test items to ensure network isolation"""
+    for item in items:
+        # Mark all tests to use network isolation
+        item.add_marker(pytest.mark.networkisolation)
+        
+        # Add timeout to prevent hanging tests
+        if not hasattr(item, 'pytestmark'):
+            item.pytestmark = []
+        
+        # Add reasonable timeout for tests
+        timeout_marker = pytest.mark.timeout(30)  # 30 second timeout
+        item.add_marker(timeout_marker)
+
+# Ensure no real external calls can happen
+def pytest_sessionstart(session):
+    """Ensure network isolation is active for the entire session"""
+    ensure_network_isolation()
+    print("🔒 Session started with network isolation ACTIVE")
+
+def pytest_sessionfinish(session, exitstatus):
+    """Clean up after session"""
+    _isolation_manager.stop()
+    print("🔓 Session finished, network isolation DEACTIVATED") 

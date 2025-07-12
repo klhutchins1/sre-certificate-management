@@ -110,7 +110,8 @@ class TestDomainScanner:
         domains = ['example.com', 'test.com']
         expanded = domain_scanner._expand_domains(domains)
         
-        assert expanded == domains
+        # Since sets don't preserve order, check that all domains are present
+        assert set(expanded) == set(domains)
     
     def test_get_base_domain(self, domain_scanner):
         """Test base domain extraction"""

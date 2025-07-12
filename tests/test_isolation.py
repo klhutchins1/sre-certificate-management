@@ -33,6 +33,65 @@ import logging
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Mock external modules at import time to prevent ImportError
+def _mock_external_modules():
+    """Mock external modules that might not be installed"""
+    
+    # Mock dns module
+    if 'dns' not in sys.modules:
+        dns_mock = MagicMock()
+        dns_mock.resolver = MagicMock()
+        dns_mock.resolver.resolve = MagicMock()
+        dns_mock.resolver.query = MagicMock()
+        dns_mock.resolver.Resolver = MagicMock()
+        dns_mock.resolver.NXDOMAIN = Exception("NXDOMAIN")
+        dns_mock.resolver.NoAnswer = Exception("NoAnswer")
+        dns_mock.resolver.Timeout = Exception("Timeout")
+        dns_mock.resolver.YXDOMAIN = Exception("YXDOMAIN")
+        sys.modules['dns'] = dns_mock
+        sys.modules['dns.resolver'] = dns_mock.resolver
+    
+    # Mock whois module
+    if 'whois' not in sys.modules:
+        whois_mock = MagicMock()
+        whois_mock.whois = MagicMock()
+        whois_mock.query = MagicMock()
+        whois_mock.parser = MagicMock()
+        whois_mock.parser.PywhoisError = Exception("PywhoisError")
+        sys.modules['whois'] = whois_mock
+        sys.modules['whois.parser'] = whois_mock.parser
+    
+    # Mock requests module
+    if 'requests' not in sys.modules:
+        requests_mock = MagicMock()
+        requests_mock.get = MagicMock()
+        requests_mock.post = MagicMock()
+        requests_mock.put = MagicMock()
+        requests_mock.delete = MagicMock()
+        requests_mock.head = MagicMock()
+        requests_mock.patch = MagicMock()
+        requests_mock.Session = MagicMock()
+        sys.modules['requests'] = requests_mock
+    
+    # Mock urllib3 module
+    if 'urllib3' not in sys.modules:
+        urllib3_mock = MagicMock()
+        urllib3_mock.disable_warnings = MagicMock()
+        urllib3_mock.exceptions = MagicMock()
+        urllib3_mock.exceptions.InsecureRequestWarning = Warning
+        urllib3_mock.PoolManager = MagicMock()
+        sys.modules['urllib3'] = urllib3_mock
+        sys.modules['urllib3.exceptions'] = urllib3_mock.exceptions
+    
+    # Mock other network-related modules
+    if 'ipaddress' not in sys.modules:
+        ipaddress_mock = MagicMock()
+        ipaddress_mock.ip_address = MagicMock()
+        sys.modules['ipaddress'] = ipaddress_mock
+
+# Call the mock function at import time
+_mock_external_modules()
+
 class MockWhoisResult:
     """Mock WHOIS result object that mimics python-whois behavior"""
     def __init__(self, domain: str = "example.com"):
@@ -194,6 +253,11 @@ class NetworkIsolationManager:
         patches.extend([
             patch('time.sleep', return_value=None),
             patch('time.time', return_value=1609459200.0),  # Fixed timestamp
+        ])
+        
+        # IP address operations
+        patches.extend([
+            patch('ipaddress.ip_address', side_effect=lambda x: x if x.replace('.', '').isdigit() else ValueError(f"Invalid IP: {x}")),
         ])
         
         # Application-specific patches

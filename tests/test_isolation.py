@@ -291,11 +291,29 @@ class NetworkIsolationManager:
         
         # DNS operations
         mock_dns_answer = MockDNSAnswer()
+        
+        # Create a mock DNS result that has both list behavior and ttl attribute
+        class MockDNSResult:
+            def __init__(self, answers):
+                self.answers = answers if isinstance(answers, list) else [answers]
+                self.ttl = answers[0].ttl if isinstance(answers, list) else answers.ttl
+                
+            def __iter__(self):
+                return iter(self.answers)
+                
+            def __getitem__(self, index):
+                return self.answers[index]
+                
+            def __len__(self):
+                return len(self.answers)
+        
+        mock_dns_result = MockDNSResult([mock_dns_answer])
+        
         patches.extend([
-            patch('dns.resolver.resolve', return_value=[mock_dns_answer]),
-            patch('dns.resolver.query', return_value=[mock_dns_answer]),
-            patch('dns.resolver.Resolver.resolve', return_value=[mock_dns_answer]),
-            patch('dns.resolver.Resolver.query', return_value=[mock_dns_answer]),
+            patch('dns.resolver.resolve', return_value=mock_dns_result),
+            patch('dns.resolver.query', return_value=mock_dns_result),
+            patch('dns.resolver.Resolver.resolve', return_value=mock_dns_result),
+            patch('dns.resolver.Resolver.query', return_value=mock_dns_result),
             # Add DNS reversename operations
             patch('dns.reversename.from_address', return_value='4.3.2.1.in-addr.arpa'),
         ])
@@ -343,10 +361,27 @@ class NetworkIsolationManager:
         mock_dns_answer = MockDNSAnswer()
         mock_http_response = MockHTTPResponse()
         
+        # Create a mock DNS result that has both list behavior and ttl attribute
+        class MockDNSResult:
+            def __init__(self, answers):
+                self.answers = answers if isinstance(answers, list) else [answers]
+                self.ttl = answers[0].ttl if isinstance(answers, list) else answers.ttl
+                
+            def __iter__(self):
+                return iter(self.answers)
+                
+            def __getitem__(self, index):
+                return self.answers[index]
+                
+            def __len__(self):
+                return len(self.answers)
+        
+        mock_dns_result = MockDNSResult([mock_dns_answer])
+        
         # Domain scanner patches
         patches.extend([
             patch('infra_mgmt.scanner.domain_scanner.whois.whois', return_value=mock_whois_result),
-            patch('infra_mgmt.scanner.domain_scanner.dns.resolver.resolve', return_value=[mock_dns_answer]),
+            patch('infra_mgmt.scanner.domain_scanner.dns.resolver.resolve', return_value=mock_dns_result),
             patch('infra_mgmt.scanner.domain_scanner.socket.getaddrinfo', return_value=[
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('1.2.3.4', 443))
             ]),
@@ -354,14 +389,14 @@ class NetworkIsolationManager:
         
         # Scanner utils patches (for IP operations)
         patches.extend([
-            patch('infra_mgmt.scanner.utils.dns.resolver.resolve', return_value=[mock_dns_answer]),
+            patch('infra_mgmt.scanner.utils.dns.resolver.resolve', return_value=mock_dns_result),
             patch('infra_mgmt.scanner.utils.dns.reversename.from_address', return_value='4.3.2.1.in-addr.arpa'),
         ])
         
         # Subdomain scanner patches
         patches.extend([
             patch('infra_mgmt.scanner.subdomain_scanner.requests.get', return_value=mock_http_response),
-            patch('infra_mgmt.scanner.subdomain_scanner.dns.resolver.resolve', return_value=[mock_dns_answer]),
+            patch('infra_mgmt.scanner.subdomain_scanner.dns.resolver.resolve', return_value=mock_dns_result),
         ])
         
         # Certificate scanner patches
@@ -374,9 +409,9 @@ class NetworkIsolationManager:
         # Utils patches
         patches.extend([
             patch('infra_mgmt.scanner.utils.whois.whois', return_value=mock_whois_result),
-            patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=[mock_dns_answer]),
+            patch('infra_mgmt.utils.dns_records.dns.resolver.resolve', return_value=mock_dns_result),
             # DNS utils patches
-            patch('infra_mgmt.utils.dns_records.dns.resolver.query', return_value=[mock_dns_answer]),
+            patch('infra_mgmt.utils.dns_records.dns.resolver.query', return_value=mock_dns_result),
         ])
         
         return patches

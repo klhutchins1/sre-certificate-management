@@ -39,38 +39,17 @@ def cache_manager(remote_db_path, temp_cache_dir):
          patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker'), \
          patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking'), \
          patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager'), \
-         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._initialize_databases') as mock_init_db, \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available', return_value=False), \
+         patch('infra_mgmt.db.cache_manager.create_engine') as mock_create_engine, \
+         patch('infra_mgmt.db.cache_manager.Base'), \
          patch('infra_mgmt.db.cache_manager.logger') as mock_logger:
         mock_settings.return_value.get.return_value = temp_cache_dir
         
-        # Mock the database initialization to set up basic attributes
-        def mock_init_databases(*args, **kwargs):
-            # Get the instance (self) from args
-            instance = args[0] if args else None
-            if instance:
-                # Create a mock local engine
-                mock_local_engine = MagicMock()
-                mock_local_engine.connect.return_value.__enter__.return_value = MagicMock()
-                mock_local_engine.connect.return_value.__exit__.return_value = None
-                
-                instance.local_engine = mock_local_engine
-                instance.remote_engine = None
-                instance.sync_status = MagicMock()
-                instance.last_sync = None
-                instance.sync_results = []
-                instance.pending_writes = []
-                instance.sync_lock = MagicMock()
-                instance.write_lock = MagicMock()
-                instance.db_operation_queue = []
-                instance.db_queue_lock = MagicMock()
-                instance.sync_thread = None
-                instance.db_worker_thread = None
-                instance.running = False
-                instance.sync_counter = 0
-                instance.last_sync_caller = None
-                instance.enhanced_session_manager = None
-            
-        mock_init_db.side_effect = mock_init_databases
+        # Create a mock local engine
+        mock_local_engine = MagicMock()
+        mock_local_engine.connect.return_value.__enter__.return_value = MagicMock()
+        mock_local_engine.connect.return_value.__exit__.return_value = None
+        mock_create_engine.return_value = mock_local_engine
         
         manager = DatabaseCacheManager(remote_db_path)
         yield manager
@@ -429,7 +408,6 @@ def test_resolve_conflict_with_existing_record(cache_manager):
     # Mock remote record exists
     mock_count_result = MagicMock()
     mock_count_result._mapping = {'count': 1}  # Record exists
-    mock_remote_conn.execute.return_value.fetchone.return_value = mock_count_result
     
     # Mock timestamp columns detection
     with patch.object(cache_manager, '_get_timestamp_columns', return_value=['updated_at']):
@@ -441,7 +419,9 @@ def test_resolve_conflict_with_existing_record(cache_manager):
         mock_remote_result._mapping = {'updated_at': '2025-07-11 10:00:00'}  # Older
         
         cache_manager.local_engine.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = mock_local_result
-        mock_remote_conn.execute.return_value.fetchone.return_value = mock_remote_result
+        
+        # Set up the mock chain properly - the method makes multiple calls to execute
+        mock_remote_conn.execute.return_value.fetchone.side_effect = [mock_count_result, mock_remote_result]
         
         # Mock _sync_update
         with patch.object(cache_manager, '_sync_update') as mock_sync_update:
@@ -482,7 +462,7 @@ def test_get_timestamp_columns(cache_manager):
         {'name': 'other_field'}
     ]
     
-    with patch('infra_mgmt.db.cache_manager.inspect', return_value=mock_inspector):
+    with patch('sqlalchemy.inspect', return_value=mock_inspector):
         # Ensure local_engine is set
         cache_manager.local_engine = MagicMock()
         

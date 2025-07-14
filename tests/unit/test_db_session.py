@@ -29,8 +29,10 @@ def test_get_session():
         assert session is not None
         assert isinstance(session, Session)
         
-        # Test with None engine
-        assert get_session(None) is None
+        # Test with None engine (mock cache manager and global engine to return None)
+        with patch('infra_mgmt.db.session.get_cache_manager', return_value=None), \
+             patch('infra_mgmt.db.session.globals', return_value={'engine': None}):
+            assert get_session(None) is None
     finally:
         if 'session' in locals():
             session.close()
@@ -39,8 +41,10 @@ def test_get_session():
         shutil.rmtree(temp_dir)
 def test_get_session_error_handling():
     """Test get_session error handling"""
-    # Should return None if engine is None
-    assert get_session(None) is None
+    # Should return None if engine is None (mock cache manager and global engine to return None)
+    with patch('infra_mgmt.db.session.get_cache_manager', return_value=None), \
+         patch('infra_mgmt.db.session.globals', return_value={'engine': None}):
+        assert get_session(None) is None
     # Should return None if engine is missing/invalid
     class Dummy:
         pass
@@ -227,8 +231,10 @@ def test_session_management_edge_cases():
         session = get_session(invalid_engine)
         assert session is None
         
-        # Test session manager with None engine
-        assert get_session() is None
+        # Test session manager with None engine (mock cache manager and global engine to return None)
+        with patch('infra_mgmt.db.session.get_cache_manager', return_value=None), \
+             patch('infra_mgmt.db.session.globals', return_value={'engine': None}):
+            assert get_session() is None
         # Test session manager with invalid engine
         assert get_session(invalid_engine) is None
     

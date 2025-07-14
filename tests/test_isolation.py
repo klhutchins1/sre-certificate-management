@@ -130,6 +130,14 @@ class MockDNSAnswer:
         self.target = address
         self.preference = 10  # For MX records
         self.exchange = "mail.example.com"  # For MX records
+        # SOA record attributes
+        self.mname = "ns1.example.com"
+        self.rname = "admin.example.com"
+        self.serial = 2024011401
+        self.refresh = 7200
+        self.retry = 3600
+        self.expire = 1209600
+        self.minimum = 86400
         
     def __str__(self):
         return self.address
@@ -188,6 +196,14 @@ class MockSSLContext:
         
     def wrap_socket(self, sock, server_hostname=None):
         return MockSocket()
+        
+    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+        """Mock loading certificate verification locations"""
+        pass
+        
+    def set_ciphers(self, ciphers):
+        """Mock setting SSL ciphers"""
+        pass
 
 class NetworkIsolationManager:
     """Manager for network isolation patches"""

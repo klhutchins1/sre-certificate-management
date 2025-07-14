@@ -13,38 +13,28 @@ def test_platform_functions():
     """Test that platform functions work correctly"""
     print("Testing platform functions...")
     
-    try:
-        machine = platform.machine()
-        print(f"✅ platform.machine() = {machine}")
-        assert isinstance(machine, str), "platform.machine() should return string"
-    except Exception as e:
-        print(f"❌ platform.machine() failed: {e}")
-        return False
+    # Test platform.machine()
+    machine = platform.machine()
+    print(f"✅ platform.machine() = {machine}")
+    assert isinstance(machine, str), "platform.machine() should return string"
     
-    try:
-        uname = platform.uname()
-        print(f"✅ platform.uname() = {uname}")
-        assert hasattr(uname, 'system'), "platform.uname() should have system attribute"
-    except Exception as e:
-        print(f"❌ platform.uname() failed: {e}")
-        return False
+    # Test platform.uname()
+    uname = platform.uname()
+    print(f"✅ platform.uname() = {uname}")
+    assert hasattr(uname, 'system'), "platform.uname() should have system attribute"
     
+    # Test Windows-specific function if on Windows
     if sys.platform.startswith('win'):
-        try:
-            win_ver = platform.win32_ver()
-            print(f"✅ platform.win32_ver() = {win_ver}")
-        except Exception as e:
-            print(f"❌ platform.win32_ver() failed: {e}")
-            return False
-    
-    return True
+        win_ver = platform.win32_ver()
+        print(f"✅ platform.win32_ver() = {win_ver}")
+        assert isinstance(win_ver, tuple), "platform.win32_ver() should return tuple"
 
 def test_sqlalchemy_import():
     """Test that SQLAlchemy can be imported without errors"""
     print("\nTesting SQLAlchemy import...")
     
+    # Try to import compatibility fixes (optional)
     try:
-        # Import compatibility fixes first
         from infra_mgmt.compatibility import ensure_compatibility
         ensure_compatibility()
         print("✅ Compatibility fixes applied")
@@ -52,37 +42,24 @@ def test_sqlalchemy_import():
         print(f"⚠️  Compatibility module not found: {e}")
         print("Continuing without explicit compatibility fixes...")
     
-    try:
-        from sqlalchemy import create_engine, text
-        print("✅ SQLAlchemy core modules imported successfully")
-    except Exception as e:
-        print(f"❌ SQLAlchemy import failed: {e}")
-        return False
+    # Test SQLAlchemy core imports
+    from sqlalchemy import create_engine, text
+    print("✅ SQLAlchemy core modules imported successfully")
     
-    try:
-        from sqlalchemy.orm import sessionmaker, Session
-        print("✅ SQLAlchemy ORM modules imported successfully")
-    except Exception as e:
-        print(f"❌ SQLAlchemy ORM import failed: {e}")
-        return False
+    # Test SQLAlchemy ORM imports  
+    from sqlalchemy.orm import sessionmaker, Session
+    print("✅ SQLAlchemy ORM modules imported successfully")
     
-    try:
-        # Test creating an in-memory database
-        engine = create_engine("sqlite:///:memory:")
-        print("✅ SQLAlchemy engine created successfully")
-        
-        # Test basic query
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT 1 as test")).fetchone()
-            assert result is not None, "Query should return a result"
-            assert result[0] == 1, "Basic query should return 1"
-        print("✅ Basic SQLAlchemy query works")
-        
-    except Exception as e:
-        print(f"❌ SQLAlchemy engine test failed: {e}")
-        return False
+    # Test creating an in-memory database
+    engine = create_engine("sqlite:///:memory:")
+    print("✅ SQLAlchemy engine created successfully")
     
-    return True
+    # Test basic query
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT 1 as test")).fetchone()
+        assert result is not None, "Query should return a result"
+        assert result[0] == 1, "Basic query should return 1"
+    print("✅ Basic SQLAlchemy query works")
 
 def main():
     """Run all compatibility tests"""

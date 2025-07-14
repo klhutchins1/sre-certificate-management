@@ -184,45 +184,10 @@ class MockSSLContext:
     def __init__(self):
         self.check_hostname = True
         self.verify_mode = True
-        self.options = 0  # SSL context options bitmask
-        self.protocol = 'TLSv1.2'
-        self.ca_certs = None
-        self.cert_store_stats = {'crl': 0, 'x509_ca': 0, 'x509': 0}
-        self.minimum_version = None
-        self.maximum_version = None
-        self.hostname_checks_common_name = True
-        self.keylog_filename = None
+        self.options = 0  # Minimal options attribute for urllib3
         
     def wrap_socket(self, sock, server_hostname=None):
         return MockSocket()
-        
-    def load_default_certs(self, purpose=None):
-        """Mock loading default certificates"""
-        pass
-        
-    def set_ciphers(self, ciphers):
-        """Mock setting SSL ciphers"""
-        pass
-        
-    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
-        """Mock loading certificate verification locations"""
-        pass
-        
-    def load_cert_chain(self, certfile, keyfile=None, password=None):
-        """Mock loading certificate chain"""
-        pass
-        
-    def set_alpn_protocols(self, protocols):
-        """Mock setting ALPN protocols"""
-        pass
-        
-    def set_npn_protocols(self, protocols):
-        """Mock setting NPN protocols"""
-        pass
-        
-    def set_servername_callback(self, callback):
-        """Mock setting servername callback"""
-        pass
 
 class NetworkIsolationManager:
     """Manager for network isolation patches"""
@@ -246,32 +211,13 @@ class NetworkIsolationManager:
             patch('socket.gethostbyaddr', return_value=('example.com', [], ['1.2.3.4'])),
         ])
         
-        # SSL/TLS operations
+        # SSL/TLS operations (minimal)
         patches.extend([
             patch('ssl.create_default_context', return_value=MockSSLContext()),
-            patch('ssl.SSLContext', return_value=MockSSLContext()),
             patch('urllib3.util.ssl_.create_urllib3_context', return_value=MockSSLContext()),
-            patch('urllib3.util.ssl_.create_default_context', return_value=MockSSLContext()),
         ])
         
-        # SSL constants and options
-        try:
-            import ssl
-            patches.extend([
-                patch.object(ssl, 'OP_NO_SSLv2', 0x01000000),
-                patch.object(ssl, 'OP_NO_SSLv3', 0x02000000),
-                patch.object(ssl, 'OP_NO_TLSv1', 0x04000000),
-                patch.object(ssl, 'OP_NO_TLSv1_1', 0x10000000),
-                patch.object(ssl, 'OP_NO_TLSv1_2', 0x08000000),
-                patch.object(ssl, 'OP_NO_TLSv1_3', 0x20000000),
-                patch.object(ssl, 'OP_NO_COMPRESSION', 0x00020000),
-                patch.object(ssl, 'OP_CIPHER_SERVER_PREFERENCE', 0x00400000),
-                patch.object(ssl, 'OP_SINGLE_DH_USE', 0x00100000),
-                patch.object(ssl, 'OP_SINGLE_ECDH_USE', 0x00080000),
-                patch.object(ssl, 'OP_NO_TICKET', 0x00004000),
-            ])
-        except ImportError:
-            pass
+
         
         # HTTP requests
         mock_response = MockHTTPResponse()
@@ -289,25 +235,16 @@ class NetworkIsolationManager:
             patch('urllib3.PoolManager.request', return_value=mock_response),
         ])
         
-        # DNS operations
+        # DNS operations  
         mock_dns_answer = MockDNSAnswer()
         
-        # Create a mock DNS result that has both list behavior and ttl attribute
-        class MockDNSResult:
+        # Simple DNS result that just has ttl attribute
+        class SimpleDNSResult(list):
             def __init__(self, answers):
-                self.answers = answers if isinstance(answers, list) else [answers]
-                self.ttl = answers[0].ttl if isinstance(answers, list) else answers.ttl
-                
-            def __iter__(self):
-                return iter(self.answers)
-                
-            def __getitem__(self, index):
-                return self.answers[index]
-                
-            def __len__(self):
-                return len(self.answers)
+                super().__init__(answers if isinstance(answers, list) else [answers])
+                self.ttl = 300  # Simple fixed TTL
         
-        mock_dns_result = MockDNSResult([mock_dns_answer])
+        mock_dns_result = SimpleDNSResult([mock_dns_answer])
         
         patches.extend([
             patch('dns.resolver.resolve', return_value=mock_dns_result),
@@ -361,22 +298,13 @@ class NetworkIsolationManager:
         mock_dns_answer = MockDNSAnswer()
         mock_http_response = MockHTTPResponse()
         
-        # Create a mock DNS result that has both list behavior and ttl attribute
-        class MockDNSResult:
+        # Simple DNS result that just has ttl attribute
+        class SimpleDNSResult(list):
             def __init__(self, answers):
-                self.answers = answers if isinstance(answers, list) else [answers]
-                self.ttl = answers[0].ttl if isinstance(answers, list) else answers.ttl
-                
-            def __iter__(self):
-                return iter(self.answers)
-                
-            def __getitem__(self, index):
-                return self.answers[index]
-                
-            def __len__(self):
-                return len(self.answers)
+                super().__init__(answers if isinstance(answers, list) else [answers])
+                self.ttl = 300  # Simple fixed TTL
         
-        mock_dns_result = MockDNSResult([mock_dns_answer])
+        mock_dns_result = SimpleDNSResult([mock_dns_answer])
         
         # Domain scanner patches
         patches.extend([

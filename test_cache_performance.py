@@ -64,44 +64,37 @@ def test_direct_access(db_path: str, num_operations: int = 100):
     engine = create_engine(f"sqlite:///{db_path}")
     Session = sessionmaker(bind=engine)
     
-    try:
-        # Test read operations
-        start_time = time.time()
-        for i in range(num_operations):
-            with Session() as session:
-                result = session.execute(text("SELECT COUNT(*) FROM test_data")).scalar()
-                if i % 10 == 0:
-                    logger.debug(f"Read {i}: {result} records")
-        
-        read_time = time.time() - start_time
-        
-        # Test write operations
-        start_time = time.time()
-        for i in range(num_operations):
-            with Session() as session:
-                session.execute(text("""
-                    INSERT INTO test_data (name, value) 
-                    VALUES (:name, :value)
-                """), {
-                    'name': f'Test_Write_{i}',
-                    'value': i
-                })
-                session.commit()
-        
-        write_time = time.time() - start_time
-        
-        return {
-            'read_time': read_time,
-            'write_time': write_time,
-            'read_ops_per_sec': num_operations / read_time,
-            'write_ops_per_sec': num_operations / write_time
-        }
-    except Exception as e:
-        logger.error(f"Error in direct access test: {e}")
-        raise
-    finally:
-        # Clean up engine resources
-        engine.dispose()
+    # Test read operations
+    start_time = time.time()
+    for i in range(num_operations):
+        with Session() as session:
+            result = session.execute(text("SELECT COUNT(*) FROM test_data")).scalar()
+            if i % 10 == 0:
+                logger.debug(f"Read {i}: {result} records")
+    
+    read_time = time.time() - start_time
+    
+    # Test write operations
+    start_time = time.time()
+    for i in range(num_operations):
+        with Session() as session:
+            session.execute(text("""
+                INSERT INTO test_data (name, value) 
+                VALUES (:name, :value)
+            """), {
+                'name': f'Test_Write_{i}',
+                'value': i
+            })
+            session.commit()
+    
+    write_time = time.time() - start_time
+    
+    return {
+        'read_time': read_time,
+        'write_time': write_time,
+        'read_ops_per_sec': num_operations / read_time,
+        'write_ops_per_sec': num_operations / write_time
+    }
 
 def force_enable_cache_for_testing(db_path: str):
     """Force enable cache for testing by temporarily making the path appear as network path."""
@@ -138,8 +131,6 @@ def test_cached_access(db_path: str, num_operations: int = 100):
     
     # Force enable cache for testing
     original_path = force_enable_cache_for_testing(db_path)
-    cache_manager = None
-    Session = None
     
     try:
         from infra_mgmt.db.session import get_session
@@ -240,10 +231,6 @@ def test_cached_access(db_path: str, num_operations: int = 100):
         logger.error(f"Cached test failed: {str(e)}")
         return None
     finally:
-        # Clean up cache manager resources
-        if cache_manager and hasattr(cache_manager, 'local_engine') and cache_manager.local_engine:
-            cache_manager.local_engine.dispose()
-        
         # Restore original database path
         restore_original_db_path(original_path)
 

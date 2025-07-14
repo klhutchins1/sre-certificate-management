@@ -32,15 +32,22 @@ def remote_db_path(temp_cache_dir):
     return os.path.join(temp_cache_dir, "remote.db")
 
 @pytest.fixture
-def cache_manager(remote_db_path):
+def cache_manager(remote_db_path, temp_cache_dir):
     """Create a cache manager instance for testing."""
-    with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
+    with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings, \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available', return_value=False), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager'):
         mock_settings.return_value.get.return_value = temp_cache_dir
         manager = DatabaseCacheManager(remote_db_path)
         yield manager
         # Cleanup
         if hasattr(manager, 'cache_dir') and os.path.exists(manager.cache_dir):
             shutil.rmtree(manager.cache_dir, ignore_errors=True)
+        # Ensure threads are stopped
+        manager.running = False
 
 @pytest.fixture
 def test_engine():
@@ -57,11 +64,20 @@ def test_cache_manager_initialization(cache_manager):
     assert hasattr(cache_manager, 'local_db_path')
     assert hasattr(cache_manager, 'pending_writes')
 
-def test_cache_manager_cache_dir_creation(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_cache_dir_creation(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                         mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test that cache directory is created if it doesn't exist."""
     # Remove directory if it exists
     if os.path.exists(temp_cache_dir):
         shutil.rmtree(temp_cache_dir)
+    
+    # Mock network availability to avoid network checks
+    mock_network_available.return_value = False
     
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
@@ -69,9 +85,23 @@ def test_cache_manager_cache_dir_creation(temp_cache_dir, remote_db_path):
         
         assert os.path.exists(manager.local_db_path.parent)
         assert os.path.isdir(manager.local_db_path.parent)
+        
+        # Verify background threads weren't started
+        mock_start_sync.assert_called_once()
+        mock_start_db_worker.assert_called_once()
+        mock_network_available.assert_called()
 
-def test_cache_manager_load_cache(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_load_cache(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                 mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test cache loading functionality."""
+    # Mock network availability to avoid network checks
+    mock_network_available.return_value = False
+    
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
         manager = DatabaseCacheManager(remote_db_path)
@@ -79,6 +109,11 @@ def test_cache_manager_load_cache(temp_cache_dir, remote_db_path):
         # Test that the manager was initialized properly
         assert manager is not None
         assert hasattr(manager, 'local_engine')
+        
+        # Verify background threads weren't started
+        mock_start_sync.assert_called_once()
+        mock_start_db_worker.assert_called_once()
+        mock_network_available.assert_called()
 
 def test_cache_manager_save_cache(cache_manager):
     """Test cache saving functionality."""
@@ -210,8 +245,16 @@ def test_cache_manager_clear_cache(cache_manager):
         # Verify cache was cleared
         assert len(cache_manager.pending_writes) == 0
 
-def test_cache_manager_cache_cleanup(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_cache_cleanup(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                    mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test cache cleanup on manager destruction."""
+    mock_network_available.return_value = False
+    
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
         manager = DatabaseCacheManager(remote_db_path)
@@ -225,8 +268,16 @@ def test_cache_manager_cache_cleanup(temp_cache_dir, remote_db_path):
         # Verify manager was cleaned up
         assert manager is not None
 
-def test_cache_manager_error_handling(temp_cache_dir):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_error_handling(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                     mock_start_db_worker, mock_start_sync, temp_cache_dir):
     """Test error handling in cache operations."""
+    mock_network_available.return_value = False
+    
     # Test with invalid remote database path
     invalid_path = '/invalid/path/that/does/not/exist.db'
     
@@ -236,9 +287,17 @@ def test_cache_manager_error_handling(temp_cache_dir):
         manager = DatabaseCacheManager(invalid_path)
         assert manager is not None
 
-def test_cache_manager_concurrent_access(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_concurrent_access(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                        mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test concurrent access to cache manager."""
     import threading
+    
+    mock_network_available.return_value = False
     
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
@@ -269,8 +328,16 @@ def test_cache_manager_concurrent_access(temp_cache_dir, remote_db_path):
         for result in results:
             assert isinstance(result, int) or isinstance(result, Exception)
 
-def test_cache_manager_performance(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_performance(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                  mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test cache manager performance with large datasets."""
+    mock_network_available.return_value = False
+    
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
         manager = DatabaseCacheManager(remote_db_path)

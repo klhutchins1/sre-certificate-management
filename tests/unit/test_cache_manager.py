@@ -37,10 +37,41 @@ def cache_manager(remote_db_path, temp_cache_dir):
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings, \
          patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync'), \
          patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker'), \
-         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available', return_value=False), \
          patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking'), \
-         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager'):
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._initialize_databases') as mock_init_db, \
+         patch('infra_mgmt.db.cache_manager.logger') as mock_logger:
         mock_settings.return_value.get.return_value = temp_cache_dir
+        
+        # Mock the database initialization to set up basic attributes
+        def mock_init_databases(*args, **kwargs):
+            # Get the instance (self) from args
+            instance = args[0] if args else None
+            if instance:
+                # Create a mock local engine
+                mock_local_engine = MagicMock()
+                mock_local_engine.connect.return_value.__enter__.return_value = MagicMock()
+                mock_local_engine.connect.return_value.__exit__.return_value = None
+                
+                instance.local_engine = mock_local_engine
+                instance.remote_engine = None
+                instance.sync_status = MagicMock()
+                instance.last_sync = None
+                instance.sync_results = []
+                instance.pending_writes = []
+                instance.sync_lock = MagicMock()
+                instance.write_lock = MagicMock()
+                instance.db_operation_queue = []
+                instance.db_queue_lock = MagicMock()
+                instance.sync_thread = None
+                instance.db_worker_thread = None
+                instance.running = False
+                instance.sync_counter = 0
+                instance.last_sync_caller = None
+                instance.enhanced_session_manager = None
+            
+        mock_init_db.side_effect = mock_init_databases
+        
         manager = DatabaseCacheManager(remote_db_path)
         yield manager
         # Cleanup
@@ -366,8 +397,12 @@ def test_sync_insert_with_upsert_logic(cache_manager):
     # Mock local connection and result
     mock_local_conn = MagicMock()
     mock_result = MagicMock()
-    mock_result._mapping = {'id': 1, 'name': 'test', 'value': 'test_value'}
-    mock_result._mapping.keys = MagicMock(return_value=['id', 'name', 'value'])
+    
+    # Create a proper mock for _mapping that behaves like SQLAlchemy result
+    mock_mapping = MagicMock()
+    mock_mapping.__getitem__ = lambda self, key: {'id': 1, 'name': 'test', 'value': 'test_value'}[key]
+    mock_mapping.keys.return_value = ['id', 'name', 'value']
+    mock_result._mapping = mock_mapping
     
     cache_manager.local_engine.connect.return_value.__enter__.return_value = mock_local_conn
     mock_local_conn.execute.return_value.fetchone.return_value = mock_result
@@ -448,6 +483,7 @@ def test_get_timestamp_columns(cache_manager):
     ]
     
     with patch('infra_mgmt.db.cache_manager.inspect', return_value=mock_inspector):
+        # Ensure local_engine is set
         cache_manager.local_engine = MagicMock()
         
         result = cache_manager._get_timestamp_columns('test_table')
@@ -486,13 +522,13 @@ def test_sqlalchemy_2_0_compatibility(cache_manager):
     """Test SQLAlchemy 2.0 result object compatibility."""
     # Mock a result object that behaves like SQLAlchemy 2.0
     mock_result = MagicMock()
-    mock_result._mapping = {
-        'id': 1,
-        'name': 'test_name', 
-        'value': 'test_value',
-        'updated_at': '2025-07-11 16:00:00'
-    }
-    mock_result._mapping.keys = MagicMock(return_value=['id', 'name', 'value', 'updated_at'])
+    
+    # Create a proper mock for _mapping that behaves like SQLAlchemy result
+    mock_mapping = MagicMock()
+    data = {'id': 1, 'name': 'test_name', 'value': 'test_value', 'updated_at': '2025-07-11 16:00:00'}
+    mock_mapping.__getitem__ = lambda self, key: data[key]
+    mock_mapping.keys.return_value = ['id', 'name', 'value', 'updated_at']
+    mock_result._mapping = mock_mapping
     
     # Test _sync_insert handles _mapping correctly
     cache_manager.local_engine = MagicMock()
@@ -523,8 +559,12 @@ def test_unique_constraint_handling(cache_manager):
     # Mock local connection and result
     mock_local_conn = MagicMock()
     mock_result = MagicMock()
-    mock_result._mapping = {'id': 1, 'name': 'test'}
-    mock_result._mapping.keys = MagicMock(return_value=['id', 'name'])
+    
+    # Create a proper mock for _mapping that behaves like SQLAlchemy result
+    mock_mapping = MagicMock()
+    mock_mapping.__getitem__ = lambda self, key: {'id': 1, 'name': 'test'}[key]
+    mock_mapping.keys.return_value = ['id', 'name']
+    mock_result._mapping = mock_mapping
     
     cache_manager.local_engine.connect.return_value.__enter__.return_value = mock_local_conn
     mock_local_conn.execute.return_value.fetchone.return_value = mock_result

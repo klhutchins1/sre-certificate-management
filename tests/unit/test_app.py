@@ -492,20 +492,35 @@ def test_css_loading_failure(mock_init_db, mock_load_css):
         mock_dashboard.assert_called_once()
 
 @patch('infra_mgmt.app.render_dashboard')
-def test_view_rendering_failure(mock_dashboard):
+@patch('infra_mgmt.app.init_database')
+@patch('infra_mgmt.static.styles.load_css')
+@patch('infra_mgmt.app.initialize_page_notifications')
+@patch('infra_mgmt.app.show_notifications')
+@patch('infra_mgmt.app.notify')
+def test_view_rendering_failure(mock_notify, mock_show_notifications, mock_init_notifications, 
+                               mock_load_css, mock_init_db, mock_dashboard):
     """Test that application handles view rendering failures gracefully"""
     mock_dashboard.side_effect = Exception("View rendering failed")
+    
+    # Mock database engine
+    mock_engine = MagicMock()
+    mock_init_db.return_value = mock_engine
+    
+    # Set up session state properly
+    st.session_state.current_view = "Dashboard"
+    st.session_state.engine = mock_engine
+    st.session_state.initialized = True
     
     with patch('streamlit.radio', return_value="📊 Dashboard"), \
          patch('streamlit.sidebar') as mock_sidebar, \
          patch('streamlit.title'), \
          patch('streamlit.markdown'), \
-         patch('streamlit.caption'):
+         patch('streamlit.caption'), \
+         patch('streamlit.rerun') as mock_rerun:
         # Mock the sidebar context manager
         mock_sidebar.__enter__ = MagicMock(return_value=mock_sidebar)
         mock_sidebar.__exit__ = MagicMock(return_value=None)
         
-        mock_sidebar.return_value = "Dashboard"
         # The test should expect the exception to be raised
         with pytest.raises(Exception) as exc_info:
             main()

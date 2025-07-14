@@ -29,7 +29,7 @@ import logging
 # Third-party imports
 import pandas as pd
 import plotly.figure_factory as ff
-from fpdf import FPDF
+from fpdf import FPDF, XPos, YPos
 from sqlalchemy.orm import Session
 
 # Local application imports
@@ -325,24 +325,24 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     # Add title page
     pdf.add_page()
     pdf.set_font('helvetica', 'B', 24)
-    pdf.cell(0, 20, 'Certificate Report', ln=True, align='C')
+    pdf.cell(0, 20, 'Certificate Report', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.ln(20)
     
     # Add summary
     pdf.set_font('helvetica', 'B', 14)
-    pdf.cell(0, 10, 'Summary', ln=True)
+    pdf.cell(0, 10, 'Summary', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font('helvetica', '', 12)
-    pdf.cell(0, 8, f'Total Certificates: {len(certificates)}', ln=True)
-    pdf.cell(0, 8, f'Valid Certificates: {sum(1 for c in certificates if c.valid_until > datetime.now())}', ln=True)
-    pdf.cell(0, 8, f'Expired Certificates: {sum(1 for c in certificates if c.valid_until <= datetime.now())}', ln=True)
-    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True)
+    pdf.cell(0, 8, f'Total Certificates: {len(certificates)}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.cell(0, 8, f'Valid Certificates: {sum(1 for c in certificates if c.valid_until > datetime.now())}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.cell(0, 8, f'Expired Certificates: {sum(1 for c in certificates if c.valid_until <= datetime.now())}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     
     # Add timeline chart if available
     if timeline_path and Path(timeline_path).exists():
         try:
             pdf.add_page()
             pdf.set_font('helvetica', 'B', 14)
-            pdf.cell(0, 10, 'Certificate Timeline', ln=True)
+            pdf.cell(0, 10, 'Certificate Timeline', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.image(timeline_path, x=10, w=190)
         except Exception as e:
             logger.error(f"Failed to add timeline to PDF: {str(e)}")
@@ -351,23 +351,23 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
     for cert in certificates:
         pdf.add_page()
         pdf.set_font('helvetica', 'B', 16)
-        pdf.cell(0, 10, f'Certificate: {cert.common_name}', ln=True)
+        pdf.cell(0, 10, f'Certificate: {cert.common_name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
         # Overview
         pdf.ln(5)
         pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 10, 'Overview', ln=True)
+        pdf.cell(0, 10, 'Overview', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font('helvetica', '', 12)
-        pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
-        pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', ln=True)
-        pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', ln=True)
-        pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
+        pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
         # Bindings
         if cert.certificate_bindings:
             pdf.ln(5)
             pdf.set_font('helvetica', 'B', 14)
-            pdf.cell(0, 10, 'Bindings', ln=True)
+            pdf.cell(0, 10, 'Bindings', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font('helvetica', '', 12)
             for binding in cert.certificate_bindings:
                 host_name = binding.host.name if binding.host else "Unknown Host"
@@ -375,12 +375,12 @@ def export_certificates_to_pdf(session: Session, output_path: str = None) -> str
                 ip_address = host_ip.ip_address if host_ip else "No IP"
                 port = binding.port if binding.port else "N/A"
                 
-                pdf.cell(0, 8, f'Host: {host_name}', ln=True)
+                pdf.cell(0, 8, f'Host: {host_name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 if binding.binding_type == 'IP':
-                    pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', ln=True)
-                pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
-                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
-                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
+                    pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Type: {binding.binding_type}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.ln(5)
     
     # Generate output path if not provided
@@ -439,48 +439,48 @@ def export_hosts_to_pdf(session: Session, output_path: str = None) -> str:
     # Add title page
     pdf.add_page()
     pdf.set_font('helvetica', 'B', 24)
-    pdf.cell(0, 20, 'Host Report', ln=True, align='C')
+    pdf.cell(0, 20, 'Host Report', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.ln(20)
     
     # Add summary
     pdf.set_font('helvetica', 'B', 14)
-    pdf.cell(0, 10, 'Summary', ln=True)
+    pdf.cell(0, 10, 'Summary', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font('helvetica', '', 12)
-    pdf.cell(0, 8, f'Total Hosts: {len(hosts)}', ln=True)
+    pdf.cell(0, 8, f'Total Hosts: {len(hosts)}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     total_bindings = sum(len(host.certificate_bindings) for host in hosts)
-    pdf.cell(0, 8, f'Total Certificate Bindings: {total_bindings}', ln=True)
-    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True)
+    pdf.cell(0, 8, f'Total Certificate Bindings: {total_bindings}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     
     # Add host details
     for host in hosts:
         pdf.add_page()
         pdf.set_font('helvetica', 'B', 16)
-        pdf.cell(0, 10, f'Host: {host.name}', ln=True)
+        pdf.cell(0, 10, f'Host: {host.name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
         # IP Addresses
         pdf.ln(5)
         pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 10, 'IP Addresses', ln=True)
+        pdf.cell(0, 10, 'IP Addresses', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font('helvetica', '', 12)
         for ip in host.ip_addresses:
-            pdf.cell(0, 8, f'IP: {ip.ip_address}', ln=True)
+            pdf.cell(0, 8, f'IP: {ip.ip_address}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
         # Certificate Bindings
         if host.certificate_bindings:
             pdf.ln(5)
             pdf.set_font('helvetica', 'B', 14)
-            pdf.cell(0, 10, 'Certificate Bindings', ln=True)
+            pdf.cell(0, 10, 'Certificate Bindings', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font('helvetica', '', 12)
             for binding in host.certificate_bindings:
                 cert = binding.certificate
-                pdf.cell(0, 8, f'Certificate: {cert.common_name}', ln=True)
-                pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
+                pdf.cell(0, 8, f'Certificate: {cert.common_name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 if binding.binding_type == 'IP':
-                    pdf.cell(0, 8, f'Port: {binding.port}', ln=True)
-                pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
-                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
-                pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
-                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
+                    pdf.cell(0, 8, f'Port: {binding.port}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Type: {binding.binding_type}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.ln(5)
     
     # Generate output path if not provided

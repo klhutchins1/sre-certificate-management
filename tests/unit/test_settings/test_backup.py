@@ -7,7 +7,7 @@ from datetime import datetime
 from infra_mgmt.backup import create_backup, restore_backup, list_backups
 from infra_mgmt.settings import Settings
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker, close_all_sessions
 from infra_mgmt.models import Base, Certificate
 import time
 import yaml
@@ -121,7 +121,7 @@ def test_restore_backup(test_env):
         )
         session.add(cert)
         session.commit()
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Store original settings
@@ -145,7 +145,7 @@ def test_restore_backup(test_env):
             'subject': original_cert.subject,
             'san': original_cert.san
         }
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Modify database by adding another record
@@ -164,7 +164,7 @@ def test_restore_backup(test_env):
         )
         session.add(cert)
         session.commit()
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Get backup to restore
@@ -173,7 +173,7 @@ def test_restore_backup(test_env):
     backup_to_restore = backups[0]['manifest_file']
 
     # Close all database connections before restore
-    Session.close_all()
+    close_all_sessions()
 
     # Restore backup
     success, message = restore_backup(backup_to_restore)
@@ -196,7 +196,7 @@ def test_restore_backup(test_env):
             'san': restored_cert.san
         }
         assert restored_data == original_data, "Certificate data does not match after restore"
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Verify config was restored

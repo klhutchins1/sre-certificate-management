@@ -223,7 +223,7 @@ class SettingsService:
     def remove_ignored_domain(engine, domain_id: int) -> Tuple[bool, str]:
         try:
             with Session(engine) as session:
-                domain = session.query(IgnoredDomain).get(domain_id)
+                domain = session.get(IgnoredDomain, domain_id)
                 if not domain:
                     return False, "Domain pattern not found"
                 session.delete(domain)
@@ -256,7 +256,7 @@ class SettingsService:
     def remove_ignored_certificate(engine, cert_id: int) -> Tuple[bool, str]:
         try:
             with Session(engine) as session:
-                cert = session.query(IgnoredCertificate).get(cert_id)
+                cert = session.get(IgnoredCertificate, cert_id)
                 if not cert:
                     return False, "Certificate pattern not found"
                 session.delete(cert)

@@ -43,14 +43,24 @@ class EnhancedSessionManager:
         def after_flush(session, context):
             """Track write operations after flush."""
             try:
-                for obj in session.new:
-                    self._track_write_operation(obj, 'INSERT')
-                for obj in session.dirty:
-                    self._track_write_operation(obj, 'UPDATE')
-                for obj in session.deleted:
-                    self._track_write_operation(obj, 'DELETE')
+                # Only track if this is a cached session (to avoid duplicate tracking)
+                if hasattr(session, '_ims_cache_tracking') or True:  # Track all for now
+                    for obj in session.new:
+                        self._track_write_operation(obj, 'INSERT')
+                        logger.debug(f"Tracked INSERT for {obj.__class__.__name__}")
+                    for obj in session.dirty:
+                        self._track_write_operation(obj, 'UPDATE') 
+                        logger.debug(f"Tracked UPDATE for {obj.__class__.__name__}")
+                    for obj in session.deleted:
+                        self._track_write_operation(obj, 'DELETE')
+                        logger.debug(f"Tracked DELETE for {obj.__class__.__name__}")
             except Exception as e:
                 logger.warning(f"Failed to track write operation: {str(e)}")
+        
+        @event.listens_for(Session, 'after_commit')
+        def after_commit(session):
+            """Log commit events for debugging."""
+            logger.debug(f"Session committed - tracking active: {getattr(session, '_ims_cache_tracking', False)}")
     
     def _track_write_operation(self, obj: Any, operation: str):
         """Track a write operation for sync."""
@@ -151,7 +161,11 @@ class CachedSessionFactory:
         Returns:
             Session: SQLAlchemy session
         """
-        return self.session_manager.get_session(use_cache=use_cache)
+        session = self.session_manager.get_session(use_cache=use_cache)
+        if session:
+            # Mark session for tracking
+            session._ims_cache_tracking = True
+        return session
     
     @contextmanager
     def session_scope(self, use_cache: bool = True):

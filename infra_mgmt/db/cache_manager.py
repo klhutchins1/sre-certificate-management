@@ -93,20 +93,86 @@ class DatabaseCacheManager:
         # Threading
         self.sync_lock = threading.Lock()
         self.write_lock = threading.Lock()
+        self.db_operation_queue = []
+        self.db_queue_lock = threading.Lock()
         self.sync_thread = None
+        self.db_worker_thread = None
         self.running = False
+        
+        # Debug tracking
+        self.sync_counter = 0
+        self.last_sync_caller = None
+        
+        # Enhanced session manager for tracking
+        self.enhanced_session_manager = None
         
         # Initialize databases
         self._initialize_databases()
         
-        # Start background sync
+        # Initialize enhanced session manager after databases are ready
+        self._setup_enhanced_session_manager()
+        
+        # Load any unsynced operations from previous sessions
+        self._load_pending_writes_from_tracking()
+        
+        # Start background sync and database worker
         self.start_sync()
+        self.start_db_worker()
+    
+    def _setup_enhanced_session_manager(self):
+        """Setup the enhanced session manager for operation tracking."""
+        try:
+            from .enhanced_session import EnhancedSessionManager
+            self.enhanced_session_manager = EnhancedSessionManager(self)
+            logger.info("Enhanced session manager initialized for operation tracking")
+        except Exception as e:
+            logger.warning(f"Failed to initialize enhanced session manager: {e}")
+    
+    def _load_pending_writes_from_tracking(self):
+        """Load unsynced operations from sync_tracking table."""
+        if not self.local_engine:
+            return
+        
+        try:
+            with self.local_engine.connect() as local_conn:
+                unsynced_ops = local_conn.execute(text("""
+                    SELECT table_name, record_id, operation, timestamp 
+                    FROM sync_tracking 
+                    WHERE synced = FALSE
+                    ORDER BY timestamp ASC
+                """)).fetchall()
+                
+                with self.write_lock:
+                    for op in unsynced_ops:
+                        self.pending_writes.append({
+                            'table_name': op.table_name,
+                            'record_id': op.record_id,
+                            'operation': op.operation,
+                            'timestamp': op.timestamp
+                        })
+                
+                if unsynced_ops:
+                    logger.info(f"Loaded {len(unsynced_ops)} unsynced operations from previous session")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to load pending writes from tracking: {str(e)}")
     
     def _initialize_databases(self):
         """Initialize local and remote database connections."""
         try:
-            # Initialize local cache database
-            self.local_engine = create_engine(f"sqlite:///{self.local_db_path}")
+            # Initialize local cache database with WAL mode and connection pooling
+            self.local_engine = create_engine(
+                f"sqlite:///{self.local_db_path}",
+                pool_pre_ping=True,
+                pool_recycle=300,
+                pool_timeout=10,
+                max_overflow=10,
+                connect_args={
+                    "check_same_thread": False,
+                    "timeout": 30,
+                    "isolation_level": None
+                }
+            )
             
             # Try to initialize remote database connection first
             if self._is_network_available():
@@ -126,8 +192,14 @@ class DatabaseCacheManager:
                 # Create schema locally
                 Base.metadata.create_all(self.local_engine)
             
-            # Add sync tracking tables to local
+            # Add sync tracking tables to local and enable WAL mode
             with self.local_engine.connect() as conn:
+                # Enable WAL mode for better concurrent access
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+                conn.execute(text("PRAGMA cache_size=10000"))
+                conn.execute(text("PRAGMA temp_store=memory"))
+                
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS sync_tracking (
                         id INTEGER PRIMARY KEY,
@@ -184,7 +256,7 @@ class DatabaseCacheManager:
                 with self.remote_engine.connect() as remote_conn:
                     result = remote_conn.execute(text(f"SELECT * FROM {table_name}"))
                     rows = result.fetchall()
-                    columns = result.keys()
+                    columns = list(result.keys())
                 
                 if rows:
                     with self.local_engine.connect() as local_conn:
@@ -227,11 +299,17 @@ class DatabaseCacheManager:
             Session: SQLAlchemy session for local or remote database
         """
         if use_cache and self.local_engine:
-            Session = sessionmaker(bind=self.local_engine)
-            return Session()
+            SessionClass = sessionmaker(bind=self.local_engine)
+            session = SessionClass()
+            # Mark session for tracking
+            session._ims_cache_tracking = True
+            return session
         elif self.remote_engine:
-            Session = sessionmaker(bind=self.remote_engine)
-            return Session()
+            SessionClass = sessionmaker(bind=self.remote_engine)
+            session = SessionClass()
+            # Mark session for tracking
+            session._ims_cache_tracking = True
+            return session
         else:
             raise IMSDatabaseError("No database engine available")
     
@@ -244,58 +322,269 @@ class DatabaseCacheManager:
                 'operation': operation,
                 'timestamp': datetime.now()
             })
+            
+            # Also persist to sync_tracking table for durability
+            if self.local_engine:
+                self._queue_database_operation('persist_sync_tracking', table_name, record_id, operation)
+    
+    def _retry_database_operation(self, operation_func, *args, max_retries=5, **kwargs):
+        """Retry database operations with exponential backoff."""
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                return operation_func(*args, **kwargs)
+            except Exception as e:
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.05  # 0.05, 0.1, 0.2, 0.4, 0.8 seconds
+                    logger.debug(f"Database locked, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.warning(f"Database operation failed after {attempt + 1} attempts: {str(e)}")
+                    break
+    
+    def _persist_sync_tracking(self, table_name: str, record_id: int, operation: str):
+        """Persist operation to sync_tracking table."""
+        with self.local_engine.connect() as local_conn:
+            local_conn.execute(text("""
+                INSERT OR IGNORE INTO sync_tracking 
+                (table_name, record_id, operation, timestamp, synced) 
+                VALUES (:table_name, :record_id, :operation, :timestamp, FALSE)
+            """), {
+                'table_name': table_name,
+                'record_id': record_id,
+                'operation': operation,
+                'timestamp': datetime.now()
+            })
+            local_conn.commit()
+    
+    def _mark_sync_completed(self, table_name: str, record_id: int, operation: str):
+        """Mark an operation as completed in sync_tracking table."""
+        with self.local_engine.connect() as local_conn:
+            local_conn.execute(text("""
+                UPDATE sync_tracking 
+                SET synced = TRUE 
+                WHERE table_name = :table_name 
+                AND record_id = :record_id 
+                AND operation = :operation
+            """), {
+                'table_name': table_name,
+                'record_id': record_id,
+                'operation': operation
+            })
+            local_conn.commit()
+    
+    def _mark_sync_failed(self, table_name: str, record_id: int, operation: str):
+        """Mark an operation as failed in sync_tracking table for retry."""
+        if not self.local_engine:
+            return
+            
+        try:
+            with self.local_engine.connect() as local_conn:
+                # Update the timestamp to retry later
+                local_conn.execute(text("""
+                    UPDATE sync_tracking 
+                    SET timestamp = CURRENT_TIMESTAMP 
+                    WHERE table_name = :table_name 
+                    AND record_id = :record_id 
+                    AND operation = :operation
+                    AND synced = FALSE
+                """), {
+                    'table_name': table_name,
+                    'record_id': record_id,
+                    'operation': operation
+                })
+                local_conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to mark sync as failed for {table_name}:{record_id}: {str(e)}")
+    
+    def _queue_database_operation(self, operation_type: str, *args, **kwargs):
+        """Queue a database operation for serial execution."""
+        with self.db_queue_lock:
+            self.db_operation_queue.append({
+                'operation_type': operation_type,
+                'args': args,
+                'kwargs': kwargs,
+                'timestamp': datetime.now()
+            })
+    
+    def start_db_worker(self):
+        """Start the database operation worker thread."""
+        if self.db_worker_thread and self.db_worker_thread.is_alive():
+            return
+        
+        self.db_worker_thread = threading.Thread(target=self._db_worker, daemon=True)
+        self.db_worker_thread.start()
+        logger.info("Database operation worker started")
+    
+    def _db_worker(self):
+        """Background worker for processing database operations."""
+        while self.running:
+            try:
+                operations_to_process = []
+                
+                # Get operations from queue
+                with self.db_queue_lock:
+                    if self.db_operation_queue:
+                        operations_to_process = self.db_operation_queue.copy()
+                        self.db_operation_queue.clear()
+                
+                # Process operations
+                for operation in operations_to_process:
+                    try:
+                        self._execute_database_operation(operation)
+                    except Exception as e:
+                        logger.error(f"Failed to execute database operation {operation['operation_type']}: {str(e)}")
+                
+                # Sleep briefly to prevent tight loop
+                time.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Database worker error: {str(e)}")
+                time.sleep(1)
+    
+    def _execute_database_operation(self, operation):
+        """Execute a single database operation with retry logic."""
+        operation_type = operation['operation_type']
+        args = operation['args']
+        kwargs = operation['kwargs']
+        
+        if operation_type == 'persist_sync_tracking':
+            self._retry_database_operation(self._persist_sync_tracking, *args, **kwargs)
+        elif operation_type == 'mark_sync_completed':
+            self._retry_database_operation(self._mark_sync_completed, *args, **kwargs)
+        elif operation_type == 'mark_sync_failed':
+            self._retry_database_operation(self._mark_sync_failed, *args, **kwargs)
+        else:
+            logger.warning(f"Unknown database operation type: {operation_type}")
+    
+    def _wait_for_database_queue(self, max_wait_time=2.0):
+        """Wait for database operation queue to be processed."""
+        import time
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait_time:
+            with self.db_queue_lock:
+                queue_size = len(self.db_operation_queue)
+            
+            if queue_size == 0:
+                break
+            
+            logger.debug(f"Waiting for database queue to clear ({queue_size} operations)")
+            time.sleep(0.1)
+        
+        # Final check
+        with self.db_queue_lock:
+            final_queue_size = len(self.db_operation_queue)
+        
+        if final_queue_size > 0:
+            logger.warning(f"Database queue still has {final_queue_size} operations after waiting")
     
     def start_sync(self):
         """Start the background sync thread."""
+        # Stop any existing sync thread first
         if self.sync_thread and self.sync_thread.is_alive():
+            logger.warning("Sync thread already running, not starting another")
             return
         
         self.running = True
-        self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True)
+        self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True, name="CacheSync")
         self.sync_thread.start()
-        logger.info("Background sync started")
+        logger.info(f"Background sync started (thread: {self.sync_thread.name})")
     
     def stop_sync(self):
-        """Stop the background sync thread."""
+        """Stop the background sync and database worker threads."""
         self.running = False
         if self.sync_thread:
             self.sync_thread.join(timeout=5)
-        logger.info("Background sync stopped")
+        if self.db_worker_thread:
+            self.db_worker_thread.join(timeout=5)
+        logger.info("Background sync and database worker stopped")
     
     def _sync_worker(self):
         """Background worker for syncing data."""
+        last_sync_time = 0
+        min_sync_interval = 5  # Minimum 5 seconds between syncs
+        
         while self.running:
             try:
-                if self._is_network_available():
-                    self._perform_sync()
-                else:
-                    self.sync_status = SyncStatus.OFFLINE
-                    logger.debug("Network unavailable, skipping sync")
+                current_time = time.time()
                 
-                # Wait for next sync interval
-                time.sleep(self.sync_interval)
+                # Check if enough time has passed since last sync
+                if current_time - last_sync_time < min_sync_interval:
+                    time.sleep(0.5)
+                    continue
+                
+                if self._is_network_available():
+                    # Check if there's anything to sync before running
+                    has_pending_writes = len(self.pending_writes) > 0
+                    
+                    with self.db_queue_lock:
+                        has_queue_operations = len(self.db_operation_queue) > 0
+                    
+                    # Only run sync if there's something to sync or it's been a while
+                    if has_pending_writes or has_queue_operations or (current_time - last_sync_time > self.sync_interval):
+                        self._perform_sync("background_worker")
+                        last_sync_time = current_time
+                    else:
+                        # No work to do, sleep briefly
+                        time.sleep(1)
+                else:
+                    if self.sync_status != SyncStatus.OFFLINE:
+                        self.sync_status = SyncStatus.OFFLINE
+                        logger.debug("Network unavailable, going offline")
+                    time.sleep(self.sync_interval)
                 
             except Exception as e:
                 logger.error(f"Sync worker error: {str(e)}")
                 self.sync_status = SyncStatus.FAILED
                 time.sleep(self.sync_interval)
     
-    def _perform_sync(self):
+    def _perform_sync(self, caller="unknown"):
         """Perform a sync operation between local and remote databases."""
-        start_time = time.time()
+        import threading
+        import traceback
         
-        with self.sync_lock:
+        current_thread = threading.current_thread().name
+        self.sync_counter += 1
+        sync_id = self.sync_counter
+        
+        # Get caller info for debugging
+        caller_info = f"{caller}:{current_thread}"
+        stack = traceback.format_stack()
+        caller_stack = [line.strip() for line in stack[-3:-1]]  # Get last 2 stack frames
+        
+        # Prevent concurrent sync operations
+        if not self.sync_lock.acquire(blocking=False):
+            logger.debug(f"Sync #{sync_id} already in progress, skipping (caller: {caller_info})")
+            return
+        
+        try:
+            if self.sync_status == SyncStatus.IN_PROGRESS:
+                logger.debug(f"Sync #{sync_id} already in progress, skipping (caller: {caller_info})")
+                return
+                
+            start_time = time.time()
             self.sync_status = SyncStatus.IN_PROGRESS
+            self.last_sync_caller = caller_info
+            logger.debug(f"Starting sync #{sync_id} (caller: {caller_info})")
+            
+            # Wait for database queue to be processed first
+            self._wait_for_database_queue()
             
             try:
                 # Sync pending writes first
-                self._sync_pending_writes()
+                pending_writes_synced = self._sync_pending_writes()
                 
                 # Sync schema changes
                 self._sync_schema()
                 
-                # Sync data changes
-                records_synced, conflicts_resolved = self._sync_data()
+                # Sync data changes from sync_tracking table
+                tracking_synced, conflicts_resolved = self._sync_data()
+                
+                # Total records synced
+                total_synced = pending_writes_synced + tracking_synced
                 
                 self.sync_status = SyncStatus.SUCCESS
                 self.last_sync = datetime.now()
@@ -304,7 +593,7 @@ class DatabaseCacheManager:
                 result = SyncResult(
                     status=SyncStatus.SUCCESS,
                     timestamp=self.last_sync,
-                    records_synced=records_synced,
+                    records_synced=total_synced,
                     conflicts_resolved=conflicts_resolved,
                     duration=time.time() - start_time
                 )
@@ -314,7 +603,12 @@ class DatabaseCacheManager:
                 if len(self.sync_results) > 10:
                     self.sync_results = self.sync_results[-10:]
                 
-                logger.info(f"Sync completed: {records_synced} records, {conflicts_resolved} conflicts resolved")
+                # Only log INFO for actual sync work, DEBUG for empty syncs
+                if total_synced > 0 or conflicts_resolved > 0:
+                    logger.info(f"Sync #{sync_id} completed: {total_synced} records, {conflicts_resolved} conflicts resolved (caller: {caller_info})")
+                else:
+                    # Don't log empty syncs at all to reduce noise
+                    logger.debug(f"Sync #{sync_id} completed: {total_synced} records, {conflicts_resolved} conflicts resolved (caller: {caller_info})")
                 
             except Exception as e:
                 self.sync_status = SyncStatus.FAILED
@@ -326,11 +620,14 @@ class DatabaseCacheManager:
                 )
                 self.sync_results.append(result)
                 logger.error(f"Sync failed: {str(e)}")
+                
+        finally:
+            self.sync_lock.release()
     
     def _sync_pending_writes(self):
         """Sync pending write operations to remote database."""
         if not self.pending_writes or not self.remote_engine:
-            return
+            return 0
         
         with self.write_lock:
             writes_to_sync = self.pending_writes.copy()
@@ -344,35 +641,61 @@ class DatabaseCacheManager:
                 writes_by_table[table] = []
             writes_by_table[table].append(write)
         
+        total_synced = 0
         # Sync each table's writes
         for table_name, writes in writes_by_table.items():
-            self._sync_table_writes(table_name, writes)
+            synced_count = self._sync_table_writes(table_name, writes)
+            total_synced += synced_count
+        
+        return total_synced
     
     def _sync_table_writes(self, table_name: str, writes: List[Dict[str, Any]]):
         """Sync writes for a specific table."""
+        synced_count = 0
+        failed_writes = []
+        
         try:
+            if not self.remote_engine:
+                return 0
+                
             with self.remote_engine.begin() as remote_conn:
                 for write in writes:
-                    # Mark as synced in local tracking
-                    with self.local_engine.connect() as local_conn:
-                        local_conn.execute(text("""
-                            UPDATE sync_tracking 
-                            SET synced = TRUE 
-                            WHERE table_name = :table_name 
-                            AND record_id = :record_id 
-                            AND operation = :operation
-                        """), {
-                            'table_name': table_name,
-                            'record_id': write['record_id'],
-                            'operation': write['operation']
-                        })
-                        local_conn.commit()
+                    try:
+                        # Actually execute the operation on the remote database
+                        if write['operation'] == 'INSERT':
+                            self._sync_insert(remote_conn, table_name, write['record_id'])
+                        elif write['operation'] == 'UPDATE':
+                            self._sync_update(remote_conn, table_name, write['record_id'])
+                        elif write['operation'] == 'DELETE':
+                            self._sync_delete(remote_conn, table_name, write['record_id'])
+                        
+                        synced_count += 1
+                        
+                        # Only mark as synced after successful execution
+                        if self.local_engine:
+                            self._queue_database_operation(
+                                'mark_sync_completed', 
+                                table_name, 
+                                write['record_id'], 
+                                write['operation']
+                            )
+                            
+                    except Exception as op_e:
+                        logger.error(f"Failed to sync {write['operation']} operation for {table_name}:{write['record_id']}: {str(op_e)}")
+                        # Add to failed writes list
+                        failed_writes.append(write)
                         
         except Exception as e:
             logger.error(f"Failed to sync writes for table {table_name}: {str(e)}")
-            # Re-add failed writes to pending queue
+            # Add all writes to failed list
+            failed_writes.extend(writes)
+        
+        # Re-add failed writes to pending queue
+        if failed_writes:
             with self.write_lock:
-                self.pending_writes.extend(writes)
+                self.pending_writes.extend(failed_writes)
+        
+        return synced_count
     
     def _sync_schema(self):
         """Sync schema changes between databases."""
@@ -435,6 +758,8 @@ class DatabaseCacheManager:
         
         try:
             # Get local changes
+            if not self.local_engine:
+                return 0, 0
             with self.local_engine.connect() as local_conn:
                 local_changes = local_conn.execute(text("""
                     SELECT record_id, operation, timestamp 
@@ -457,10 +782,14 @@ class DatabaseCacheManager:
                         records_synced += 1
                         
                     except Exception as e:
-                        logger.warning(f"Conflict resolving for {table_name}:{change.record_id}: {str(e)}")
-                        conflicts_resolved += 1
-                        # Use timestamp-based conflict resolution
-                        self._resolve_conflict(remote_conn, table_name, change.record_id, change.timestamp)
+                        logger.warning(f"Conflict detected for {table_name}:{change.record_id}: {str(e)}")
+                        # Try timestamp-based conflict resolution
+                        if self._resolve_conflict(remote_conn, table_name, change.record_id, change.timestamp):
+                            conflicts_resolved += 1
+                        else:
+                            logger.error(f"Failed to resolve conflict for {table_name}:{change.record_id}")
+                            # Mark the sync tracking record as failed for retry
+                            self._queue_database_operation('mark_sync_failed', table_name, change.record_id, change.operation)
         
         except Exception as e:
             logger.error(f"Failed to sync table {table_name}: {str(e)}")
@@ -468,19 +797,20 @@ class DatabaseCacheManager:
         return records_synced, conflicts_resolved
     
     def _sync_insert(self, conn, table_name: str, record_id: int):
-        """Sync an insert operation."""
+        """Sync an insert operation using UPSERT logic."""
         # Get the record from local database
         with self.local_engine.connect() as local_conn:
             result = local_conn.execute(text(f"SELECT * FROM {table_name} WHERE id = :id"), 
                                       {'id': record_id}).fetchone()
             if result:
-                # Insert into remote database
-                columns = result.keys()
-                values = [result[col] for col in columns]
+                # Use INSERT OR REPLACE to handle existing records
+                columns = list(result._mapping.keys())
+                values = [result._mapping[col] for col in columns]
                 placeholders = ', '.join([':' + col for col in columns])
                 column_list = ', '.join(columns)
                 
-                conn.execute(text(f"INSERT INTO {table_name} ({column_list}) VALUES ({placeholders})"),
+                # Use INSERT OR REPLACE to handle UNIQUE constraint conflicts
+                conn.execute(text(f"INSERT OR REPLACE INTO {table_name} ({column_list}) VALUES ({placeholders})"),
                            dict(zip(columns, values)))
     
     def _sync_update(self, conn, table_name: str, record_id: int):
@@ -491,10 +821,10 @@ class DatabaseCacheManager:
                                       {'id': record_id}).fetchone()
             if result:
                 # Update remote database
-                columns = [col for col in result.keys() if col != 'id']
+                columns = [col for col in list(result._mapping.keys()) if col != 'id']
                 set_clause = ', '.join([f"{col} = :{col}" for col in columns])
                 
-                update_data = {col: result[col] for col in columns}
+                update_data = {col: result._mapping[col] for col in columns}
                 update_data['id'] = record_id
                 
                 conn.execute(text(f"UPDATE {table_name} SET {set_clause} WHERE id = :id"), update_data)
@@ -504,36 +834,112 @@ class DatabaseCacheManager:
         conn.execute(text(f"DELETE FROM {table_name} WHERE id = :id"), {'id': record_id})
     
     def _resolve_conflict(self, conn, table_name: str, record_id: int, local_timestamp: datetime):
-        """Resolve conflicts using timestamp-based resolution."""
+        """Resolve conflicts using timestamp-based resolution and UPSERT logic."""
         try:
-            # Get timestamps from both databases
-            with self.local_engine.connect() as local_conn:
-                local_result = local_conn.execute(text(f"SELECT updated_at FROM {table_name} WHERE id = :id"), 
-                                                {'id': record_id}).fetchone()
+            # For UNIQUE constraint violations, we should use UPSERT logic
+            # Check if the error is due to a UNIQUE constraint on the ID
             
-            remote_result = conn.execute(text(f"SELECT updated_at FROM {table_name} WHERE id = :id"), 
-                                       {'id': record_id}).fetchone()
+            # Check if the record exists in remote database
+            remote_check = conn.execute(text(f"SELECT COUNT(*) as count FROM {table_name} WHERE id = :id"), 
+                                      {'id': record_id}).fetchone()
+            remote_exists = remote_check._mapping['count'] > 0
             
-            if local_result and remote_result:
-                local_time = local_result.updated_at
-                remote_time = remote_result.updated_at
+            if remote_exists:
+                # Record exists in remote, this is a conflict - use timestamp resolution
+                timestamp_columns = self._get_timestamp_columns(table_name)
                 
-                # Use the most recent version
-                if local_time > remote_time:
+                if timestamp_columns:
+                    # Use the first available timestamp column
+                    timestamp_col = timestamp_columns[0]
+                    
+                    # Get timestamps from both databases
+                    with self.local_engine.connect() as local_conn:
+                        local_result = local_conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
+                                                        {'id': record_id}).fetchone()
+                    
+                    remote_result = conn.execute(text(f"SELECT {timestamp_col} FROM {table_name} WHERE id = :id"), 
+                                               {'id': record_id}).fetchone()
+                    
+                    if local_result and remote_result:
+                        local_time = local_result._mapping[timestamp_col]
+                        remote_time = remote_result._mapping[timestamp_col]
+                        
+                        # Use the most recent version
+                        if local_time > remote_time:
+                            self._sync_update(conn, table_name, record_id)
+                            logger.debug(f"Conflict resolved for {table_name}:{record_id} - using local version (newer)")
+                            return True
+                        else:
+                            logger.debug(f"Conflict resolved for {table_name}:{record_id} - using remote version (newer, no update needed)")
+                            return True
+                    else:
+                        # Can't compare timestamps, just update with local version
+                        self._sync_update(conn, table_name, record_id)
+                        logger.debug(f"Conflict resolved for {table_name}:{record_id} - updated with local version")
+                        return True
+                else:
+                    # No timestamp columns, just update with local version
                     self._sync_update(conn, table_name, record_id)
-                # If remote is newer, local will be updated on next sync
+                    logger.debug(f"Conflict resolved for {table_name}:{record_id} - updated with local version (no timestamps)")
+                    return True
+            else:
+                # Record doesn't exist in remote, use INSERT OR REPLACE (which should work now)
+                self._sync_insert(conn, table_name, record_id)
+                logger.debug(f"Conflict resolved for {table_name}:{record_id} - inserted to remote")
+                return True
                     
         except Exception as e:
             logger.error(f"Conflict resolution failed for {table_name}:{record_id}: {str(e)}")
+            return False
+    
+    def _get_timestamp_columns(self, table_name: str):
+        """Get available timestamp columns for a table."""
+        timestamp_candidates = ['updated_at', 'created_at', 'last_seen', 'scan_date', 'timestamp']
+        available_columns = []
+        
+        try:
+            # Get table schema
+            from sqlalchemy import inspect
+            inspector = inspect(self.local_engine)
+            columns = inspector.get_columns(table_name)
+            column_names = [col['name'].lower() for col in columns]
+            
+            # Find available timestamp columns
+            for candidate in timestamp_candidates:
+                if candidate.lower() in column_names:
+                    available_columns.append(candidate)
+            
+            logger.debug(f"Available timestamp columns for {table_name}: {available_columns}")
+            return available_columns
+            
+        except Exception as e:
+            logger.warning(f"Failed to get timestamp columns for {table_name}: {str(e)}")
+            return []
     
     def get_sync_status(self) -> Dict[str, Any]:
         """Get current sync status and statistics."""
+        import threading
+        
+        with self.db_queue_lock:
+            queue_size = len(self.db_operation_queue)
+        
+        # Count active threads
+        active_threads = threading.active_count()
+        thread_names = [t.name for t in threading.enumerate()]
+        
         return {
             'status': self.sync_status.value,
             'last_sync': self.last_sync.isoformat() if self.last_sync else None,
             'pending_writes': len(self.pending_writes),
+            'database_queue_size': queue_size,
             'sync_interval': self.sync_interval,
             'network_available': self._is_network_available(),
+            'active_threads': active_threads,
+            'thread_names': thread_names,
+            'sync_thread_alive': self.sync_thread.is_alive() if self.sync_thread else False,
+            'db_worker_alive': self.db_worker_thread.is_alive() if self.db_worker_thread else False,
+            'sync_counter': self.sync_counter,
+            'last_sync_caller': self.last_sync_caller,
             'recent_results': [
                 {
                     'status': r.status.value,
@@ -557,28 +963,35 @@ class DatabaseCacheManager:
             )
         
         start_time = time.time()
+        logger.info("Force sync requested")
         
         try:
-            with self.sync_lock:
-                self._perform_sync()
+            # Directly call _perform_sync which has its own locking
+            self._perform_sync("force_sync")
             
             # Get the last result
             if self.sync_results:
-                return self.sync_results[-1]
+                result = self.sync_results[-1]
+                logger.info(f"Force sync completed: {result.records_synced} records, {result.conflicts_resolved} conflicts")
+                return result
             else:
-                return SyncResult(
+                result = SyncResult(
                     status=SyncStatus.SUCCESS,
                     timestamp=datetime.now(),
                     duration=time.time() - start_time
                 )
+                logger.info("Force sync completed with no results")
+                return result
                 
         except Exception as e:
-            return SyncResult(
+            result = SyncResult(
                 status=SyncStatus.FAILED,
                 timestamp=datetime.now(),
                 errors=[str(e)],
                 duration=time.time() - start_time
             )
+            logger.error(f"Force sync failed: {str(e)}")
+            return result
     
     def clear_cache(self):
         """Clear the local cache database."""

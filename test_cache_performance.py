@@ -10,6 +10,15 @@ import time
 import tempfile
 import shutil
 from pathlib import Path
+
+# Import compatibility fixes before SQLAlchemy
+try:
+    from infra_mgmt.compatibility import ensure_compatibility
+    ensure_compatibility()
+except ImportError:
+    # If compatibility module not available, continue anyway
+    pass
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import logging
@@ -48,7 +57,7 @@ def create_test_database(db_path: str, num_records: int = 1000):
     
     return engine
 
-def test_direct_access(db_path: str, num_operations: int = 100):
+def benchmark_direct_access(db_path: str, num_operations: int = 100):
     """Test direct database access performance."""
     logger.info(f"Testing direct access to {db_path}")
     
@@ -116,7 +125,7 @@ def restore_original_db_path(original_path: str):
     settings = Settings()
     settings.update("paths.database", original_path)
 
-def test_cached_access(db_path: str, num_operations: int = 100):
+def benchmark_cached_access(db_path: str, num_operations: int = 100):
     """Test cached database access performance."""
     logger.info(f"Testing cached access to {db_path}")
     
@@ -270,7 +279,7 @@ def main():
         # Test direct access
         print("\n1. Testing Direct Database Access")
         print("-" * 40)
-        direct_results = test_direct_access(test_db_path, num_operations=50)
+        direct_results = benchmark_direct_access(test_db_path, num_operations=50)
         
         if direct_results:
             print(f"Read Operations: {direct_results['read_ops_per_sec']:.2f} ops/sec")
@@ -281,7 +290,7 @@ def main():
         # Test cached access
         print("\n2. Testing Cached Database Access")
         print("-" * 40)
-        cached_results = test_cached_access(test_db_path, num_operations=50)
+        cached_results = benchmark_cached_access(test_db_path, num_operations=50)
         
         if cached_results:
             print(f"Read Operations: {cached_results['read_ops_per_sec']:.2f} ops/sec")

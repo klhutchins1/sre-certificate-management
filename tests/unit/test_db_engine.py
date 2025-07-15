@@ -10,7 +10,7 @@ import time
 from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy import inspect, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, close_all_sessions
 from infra_mgmt.db.engine import init_database, is_network_path, normalize_path
 from infra_mgmt.models import Certificate, IgnoredCertificate, IgnoredDomain
 from .test_helpers import cleanup_temp_dir
@@ -86,7 +86,7 @@ def test_init_database():
         # Cleanup
         if engine:
             engine.dispose()
-        Session.close_all()
+        close_all_sessions()
         time.sleep(0.1)
         try:
             shutil.rmtree(temp_dir)
@@ -139,7 +139,7 @@ def test_init_database_existing_corrupted():
         print(f"Error during database initialization: {e}")
     finally:
         # Ensure all connections are closed before cleanup
-        Session.close_all()
+        close_all_sessions()
         if engine:
             engine.dispose()  # Dispose of the engine if it was created   
         time.sleep(0.1)  # Allow time for file handles to be released

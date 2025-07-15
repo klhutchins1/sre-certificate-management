@@ -1,4 +1,4 @@
-from fpdf import FPDF
+from fpdf import FPDF, XPos, YPos
 from datetime import datetime
 
 class CertificateExportService:
@@ -28,37 +28,37 @@ class CertificateExportService:
         for i, cert in enumerate(certificates):
             pdf.add_page()
             pdf.set_font('helvetica', 'B', 16)
-            pdf.cell(0, 10, f'Certificate Details: {cert.common_name}', ln=True, align='C')
+            pdf.cell(0, 10, f'Certificate Details: {cert.common_name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
             pdf.ln(10)
             pdf.set_font('helvetica', '', 12)
             pdf.set_font('helvetica', 'B', 14)
-            pdf.cell(0, 10, 'Overview', ln=True)
+            pdf.cell(0, 10, 'Overview', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font('helvetica', '', 12)
-            pdf.cell(0, 8, f'Common Name: {cert.common_name}', ln=True)
-            pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', ln=True)
-            pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', ln=True)
-            pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', ln=True)
-            pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', ln=True)
+            pdf.cell(0, 8, f'Common Name: {cert.common_name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(0, 8, f'Serial Number: {cert.serial_number}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(0, 8, f'Valid From: {cert.valid_from.strftime("%Y-%m-%d")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(0, 8, f'Valid Until: {cert.valid_until.strftime("%Y-%m-%d")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(0, 8, f'Status: {"Valid" if cert.valid_until > datetime.now() else "Expired"}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.ln(5)
             if cert.certificate_bindings:
                 pdf.set_font('helvetica', 'B', 14)
-                pdf.cell(0, 10, 'Bindings', ln=True)
+                pdf.cell(0, 10, 'Bindings', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.set_font('helvetica', '', 12)
                 for binding in cert.certificate_bindings:
                     host_name = binding.host.name if binding.host else "Unknown Host"
                     host_ip = getattr(binding, 'host_ip', None)
                     ip_address = host_ip.ip_address if host_ip else "No IP"
                     port = binding.port if binding.port else "N/A"
-                    pdf.cell(0, 8, f'Host: {host_name}', ln=True)
+                    pdf.cell(0, 8, f'Host: {host_name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if binding.binding_type == 'IP':
-                        pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', ln=True)
-                    pdf.cell(0, 8, f'Type: {binding.binding_type}', ln=True)
-                    pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', ln=True)
-                    pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', ln=True)
+                        pdf.cell(0, 8, f'IP: {ip_address}, Port: {port}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.cell(0, 8, f'Type: {binding.binding_type}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.cell(0, 8, f'Platform: {binding.platform or "Not Set"}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.cell(0, 8, f'Last Seen: {binding.last_seen.strftime("%Y-%m-%d %H:%M")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     pdf.ln(5)
             if cert.san:
                 pdf.set_font('helvetica', 'B', 14)
-                pdf.cell(0, 10, 'Subject Alternative Names', ln=True)
+                pdf.cell(0, 10, 'Subject Alternative Names', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.set_font('helvetica', '', 12)
                 try:
                     san_list = cert.san
@@ -69,23 +69,23 @@ class CertificateExportService:
                             san_list = cert.san.split(',')
                     san_list = [s.strip() for s in san_list if s.strip()]
                     for san in san_list:
-                        pdf.cell(0, 8, san, ln=True)
+                        pdf.cell(0, 8, san, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 except Exception as e:
-                    pdf.cell(0, 8, f'Error parsing SANs: {str(e)}', ln=True)
+                    pdf.cell(0, 8, f'Error parsing SANs: {str(e)}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.ln(5)
             pdf.set_font('helvetica', 'B', 14)
-            pdf.cell(0, 10, 'Technical Details', ln=True)
+            pdf.cell(0, 10, 'Technical Details', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font('helvetica', '', 12)
-            pdf.cell(0, 8, f'Thumbprint: {cert.thumbprint}', ln=True)
+            pdf.cell(0, 8, f'Thumbprint: {cert.thumbprint}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             if cert.issuer:
                 issuer_dict = eval(cert.issuer)
-                pdf.cell(0, 8, f'Issuer: {", ".join(f"{k}={v}" for k, v in issuer_dict.items())}', ln=True)
+                pdf.cell(0, 8, f'Issuer: {", ".join(f"{k}={v}" for k, v in issuer_dict.items())}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             if cert.subject:
                 subject_dict = eval(cert.subject)
-                pdf.cell(0, 8, f'Subject: {", ".join(f"{k}={v}" for k, v in subject_dict.items())}', ln=True)
-            pdf.cell(0, 8, f'Key Usage: {cert.key_usage}', ln=True)
-            pdf.cell(0, 8, f'Signature Algorithm: {cert.signature_algorithm}', ln=True)
+                pdf.cell(0, 8, f'Subject: {", ".join(f"{k}={v}" for k, v in subject_dict.items())}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(0, 8, f'Key Usage: {cert.key_usage}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(0, 8, f'Signature Algorithm: {cert.signature_algorithm}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_y(-15)
             pdf.set_font('helvetica', 'I', 8)
-            pdf.cell(0, 10, f'Page {i+1} of {len(certificates)}', 0, 0, 'C')
+            pdf.cell(0, 10, f'Page {i+1} of {len(certificates)}', new_x=XPos.RIGHT, new_y=YPos.TOP, align='C')
         pdf.output(filename) 

@@ -269,7 +269,7 @@ def render_applications_view(engine) -> None:
                         selected_app_id = row_dict.get('_id')
                         if selected_app_id:
                             with SessionManager(engine) as session:
-                                selected_app = session.query(Application).get(selected_app_id)
+                                selected_app = session.get(Application, selected_app_id)
                                 if selected_app:
                                     st.divider()
                                     st.session_state['current_app'] = selected_app

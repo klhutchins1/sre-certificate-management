@@ -29,7 +29,7 @@ class ApplicationService:
     def update_application(engine, app_id, new_name, new_type, new_description, new_owner):
         try:
             with SessionManager(engine) as session:
-                app = session.query(Application).get(app_id)
+                app = session.get(Application, app_id)
                 if not app:
                     return {'success': False, 'error': 'Application not found'}
                 app.name = new_name
@@ -45,7 +45,7 @@ class ApplicationService:
     def delete_application(engine, app_id):
         try:
             with SessionManager(engine) as session:
-                app = session.query(Application).get(app_id)
+                app = session.get(Application, app_id)
                 if not app:
                     return {'success': False, 'error': 'Application not found'}
                 session.delete(app)
@@ -58,7 +58,7 @@ class ApplicationService:
     def remove_binding(engine, binding_id):
         try:
             with SessionManager(engine) as session:
-                binding = session.query(CertificateBinding).get(binding_id)
+                binding = session.get(CertificateBinding, binding_id)
                 if not binding:
                     return {'success': False, 'error': 'Binding not found'}
                 session.delete(binding)
@@ -71,12 +71,12 @@ class ApplicationService:
     def bind_certificates(engine, app_id, cert_ids, binding_type):
         try:
             with SessionManager(engine) as session:
-                app = session.query(Application).get(app_id)
+                app = session.get(Application, app_id)
                 if not app:
                     return {'success': False, 'error': 'Application not found'}
                 count = 0
                 for cert_id in cert_ids:
-                    cert = session.query(Certificate).get(cert_id)
+                    cert = session.get(Certificate, cert_id)
                     if not cert:
                         continue
                     binding = CertificateBinding(

@@ -57,7 +57,7 @@ class HostService:
             dict: { 'success': bool, 'error': str (if error) }
         """
         try:
-            binding = session.query(CertificateBinding).get(binding_id)
+            binding = session.get(CertificateBinding, binding_id)
             if not binding:
                 return {'success': False, 'error': 'Binding not found'}
             binding.platform = platform
@@ -78,7 +78,7 @@ class HostService:
             dict: { 'success': bool, 'error': str (if error) }
         """
         try:
-            binding = session.query(CertificateBinding).get(binding_id)
+            binding = session.get(CertificateBinding, binding_id)
             if not binding:
                 return {'success': False, 'error': 'Binding not found'}
             session.delete(binding)
@@ -92,7 +92,7 @@ class HostService:
     def delete_host_by_id(engine, host_id):
         try:
             with SessionManager(engine) as session:
-                host = session.query(Host).get(host_id)
+                host = session.get(Host, host_id)
                 if not host:
                     return {'success': False, 'error': 'Host not found'}
                 session.delete(host)

@@ -572,19 +572,39 @@ def test_unique_constraint_handling(cache_manager):
 
 def test_network_availability_check(cache_manager):
     """Test network availability checking."""
-    # Test with existing remote database file
-    with patch('pathlib.Path.exists', return_value=True):
-        with patch('builtins.open', mock_open(read_data=b'SQLite format 3')):
-            assert cache_manager._is_network_available() is True
+    # Import the actual method to test
+    from infra_mgmt.db.cache_manager import DatabaseCacheManager
+    from pathlib import Path
     
-    # Test with non-existent remote database file
-    with patch('pathlib.Path.exists', return_value=False):
-        assert cache_manager._is_network_available() is False
+    # Create a real temporary path for the tests
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        temp_path = Path(f.name)
+        f.write(b'SQLite format 3')
     
-    # Test with file access error
-    with patch('pathlib.Path.exists', return_value=True):
+    try:
+        # Test with existing remote database file
+        cache_manager.remote_db_path = temp_path
+        
+        # Call the actual method directly on the class with the instance
+        result = DatabaseCacheManager._is_network_available(cache_manager)
+        assert result is True
+        
+        # Test with non-existent remote database file
+        temp_path.unlink()  # Delete the file
+        result = DatabaseCacheManager._is_network_available(cache_manager)
+        assert result is False
+        
+        # Test with file access error
+        # Create file but make it unreadable
+        temp_path.write_bytes(b'SQLite format 3')
         with patch('builtins.open', side_effect=IOError("Access denied")):
-            assert cache_manager._is_network_available() is False
+            result = DatabaseCacheManager._is_network_available(cache_manager)
+            assert result is False
+    finally:
+        # Cleanup
+        if temp_path.exists():
+            temp_path.unlink()
 
 def mock_open(read_data=b''):
     """Helper function to create a mock for open()."""

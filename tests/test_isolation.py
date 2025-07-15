@@ -296,8 +296,18 @@ class NetworkIsolationManager:
         ])
         
         # IP address operations
+        def validate_ip(ip_str):
+            """Proper IP address validation for testing."""
+            parts = ip_str.split('.')
+            if len(parts) != 4:
+                raise ValueError(f"Invalid IP: {ip_str}")
+            for part in parts:
+                if not part.isdigit() or not (0 <= int(part) <= 255):
+                    raise ValueError(f"Invalid IP: {ip_str}")
+            return ip_str
+        
         patches.extend([
-            patch('ipaddress.ip_address', side_effect=lambda x: x if x.replace('.', '').isdigit() else ValueError(f"Invalid IP: {x}")),
+            patch('ipaddress.ip_address', side_effect=validate_ip),
         ])
         
         # Application-specific patches

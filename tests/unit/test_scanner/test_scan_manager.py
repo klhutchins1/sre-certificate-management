@@ -62,10 +62,12 @@ def test_scan_manager_initialization(scan_manager):
         assert key in scan_manager.scan_results
         assert scan_manager.scan_results[key] == []
 
-def test_process_scan_target(scan_manager):
+def test_process_scan_target(scan_manager, mock_session):
     """Test processing a scan target."""
+    mock_session.query.return_value.filter_by.return_value.first.return_value = None
+    
     target = "example.com:443"
-    is_valid, hostname, port, error = scan_manager.process_scan_target(target)
+    is_valid, hostname, port, error = scan_manager.process_scan_target(target, session=mock_session)
     assert is_valid
     assert hostname == "example.com"
     assert port == 443
@@ -139,13 +141,20 @@ def test_scan_target_no_certificate(scan_manager, mock_session, mock_status_cont
     # Should record in error (with a message starting with the domain:port)
     assert any(e.startswith("example.com:443") for e in scan_manager.scan_results["error"])
 
-def test_scan_target_with_subdomains(scan_manager, mock_session, mock_status_container, mock_scan_result):
+@patch('infra_mgmt.utils.certificate_db.CertificateDBUtil.upsert_certificate_and_binding')
+def test_scan_target_with_subdomains(mock_upsert, scan_manager, mock_session, mock_status_container, mock_scan_result):
     """Test scanning with subdomain discovery."""
     # Configure mocks
     scan_manager.infra_mgmt.scan_certificate.return_value = mock_scan_result
     scan_manager.subdomain_scanner.scan_and_process_subdomains.return_value = [
         {"domain": "sub.example.com"}
     ]
+    
+    # Configure database mocks
+    mock_session.query.return_value.filter_by.return_value.first.return_value = None
+    def upsert_side_effect(session, *args, **kwargs):
+        session.commit()
+    mock_upsert.side_effect = upsert_side_effect
     
     # Test the scan
     result = scan_manager.scan_target(

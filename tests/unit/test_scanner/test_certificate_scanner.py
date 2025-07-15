@@ -128,6 +128,8 @@ def test_scan_certificate(scanner, mock_certificate, caplog):
     """Test scanning a certificate."""
     caplog.set_level(logging.INFO)
     mock_logger = MagicMock(spec=logging.Logger)
+    # Mock getEffectiveLevel to return INFO level (avoid comparison TypeError)
+    mock_logger.getEffectiveLevel.return_value = logging.INFO
     scanner.logger = mock_logger
     mock_cert_info = CertificateInfo()
     mock_cert_info.serial_number = format(12345, 'x')
@@ -161,6 +163,10 @@ def test_scan_certificate(scanner, mock_certificate, caplog):
         mock_logger.info(f"Successfully processed certificate for {address}:{port}")
         return mock_cert_info
     scanner._process_certificate = MagicMock(side_effect=mock_process_certificate)
+    
+    # Mock the _validate_cert_chain method to avoid socket connection issues
+    scanner._validate_cert_chain = MagicMock()
+    
     result = scanner.scan_certificate("test.com", 443)
     assert result is not None
     assert result.has_certificate

@@ -310,6 +310,10 @@ def test_multiple_backups_ordering(test_env):
             settings._config['paths']['backups'] = str(test_env['backup_dir'])
             settings.save()
             
+            # Add delay to ensure different timestamps (backup uses second resolution)
+            import time
+            time.sleep(1.2)  # Sleep to ensure different second timestamps
+            
             success, message = create_backup()
             assert success, f"Backup {i} failed: {message}"
             

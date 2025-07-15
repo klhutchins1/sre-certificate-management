@@ -65,8 +65,8 @@ ignore_lists:
       suffix: '*.test.com'
     skip_scanning: true
 paths:
-  backups: data/backups
-  database: data/certificates.db
+  backups: /tmp/tmpm0f0txaw/backups
+  database: /tmp/tmpm0f0txaw/test.db
 proxy_detection:
   ca_fingerprints: null
   ca_serials: []

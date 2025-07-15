@@ -265,7 +265,7 @@ class ScanManager:
                     return True
                 return False
             
-            is_offline = settings.get("scanning.offline_mode", False)
+            is_offline = kwargs.get('offline_mode', settings.get("scanning.offline_mode", False))
             if is_offline:
                 self.logger.info(f"[SCAN] Offline mode enabled for target: {domain}:{port}")
 

@@ -163,19 +163,23 @@ def init_database(db_path=None, enable_cache: bool = True):
         
         # Initialize cache manager if enabled and path is network path
         if enable_cache and is_network_path(db_path):
-            try:
-                from .cache_manager import DatabaseCacheManager
-                sync_interval = settings.get("database.sync_interval", 30) if 'settings' in locals() else 30
-                _cache_manager = DatabaseCacheManager(str(db_path), sync_interval)
-                logger.info(f"Cache manager initialized with sync interval: {sync_interval}s")
-                
-                # Use cache manager's local engine
+            if _cache_manager is not None:
+                logger.info("Cache manager already exists, reusing existing instance")
                 engine = _cache_manager.local_engine
-                
-            except Exception as e:
-                logger.warning(f"Failed to initialize cache manager: {str(e)}")
-                logger.info("Falling back to direct database access")
-                engine = create_engine(f"sqlite:///{db_path}")
+            else:
+                try:
+                    from .cache_manager import DatabaseCacheManager
+                    sync_interval = settings.get("database.sync_interval", 30) if 'settings' in locals() else 30
+                    _cache_manager = DatabaseCacheManager(str(db_path), sync_interval)
+                    logger.info(f"Cache manager initialized with sync interval: {sync_interval}s")
+                    
+                    # Use cache manager's local engine
+                    engine = _cache_manager.local_engine
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to initialize cache manager: {str(e)}")
+                    logger.info("Falling back to direct database access")
+                    engine = create_engine(f"sqlite:///{db_path}")
         else:
             # Create new database engine (direct access)
             logger.info(f"Creating database engine at: {db_path}")

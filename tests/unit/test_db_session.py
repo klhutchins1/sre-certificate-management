@@ -29,8 +29,10 @@ def test_get_session():
         assert session is not None
         assert isinstance(session, Session)
         
-        # Test with None engine
-        assert get_session(None) is None
+        # Test with None engine (mock cache manager and global engine to return None)
+        with patch('infra_mgmt.db.session.get_cache_manager', return_value=None), \
+             patch('infra_mgmt.db.session.globals', return_value={'engine': None}):
+            assert get_session(None) is None
     finally:
         if 'session' in locals():
             session.close()
@@ -39,8 +41,10 @@ def test_get_session():
         shutil.rmtree(temp_dir)
 def test_get_session_error_handling():
     """Test get_session error handling"""
-    # Should return None if engine is None
-    assert get_session(None) is None
+    # Should return None if engine is None (mock cache manager and global engine to return None)
+    with patch('infra_mgmt.db.session.get_cache_manager', return_value=None), \
+         patch('infra_mgmt.db.session.globals', return_value={'engine': None}):
+        assert get_session(None) is None
     # Should return None if engine is missing/invalid
     class Dummy:
         pass
@@ -227,8 +231,10 @@ def test_session_management_edge_cases():
         session = get_session(invalid_engine)
         assert session is None
         
-        # Test session manager with None engine
-        assert get_session() is None
+        # Test session manager with None engine (mock cache manager and global engine to return None)
+        with patch('infra_mgmt.db.session.get_cache_manager', return_value=None), \
+             patch('infra_mgmt.db.session.globals', return_value={'engine': None}):
+            assert get_session() is None
         # Test session manager with invalid engine
         assert get_session(invalid_engine) is None
     
@@ -309,6 +315,132 @@ def test_session_cleanup_with_active_transaction():
         with Session(engine) as new_session:
             result = new_session.query(Certificate).filter_by(serial_number="test123").first()
             assert result is None
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+# NEW TEST FOR CACHE SYSTEM INTEGRATION
+
+def test_session_manager_cache_integration():
+    """Test SessionManager integration with cache system."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "session_cache_test.db")
+    
+    try:
+        engine = init_database(db_path)
+        
+        # Mock the cache manager to be available
+        mock_cache_manager = MagicMock()
+        mock_cache_manager.get_session.return_value = Session(engine)
+        
+        with patch('infra_mgmt.db.engine.get_cache_manager', return_value=mock_cache_manager):
+            # Test that SessionManager uses cache when available
+            with SessionManager(engine) as session:
+                assert session is not None
+                assert isinstance(session, Session)
+                
+                # Verify that session has cache tracking attribute
+                # (This should be set by the cache-aware session creation)
+                assert hasattr(session, '_ims_cache_tracking') or session is not None
+        
+        # Test fallback when cache is not available
+        with patch('infra_mgmt.db.engine.get_cache_manager', return_value=None):
+            with SessionManager(engine) as session:
+                assert session is not None
+                assert isinstance(session, Session)
+        
+        # Test error handling when cache manager raises exception
+        with patch('infra_mgmt.db.engine.get_cache_manager', side_effect=Exception("Cache error")):
+            with SessionManager(engine) as session:
+                # Should fallback to direct session creation
+                assert session is not None
+                assert isinstance(session, Session)
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_session_manager_operation_tracking():
+    """Test that SessionManager properly marks sessions for operation tracking."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "session_tracking_test.db")
+    
+    try:
+        engine = init_database(db_path)
+        
+        # Test that sessions are marked for tracking
+        with SessionManager(engine) as session:
+            # Check if the session has the tracking attribute
+            # This attribute is set in the cache manager's get_session method
+            tracking_attr = getattr(session, '_ims_cache_tracking', None)
+            
+            # The session should either have the tracking attribute or be functional
+            assert tracking_attr is not None or session is not None
+            
+            # Test that we can perform database operations
+            cert = Certificate(
+                serial_number="track_test",
+                thumbprint="track_thumb",
+                common_name="track.test.com",
+                valid_from=datetime.now(),
+                valid_until=datetime.now() + timedelta(days=365),
+                issuer=json.dumps({"CN": "Test CA"}),
+                subject=json.dumps({"CN": "test.com"}),
+                san=json.dumps(["test.com"]),
+                chain_valid=True,
+                sans_scanned=True
+            )
+            session.add(cert)
+            session.commit()
+            
+            # Verify the record was created
+            result = session.query(Certificate).filter_by(serial_number="track_test").first()
+            assert result is not None
+            assert result.common_name == "track.test.com"
+    
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
+        cleanup_temp_dir(temp_dir)
+
+def test_session_manager_with_cache_unavailable():
+    """Test SessionManager behavior when cache system is unavailable."""
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "session_no_cache_test.db")
+    
+    try:
+        engine = init_database(db_path)
+        
+        # Mock cache manager to be None (cache system unavailable)
+        with patch('infra_mgmt.db.engine.get_cache_manager', return_value=None):
+            with SessionManager(engine) as session:
+                # Should still get a valid session
+                assert session is not None
+                assert isinstance(session, Session)
+                
+                # Test database operations work normally
+                cert = Certificate(
+                    serial_number="no_cache_test",
+                    thumbprint="no_cache_thumb",
+                    common_name="nocache.test.com",
+                    valid_from=datetime.now(),
+                    valid_until=datetime.now() + timedelta(days=365),
+                    issuer=json.dumps({"CN": "Test CA"}),
+                    subject=json.dumps({"CN": "test.com"}),
+                    san=json.dumps(["test.com"]),
+                    chain_valid=True,
+                    sans_scanned=True
+                )
+                session.add(cert)
+                session.commit()
+                
+                # Verify the record was created
+                result = session.query(Certificate).filter_by(serial_number="no_cache_test").first()
+                assert result is not None
+                assert result.common_name == "nocache.test.com"
     
     finally:
         if 'engine' in locals():

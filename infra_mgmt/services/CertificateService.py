@@ -43,7 +43,7 @@ class CertificateService:
     def get_certificate_details(self, engine, cert_id):
         try:
             with SessionManager(engine) as session:
-                cert = session.query(Certificate).get(cert_id)
+                cert = session.get(Certificate, cert_id)
                 if not cert:
                     return {'success': False, 'error': 'Certificate not found'}
                 return {'success': True, 'data': cert}
@@ -56,7 +56,7 @@ class CertificateService:
             joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.application),
             joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host),
             joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host_ip)
-        ).get(cert_id)
+        ).filter(Certificate.id == cert_id).first()
         if not cert:
             return []
         bindings = []
@@ -243,7 +243,7 @@ class CertificateService:
             dict: { 'success': bool, 'error': str (if any) }
         """
         try:
-            binding = session.query(CertificateBinding).get(binding_id)
+            binding = session.get(CertificateBinding, binding_id)
             if not binding:
                 return {'success': False, 'error': 'Binding not found'}
             session.delete(binding)

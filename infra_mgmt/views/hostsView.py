@@ -254,7 +254,7 @@ def render_hosts_view(engine) -> None:
             selected_host_id = selected_row.get('_id')
         if selected_host_id is not None:
             with SessionManager(engine) as session:
-                host_obj = session.query(Host).get(selected_host_id)
+                host_obj = session.get(Host, selected_host_id)
                 if host_obj:
                     render_details(host_obj)
     except Exception as e:

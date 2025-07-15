@@ -212,7 +212,7 @@ def render_certificate_list(engine):
                 selected_row = selected_rows.iloc[0].to_dict()
                 selected_cert_id = int(selected_row['_id'])
                 with SessionManager(engine) as session:
-                    cert_obj = session.query(Certificate).get(selected_cert_id)
+                    cert_obj = session.get(Certificate, selected_cert_id)
                     if cert_obj is not None:
                         render_certificate_card(cert_obj, session)
         elif isinstance(selected_rows, list) and selected_rows:
@@ -220,7 +220,7 @@ def render_certificate_list(engine):
             if isinstance(selected_row, dict) and '_id' in selected_row:
                 selected_cert_id = int(selected_row['_id'])
                 with SessionManager(engine) as session:
-                    cert_obj = session.query(Certificate).get(selected_cert_id)
+                    cert_obj = session.get(Certificate, selected_cert_id)
                     if cert_obj is not None:
                         render_certificate_card(cert_obj, session)
     except Exception as e:
@@ -247,7 +247,7 @@ def render_certificate_card(cert, session):
         joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.application),
         joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host),
         joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host_ip)
-    ).get(cert.id)
+    ).filter(Certificate.id == cert.id).first()
     
     # Create header with title and delete button
     col1, col2 = st.columns([3, 1])
@@ -309,7 +309,7 @@ def render_certificate_overview(cert: Certificate, session) -> None:
     cert = session.query(Certificate).options(
         joinedload(Certificate.scans).joinedload(CertificateScan.host),
         joinedload(Certificate.scans).joinedload(CertificateScan.host).joinedload(Host.ip_addresses)
-    ).get(cert.id)
+    ).filter(Certificate.id == cert.id).first()
     
     st.subheader("Certificate Overview")
     

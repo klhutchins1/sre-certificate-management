@@ -102,7 +102,7 @@ class DomainService:
     def delete_domain_by_id(engine, domain_id):
         try:
             with SessionManager(engine) as session:
-                domain = session.query(Domain).get(domain_id)
+                domain = session.get(Domain, domain_id)
                 if not domain:
                     return {'success': False, 'error': 'Domain not found'}
                 session.delete(domain)

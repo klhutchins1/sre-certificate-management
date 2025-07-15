@@ -4,7 +4,16 @@ import shutil
 import gc
 import time
 import os
-from sqlalchemy.orm import Session
+
+# Import compatibility fixes before SQLAlchemy
+try:
+    from infra_mgmt.compatibility import ensure_compatibility
+    ensure_compatibility()
+except ImportError:
+    # If compatibility module not available, continue anyway
+    pass
+
+from sqlalchemy.orm import Session, close_all_sessions
 from infra_mgmt.models import Base
 from infra_mgmt.db.schema import migrate_database, sync_default_ignore_patterns
 import logging
@@ -14,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Shared fixture for cleaning up temp directories
 def cleanup_temp_dir(temp_dir):
     try:
-        Session.close_all()
+        close_all_sessions()
         gc.collect()
         time.sleep(0.1)
         if os.path.exists(temp_dir):
@@ -39,7 +48,7 @@ def test_db():
         try:
             if engine:
                 engine.dispose()
-            Session.close_all()
+            close_all_sessions()
             if os.path.exists(db_path):
                 try:
                     if engine:

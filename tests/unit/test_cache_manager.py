@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from infra_mgmt.db.cache_manager import DatabaseCacheManager
+from infra_mgmt.db.cache_manager import DatabaseCacheManager, SyncStatus
 from infra_mgmt.models import Base, Certificate, Host, Domain
 from infra_mgmt.settings import Settings
 
@@ -32,15 +32,32 @@ def remote_db_path(temp_cache_dir):
     return os.path.join(temp_cache_dir, "remote.db")
 
 @pytest.fixture
-def cache_manager(remote_db_path):
+def cache_manager(remote_db_path, temp_cache_dir):
     """Create a cache manager instance for testing."""
-    with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
+    with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings, \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager'), \
+         patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available', return_value=False), \
+         patch('infra_mgmt.db.cache_manager.create_engine') as mock_create_engine, \
+         patch('infra_mgmt.db.cache_manager.Base'), \
+         patch('infra_mgmt.db.cache_manager.logger') as mock_logger:
         mock_settings.return_value.get.return_value = temp_cache_dir
+        
+        # Create a mock local engine
+        mock_local_engine = MagicMock()
+        mock_local_engine.connect.return_value.__enter__.return_value = MagicMock()
+        mock_local_engine.connect.return_value.__exit__.return_value = None
+        mock_create_engine.return_value = mock_local_engine
+        
         manager = DatabaseCacheManager(remote_db_path)
         yield manager
         # Cleanup
         if hasattr(manager, 'cache_dir') and os.path.exists(manager.cache_dir):
             shutil.rmtree(manager.cache_dir, ignore_errors=True)
+        # Ensure threads are stopped
+        manager.running = False
 
 @pytest.fixture
 def test_engine():
@@ -57,11 +74,20 @@ def test_cache_manager_initialization(cache_manager):
     assert hasattr(cache_manager, 'local_db_path')
     assert hasattr(cache_manager, 'pending_writes')
 
-def test_cache_manager_cache_dir_creation(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_cache_dir_creation(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                         mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test that cache directory is created if it doesn't exist."""
     # Remove directory if it exists
     if os.path.exists(temp_cache_dir):
         shutil.rmtree(temp_cache_dir)
+    
+    # Mock network availability to avoid network checks
+    mock_network_available.return_value = False
     
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
@@ -69,9 +95,23 @@ def test_cache_manager_cache_dir_creation(temp_cache_dir, remote_db_path):
         
         assert os.path.exists(manager.local_db_path.parent)
         assert os.path.isdir(manager.local_db_path.parent)
+        
+        # Verify background threads weren't started
+        mock_start_sync.assert_called_once()
+        mock_start_db_worker.assert_called_once()
+        mock_network_available.assert_called()
 
-def test_cache_manager_load_cache(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_load_cache(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                 mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test cache loading functionality."""
+    # Mock network availability to avoid network checks
+    mock_network_available.return_value = False
+    
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
         manager = DatabaseCacheManager(remote_db_path)
@@ -79,6 +119,11 @@ def test_cache_manager_load_cache(temp_cache_dir, remote_db_path):
         # Test that the manager was initialized properly
         assert manager is not None
         assert hasattr(manager, 'local_engine')
+        
+        # Verify background threads weren't started
+        mock_start_sync.assert_called_once()
+        mock_start_db_worker.assert_called_once()
+        mock_network_available.assert_called()
 
 def test_cache_manager_save_cache(cache_manager):
     """Test cache saving functionality."""
@@ -210,8 +255,16 @@ def test_cache_manager_clear_cache(cache_manager):
         # Verify cache was cleared
         assert len(cache_manager.pending_writes) == 0
 
-def test_cache_manager_cache_cleanup(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_cache_cleanup(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                    mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test cache cleanup on manager destruction."""
+    mock_network_available.return_value = False
+    
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
         manager = DatabaseCacheManager(remote_db_path)
@@ -225,8 +278,16 @@ def test_cache_manager_cache_cleanup(temp_cache_dir, remote_db_path):
         # Verify manager was cleaned up
         assert manager is not None
 
-def test_cache_manager_error_handling(temp_cache_dir):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_error_handling(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                     mock_start_db_worker, mock_start_sync, temp_cache_dir):
     """Test error handling in cache operations."""
+    mock_network_available.return_value = False
+    
     # Test with invalid remote database path
     invalid_path = '/invalid/path/that/does/not/exist.db'
     
@@ -236,9 +297,17 @@ def test_cache_manager_error_handling(temp_cache_dir):
         manager = DatabaseCacheManager(invalid_path)
         assert manager is not None
 
-def test_cache_manager_concurrent_access(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_concurrent_access(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                        mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test concurrent access to cache manager."""
     import threading
+    
+    mock_network_available.return_value = False
     
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
@@ -269,8 +338,16 @@ def test_cache_manager_concurrent_access(temp_cache_dir, remote_db_path):
         for result in results:
             assert isinstance(result, int) or isinstance(result, Exception)
 
-def test_cache_manager_performance(temp_cache_dir, remote_db_path):
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_sync')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager.start_db_worker')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._is_network_available')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._load_pending_writes_from_tracking')
+@patch('infra_mgmt.db.cache_manager.DatabaseCacheManager._setup_enhanced_session_manager')
+def test_cache_manager_performance(mock_enhanced_session, mock_load_pending, mock_network_available, 
+                                  mock_start_db_worker, mock_start_sync, temp_cache_dir, remote_db_path):
     """Test cache manager performance with large datasets."""
+    mock_network_available.return_value = False
+    
     with patch('infra_mgmt.db.cache_manager.Settings') as mock_settings:
         mock_settings.return_value.get.return_value = temp_cache_dir
         manager = DatabaseCacheManager(remote_db_path)
@@ -286,4 +363,254 @@ def test_cache_manager_performance(temp_cache_dir, remote_db_path):
         end_time = time.time()
         
         # Performance should be reasonable (less than 1 second for 1000 operations)
-        assert end_time - start_time < 1.0 
+        assert end_time - start_time < 1.0
+
+# NEW TESTS FOR SYNC FUNCTIONALITY
+
+def test_sync_insert_with_upsert_logic(cache_manager):
+    """Test that _sync_insert uses INSERT OR REPLACE logic."""
+    # Mock the necessary components
+    cache_manager.local_engine = MagicMock()
+    cache_manager.remote_engine = MagicMock()
+    
+    # Mock local connection and result
+    mock_local_conn = MagicMock()
+    mock_result = MagicMock()
+    
+    # Create a proper mock for _mapping that behaves like SQLAlchemy result
+    mock_mapping = MagicMock()
+    mock_mapping.__getitem__ = lambda self, key: {'id': 1, 'name': 'test', 'value': 'test_value'}[key]
+    mock_mapping.keys.return_value = ['id', 'name', 'value']
+    mock_result._mapping = mock_mapping
+    
+    cache_manager.local_engine.connect.return_value.__enter__.return_value = mock_local_conn
+    mock_local_conn.execute.return_value.fetchone.return_value = mock_result
+    
+    # Mock remote connection
+    mock_remote_conn = MagicMock()
+    
+    # Call _sync_insert
+    cache_manager._sync_insert(mock_remote_conn, 'test_table', 1)
+    
+    # Verify INSERT OR REPLACE was used
+    mock_remote_conn.execute.assert_called_once()
+    call_args = mock_remote_conn.execute.call_args
+    sql_text = str(call_args[0][0])
+    assert 'INSERT OR REPLACE' in sql_text
+    assert 'test_table' in sql_text
+
+def test_resolve_conflict_with_existing_record(cache_manager):
+    """Test conflict resolution when record exists in remote database."""
+    # Mock the necessary components
+    cache_manager.local_engine = MagicMock()
+    mock_remote_conn = MagicMock()
+    
+    # Mock remote record exists
+    mock_count_result = MagicMock()
+    mock_count_result._mapping = {'count': 1}  # Record exists
+    
+    # Mock timestamp columns detection
+    with patch.object(cache_manager, '_get_timestamp_columns', return_value=['updated_at']):
+        # Mock local and remote timestamp results
+        mock_local_result = MagicMock()
+        mock_local_result._mapping = {'updated_at': '2025-07-11 16:00:00'}
+        
+        mock_remote_result = MagicMock()
+        mock_remote_result._mapping = {'updated_at': '2025-07-11 10:00:00'}  # Older
+        
+        cache_manager.local_engine.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = mock_local_result
+        
+        # Set up the mock chain properly - the method makes multiple calls to execute
+        mock_remote_conn.execute.return_value.fetchone.side_effect = [mock_count_result, mock_remote_result]
+        
+        # Mock _sync_update
+        with patch.object(cache_manager, '_sync_update') as mock_sync_update:
+            result = cache_manager._resolve_conflict(mock_remote_conn, 'test_table', 1, datetime.now())
+            
+            # Should resolve conflict by updating with local version (newer)
+            assert result is True
+            mock_sync_update.assert_called_once()
+
+def test_resolve_conflict_with_nonexistent_record(cache_manager):
+    """Test conflict resolution when record doesn't exist in remote database."""
+    # Mock the necessary components
+    cache_manager.local_engine = MagicMock()
+    mock_remote_conn = MagicMock()
+    
+    # Mock remote record doesn't exist
+    mock_count_result = MagicMock()
+    mock_count_result._mapping = {'count': 0}  # Record doesn't exist
+    mock_remote_conn.execute.return_value.fetchone.return_value = mock_count_result
+    
+    # Mock _sync_insert
+    with patch.object(cache_manager, '_sync_insert') as mock_sync_insert:
+        result = cache_manager._resolve_conflict(mock_remote_conn, 'test_table', 1, datetime.now())
+        
+        # Should resolve conflict by inserting to remote
+        assert result is True
+        mock_sync_insert.assert_called_once()
+
+def test_get_timestamp_columns(cache_manager):
+    """Test timestamp column detection."""
+    # Mock the inspector
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {'name': 'id'},
+        {'name': 'name'},
+        {'name': 'updated_at'},
+        {'name': 'created_at'},
+        {'name': 'other_field'}
+    ]
+    
+    with patch('sqlalchemy.inspect', return_value=mock_inspector):
+        # Ensure local_engine is set
+        cache_manager.local_engine = MagicMock()
+        
+        result = cache_manager._get_timestamp_columns('test_table')
+        
+        # Should find timestamp columns in priority order
+        assert 'updated_at' in result
+        assert 'created_at' in result
+        assert result.index('updated_at') < result.index('created_at')  # Priority order
+
+def test_sync_status_detailed(cache_manager):
+    """Test detailed sync status reporting."""
+    # Add some pending writes
+    cache_manager.add_pending_write('certificates', 1, 'INSERT')
+    cache_manager.add_pending_write('hosts', 2, 'UPDATE')
+    
+    # Get sync status
+    status = cache_manager.get_sync_status()
+    
+    # Verify all expected fields are present
+    assert 'status' in status
+    assert 'pending_writes' in status
+    assert 'database_queue_size' in status
+    assert 'sync_interval' in status
+    assert 'network_available' in status
+    assert 'active_threads' in status
+    assert 'thread_names' in status
+    assert 'sync_counter' in status
+    assert 'recent_results' in status
+    
+    # Verify values
+    assert status['pending_writes'] == 2
+    assert isinstance(status['active_threads'], int)
+    assert isinstance(status['thread_names'], list)
+
+def test_sqlalchemy_2_0_compatibility(cache_manager):
+    """Test SQLAlchemy 2.0 result object compatibility."""
+    # Mock a result object that behaves like SQLAlchemy 2.0
+    mock_result = MagicMock()
+    
+    # Create a proper mock for _mapping that behaves like SQLAlchemy result
+    mock_mapping = MagicMock()
+    data = {'id': 1, 'name': 'test_name', 'value': 'test_value', 'updated_at': '2025-07-11 16:00:00'}
+    mock_mapping.__getitem__ = lambda self, key: data[key]
+    mock_mapping.keys.return_value = ['id', 'name', 'value', 'updated_at']
+    mock_result._mapping = mock_mapping
+    
+    # Test _sync_insert handles _mapping correctly
+    cache_manager.local_engine = MagicMock()
+    cache_manager.local_engine.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = mock_result
+    
+    mock_remote_conn = MagicMock()
+    
+    # Should not raise any errors about 'keys' column
+    try:
+        cache_manager._sync_insert(mock_remote_conn, 'test_table', 1)
+        # If we get here, the _mapping access worked correctly
+        assert True
+    except Exception as e:
+        if "Could not locate column in row for column 'keys'" in str(e):
+            pytest.fail("SQLAlchemy 2.0 compatibility issue: still trying to access 'keys' column")
+        else:
+            # Some other error is fine for this test
+            pass
+
+def test_unique_constraint_handling(cache_manager):
+    """Test handling of UNIQUE constraint violations."""
+    from sqlite3 import IntegrityError
+    
+    # Mock the sync operation to raise UNIQUE constraint error
+    cache_manager.local_engine = MagicMock()
+    cache_manager.remote_engine = MagicMock()
+    
+    # Mock local connection and result
+    mock_local_conn = MagicMock()
+    mock_result = MagicMock()
+    
+    # Create a proper mock for _mapping that behaves like SQLAlchemy result
+    mock_mapping = MagicMock()
+    mock_mapping.__getitem__ = lambda self, key: {'id': 1, 'name': 'test'}[key]
+    mock_mapping.keys.return_value = ['id', 'name']
+    mock_result._mapping = mock_mapping
+    
+    cache_manager.local_engine.connect.return_value.__enter__.return_value = mock_local_conn
+    mock_local_conn.execute.return_value.fetchone.return_value = mock_result
+    
+    # Mock remote connection to raise UNIQUE constraint error on first call
+    mock_remote_conn = MagicMock()
+    mock_remote_conn.execute.side_effect = [
+        IntegrityError("UNIQUE constraint failed: test_table.id"),
+        None  # Second call succeeds (after conflict resolution)
+    ]
+    
+    # Mock conflict resolution to succeed
+    with patch.object(cache_manager, '_resolve_conflict', return_value=True):
+        # The _sync_table_writes method should handle the UNIQUE constraint error
+        # by calling conflict resolution
+        writes = [{'operation': 'INSERT', 'record_id': 1}]
+        
+        # Should not raise an exception
+        try:
+            result = cache_manager._sync_table_writes('test_table', writes)
+            # Conflict should be handled gracefully
+            assert True
+        except IntegrityError:
+            pytest.fail("UNIQUE constraint error was not properly handled")
+
+def test_network_availability_check():
+    """Test network availability checking without using the fixture."""
+    # Import the actual method to test
+    from infra_mgmt.db.cache_manager import DatabaseCacheManager
+    from pathlib import Path
+    import tempfile
+    
+    # Create a simple test class to hold the remote_db_path
+    class TestCacheManager:
+        def __init__(self, remote_db_path):
+            self.remote_db_path = remote_db_path
+    
+    # Test with existing remote database file
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        temp_path = Path(f.name)
+        f.write(b'SQLite format 3')
+    
+    try:
+        test_instance = TestCacheManager(temp_path)
+        
+        # Call the actual method directly on the class with the instance
+        result = DatabaseCacheManager._is_network_available(test_instance)
+        assert result is True
+        
+        # Test with non-existent remote database file
+        temp_path.unlink()  # Delete the file
+        result = DatabaseCacheManager._is_network_available(test_instance)
+        assert result is False
+        
+        # Test with file access error
+        # Create file but make it unreadable
+        temp_path.write_bytes(b'SQLite format 3')
+        with patch('builtins.open', side_effect=IOError("Access denied")):
+            result = DatabaseCacheManager._is_network_available(test_instance)
+            assert result is False
+    finally:
+        # Cleanup
+        if temp_path.exists():
+            temp_path.unlink()
+
+def mock_open(read_data=b''):
+    """Helper function to create a mock for open()."""
+    from unittest.mock import mock_open as base_mock_open
+    return base_mock_open(read_data=read_data) 

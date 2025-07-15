@@ -7,7 +7,7 @@ from datetime import datetime
 from infra_mgmt.backup import create_backup, restore_backup, list_backups
 from infra_mgmt.settings import Settings
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker, close_all_sessions
 from infra_mgmt.models import Base, Certificate
 import time
 import yaml
@@ -121,7 +121,7 @@ def test_restore_backup(test_env):
         )
         session.add(cert)
         session.commit()
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Store original settings
@@ -145,7 +145,7 @@ def test_restore_backup(test_env):
             'subject': original_cert.subject,
             'san': original_cert.san
         }
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Modify database by adding another record
@@ -164,7 +164,7 @@ def test_restore_backup(test_env):
         )
         session.add(cert)
         session.commit()
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Get backup to restore
@@ -173,7 +173,7 @@ def test_restore_backup(test_env):
     backup_to_restore = backups[0]['manifest_file']
 
     # Close all database connections before restore
-    Session.close_all()
+    close_all_sessions()
 
     # Restore backup
     success, message = restore_backup(backup_to_restore)
@@ -196,7 +196,7 @@ def test_restore_backup(test_env):
             'san': restored_cert.san
         }
         assert restored_data == original_data, "Certificate data does not match after restore"
-    Session.close_all()
+    close_all_sessions()
     engine.dispose()
 
     # Verify config was restored
@@ -284,39 +284,52 @@ def test_multiple_backups_ordering(test_env):
         created_backups = []
         created_timestamps = set()
         
-        # Create multiple backups with delays to ensure different timestamps
+        # Create multiple backups with mocked timestamps to ensure different timestamps
+        from unittest.mock import patch, MagicMock
+        import time
+        
         for i in range(3):
-            # Modify the database content by adding a test record
-            engine = create_engine(f"sqlite:///{test_env['db_file']}")
-            Session = sessionmaker(bind=engine)
-            with Session() as session:
-                cert = Certificate(
-                    serial_number=f"test{i}",
-                    thumbprint=f"abc{i}",
-                    common_name=f"test{i}.com",
-                    valid_from=datetime.now(),
-                    valid_until=datetime.now(),
-                    issuer="Test CA",
-                    subject=f"CN=test{i}.com",
-                    san=f"test{i}.com"
-                )
-                session.add(cert)
-                session.commit()
-            engine.dispose()
+            # Mock datetime to ensure different timestamps
+            mock_timestamp = f"20250715_0426{10 + i:02d}"
             
-            # Ensure settings are correct for each backup
-            settings._config = original_config.copy()
-            settings._config['paths']['database'] = str(test_env['db_file'])
-            settings._config['paths']['backups'] = str(test_env['backup_dir'])
-            settings.save()
-            
-            success, message = create_backup()
-            assert success, f"Backup {i} failed: {message}"
-            
-            # Verify backup was created
-            backup_files = list(test_env['backup_dir'].glob("*"))
-            expected_files = (i + 1) * 3  # Each backup creates 3 files
-            assert len(backup_files) >= expected_files, f"Expected at least {expected_files} files after backup {i}, got {len(backup_files)}"
+            with patch('infra_mgmt.backup.datetime') as mock_datetime:
+                # Mock the datetime.now() call in backup.py
+                mock_now = MagicMock()
+                mock_now.strftime.return_value = mock_timestamp
+                mock_now.isoformat.return_value = "2025-07-15T04:26:10.123456"
+                mock_datetime.now.return_value = mock_now
+                
+                # Modify the database content by adding a test record
+                engine = create_engine(f"sqlite:///{test_env['db_file']}")
+                Session = sessionmaker(bind=engine)
+                with Session() as session:
+                    cert = Certificate(
+                        serial_number=f"test{i}",
+                        thumbprint=f"abc{i}",
+                        common_name=f"test{i}.com",
+                        valid_from=datetime.now(),
+                        valid_until=datetime.now(),
+                        issuer="Test CA",
+                        subject=f"CN=test{i}.com",
+                        san=f"test{i}.com"
+                    )
+                    session.add(cert)
+                    session.commit()
+                engine.dispose()
+                
+                # Ensure settings are correct for each backup
+                settings._config = original_config.copy()
+                settings._config['paths']['database'] = str(test_env['db_file'])
+                settings._config['paths']['backups'] = str(test_env['backup_dir'])
+                settings.save()
+                
+                success, message = create_backup()
+                assert success, f"Backup {i} failed: {message}"
+                
+                # Verify backup was created
+                backup_files = list(test_env['backup_dir'].glob("*"))
+                expected_files = (i + 1) * 3  # Each backup creates 3 files
+                assert len(backup_files) >= expected_files, f"Expected at least {expected_files} files after backup {i}, got {len(backup_files)}"
             
             # Get timestamp from manifest file
             manifest_files = list(test_env['backup_dir'].glob("backup_*.json"))

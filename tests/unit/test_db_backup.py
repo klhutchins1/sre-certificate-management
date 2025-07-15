@@ -11,7 +11,7 @@ import pytest
 from infra_mgmt.backup import _backup_database_file, _restore_database_file, create_backup, restore_backup, list_backups, restore_database, backup_database
 from infra_mgmt.constants import ENV_PRODUCTION, HOST_TYPE_SERVER
 from infra_mgmt.db.engine import init_database
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, close_all_sessions
 from sqlalchemy import create_engine
 from infra_mgmt.db.schema import reset_database
 from infra_mgmt.models import Base, Certificate, Host
@@ -75,7 +75,7 @@ def test_backup_and_restore_database():
     finally:
         if engine:
             engine.dispose()
-        Session.close_all()
+        close_all_sessions()
         
         # Add a delay and force garbage collection
         time.sleep(0.2)

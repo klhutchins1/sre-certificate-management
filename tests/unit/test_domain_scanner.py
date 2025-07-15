@@ -309,25 +309,51 @@ class TestNetworkIsolation:
         # Should have mock data, not real data
         assert domain_info.registrar == "Test Registrar Ltd"
     
-    def test_no_real_dns_calls(self, domain_scanner, mock_session):
-        """Verify no real DNS calls are made"""
-        # Even with a real domain, should not make real calls
-        domain_info = domain_scanner.scan_domain(
-            'google.com', 
-            mock_session, 
-            get_whois=False, 
-            get_dns=True
-        )
+cursor/fix-proxied-certificate-issue-d40d
+    # Mock all external calls to ensure consistent timing
+    with patch('infra_mgmt.scanner.domain_scanner.socket.gethostbyname') as mock_gethostbyname, \
+         patch('infra_mgmt.scanner.domain_scanner.dns.resolver.resolve') as mock_resolve, \
+         patch('infra_mgmt.scanner.domain_scanner.whois.whois') as mock_whois:
         
-        assert isinstance(domain_info, DomainInfo)
-        # Should have mock DNS data
-        assert len(domain_info.dns_records) >= 0
+        mock_gethostbyname.return_value = "93.184.216.34"
         
-    def test_consistent_mock_data(self, domain_scanner, mock_session):
-        """Verify mock data is consistent across calls"""
-        domain_info1 = domain_scanner.scan_domain('test1.com', mock_session)
-        domain_info2 = domain_scanner.scan_domain('test2.com', mock_session)
+        # Mock DNS resolver to return quickly
+        mock_a_record = MagicMock()
+        mock_a_record.address = "93.184.216.34"
+        mock_resolve.return_value = [mock_a_record]
         
-        # Mock registrar should be consistent
-        assert domain_info1.registrar == domain_info2.registrar
-        assert domain_info1.registrar == "Test Registrar Ltd" 
+        # Mock WHOIS to avoid network calls
+        mock_whois_result = MagicMock()
+        mock_whois_result.registrar = "Test Registrar"
+        mock_whois.return_value = mock_whois_result
+        
+        start_time = time.time()
+        result = domain_scanner.scan_domain("example.com", mock_session)
+        end_time = time.time()
+        
+        # Should complete quickly (less than 5 seconds with all mocks)
+        assert end_time - start_time < 5.0
+        assert result is not None
+
+def test_domain_info_to_dict(sample_domain_info):
+    """Test DomainInfo to_dict method."""
+    result = sample_domain_info.to_dict()
+    
+    assert isinstance(result, dict)
+    assert result['domain_name'] == "example.com"
+    assert result['registrar'] == "Example Registrar"
+    assert result['status'] == ["active"]
+    assert result['nameservers'] == ["a.iana-servers.net", "b.iana-servers.net"]
+
+def test_domain_info_default_values():
+    """Test DomainInfo with default values."""
+    info = DomainInfo("test.com")
+    
+    assert info.domain_name == "test.com"
+    assert info.registrar is None
+    assert info.registration_date is None
+    assert info.expiration_date is None
+    assert info.status == []
+    assert info.nameservers == []
+    assert info.is_valid is True
+    assert info.error is None 

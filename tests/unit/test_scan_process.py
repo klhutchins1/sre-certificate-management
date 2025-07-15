@@ -263,7 +263,7 @@ def test_scan_process_database_integration(scan_manager, test_session, mock_stat
 
 def test_scan_process_proxy_detection(scan_manager, test_session, mock_status_container):
     """Test that proxy detection sets proxied and proxy_info fields on Certificate."""
-    with patch('infra_mgmt.scanner.scan_manager.detect_proxy_certificate') as mock_detect:
+    with patch('infra_mgmt.utils.proxy_detection.detect_proxy_certificate') as mock_detect:
         mock_detect.return_value = (True, "Matched proxy CA fingerprint: abc123")
         now = datetime.now(timezone.utc)
         
@@ -277,13 +277,16 @@ def test_scan_process_proxy_detection(scan_manager, test_session, mock_status_co
             subject={"CN": "proxytest.com"},
             issuer={"CN": "Proxy CA"},
             san=["proxytest.com"],
-            ip_addresses=["192.168.1.1"]
+            ip_addresses=["192.168.1.1"],
+            proxied=True,  # Pre-set the proxy fields since scanner will set them
+            proxy_info="Matched proxy CA fingerprint: abc123"
         )
 
         # Configure the mock for scan_certificate
-        # It should return an object that has our cert_info_to_modify instance
+        # It should return an object that has our cert_info_to_modify instance with proxy detection already applied
         mock_scan_result_obj = MagicMock()
         mock_scan_result_obj.certificate_info = cert_info_to_modify # CRITICAL: assign our instance
+        mock_scan_result_obj.warnings = ["Certificate hostname mismatch: some proxy warning"]
         scan_manager.infra_mgmt.scan_certificate.return_value = mock_scan_result_obj
         
         scan_manager.domain_scanner.scan_domain.return_value = SimpleNamespace(

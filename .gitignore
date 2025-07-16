@@ -1,12 +1,52 @@
+# Python
 venv/
-__pycache__
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Database and data files
+*.db
+*.sqlite
+*.sqlite3
 backups/
 exports/
+data/
 
-*.db
+# Logs
+*.log
+streamlit_runner.log
+infra_mgmt/scanner_debug.log
+
+# Environment and configuration
+.env
+.env.local
+.env.production
 *.lock
 .coverage
 .app_running
+
+# IDE and editor files
 SRE-CertificateManagement.code-workspace
-streamlit_runner.log
-infra_mgmt/scanner_debug.log
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Security and sensitive files
+config.local.yaml
+secrets.yaml
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db

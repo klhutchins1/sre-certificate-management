@@ -136,8 +136,20 @@ def test_proxy_detection_config():
     assert settings.update("proxy_detection.ca_fingerprints", ["abc123", "def456"])
     assert settings.update("proxy_detection.ca_subjects", ["CorpProxy Root CA"])
     assert settings.update("proxy_detection.ca_serials", ["9999"])
+    assert settings.update("proxy_detection.bypass_external", True)
+    assert settings.update("proxy_detection.bypass_patterns", ["*.test.com"])
+    assert settings.update("proxy_detection.proxy_hostnames", ["test-proxy"])
+    assert settings.update("proxy_detection.enable_hostname_validation", False)
+    assert settings.update("proxy_detection.enable_authenticity_validation", False)
+    assert settings.update("proxy_detection.warn_on_proxy_detection", False)
     # Retrieve and check
     assert settings.get("proxy_detection.enabled") is True
     assert settings.get("proxy_detection.ca_fingerprints") == ["abc123", "def456"]
     assert settings.get("proxy_detection.ca_subjects") == ["CorpProxy Root CA"]
-    assert settings.get("proxy_detection.ca_serials") == ["9999"] 
+    assert settings.get("proxy_detection.ca_serials") == ["9999"]
+    assert settings.get("proxy_detection.bypass_external") is True
+    assert settings.get("proxy_detection.bypass_patterns") == ["*.test.com"]
+    assert settings.get("proxy_detection.proxy_hostnames") == ["test-proxy"]
+    assert settings.get("proxy_detection.enable_hostname_validation") is False
+    assert settings.get("proxy_detection.enable_authenticity_validation") is False
+    assert settings.get("proxy_detection.warn_on_proxy_detection") is False 

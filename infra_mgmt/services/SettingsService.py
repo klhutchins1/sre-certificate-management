@@ -276,7 +276,10 @@ class SettingsService:
             return session.query(IgnoredCertificate).order_by(IgnoredCertificate.created_at.desc()).all()
 
     @staticmethod
-    def save_proxy_detection_settings(settings: Settings, enabled: bool, ca_fingerprints: list, ca_subjects: list, ca_serials: list = None) -> bool:
+    def save_proxy_detection_settings(settings: Settings, enabled: bool, ca_fingerprints: list, ca_subjects: list, ca_serials: list = None, 
+                                    bypass_external: bool = False, bypass_patterns: list = None, proxy_hostnames: list = None,
+                                    enable_hostname_validation: bool = True, enable_authenticity_validation: bool = True, 
+                                    warn_on_proxy_detection: bool = True) -> bool:
         """
         Update and save proxy detection settings.
         """
@@ -285,4 +288,12 @@ class SettingsService:
         settings.update("proxy_detection.ca_subjects", ca_subjects)
         if ca_serials is not None:
             settings.update("proxy_detection.ca_serials", ca_serials)
+        settings.update("proxy_detection.bypass_external", bypass_external)
+        if bypass_patterns is not None:
+            settings.update("proxy_detection.bypass_patterns", bypass_patterns)
+        if proxy_hostnames is not None:
+            settings.update("proxy_detection.proxy_hostnames", proxy_hostnames)
+        settings.update("proxy_detection.enable_hostname_validation", enable_hostname_validation)
+        settings.update("proxy_detection.enable_authenticity_validation", enable_authenticity_validation)
+        settings.update("proxy_detection.warn_on_proxy_detection", warn_on_proxy_detection)
         return settings.save() 

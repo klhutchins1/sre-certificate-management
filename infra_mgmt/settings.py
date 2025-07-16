@@ -139,7 +139,26 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "ca_fingerprints": [],  # List of SHA256 fingerprints of known proxy CA certs
         "ca_subjects": [],       # List of subject strings of known proxy CA certs
-        "ca_serials": []        # List of serial numbers of known proxy CA certs
+        "ca_serials": [],        # List of serial numbers of known proxy CA certs
+        "bypass_external": False,  # Attempt to bypass proxy for external domains
+        "bypass_patterns": [      # Patterns for domains that should bypass proxy
+            "*.github.com",
+            "*.google.com",
+            "*.microsoft.com",
+            "*.amazon.com",
+            "*.cloudflare.com"
+        ],
+        "proxy_hostnames": [      # Hostnames that indicate proxy certificates
+            "proxy",
+            "firewall",
+            "gateway",
+            "bluecoat",
+            "zscaler",
+            "forcepoint"
+        ],
+        "enable_hostname_validation": True,  # Check for hostname mismatches
+        "enable_authenticity_validation": True,  # Comprehensive authenticity checks
+        "warn_on_proxy_detection": True  # Generate warnings for detected proxy certificates
     }
 }
 
@@ -509,6 +528,18 @@ class Settings:
                 return isinstance(value, list) and all(isinstance(s, str) for s in value)
             elif key == "proxy_detection.ca_serials":
                 return isinstance(value, list) and all(isinstance(s, str) for s in value)
+            elif key == "proxy_detection.bypass_external":
+                return isinstance(value, bool)
+            elif key == "proxy_detection.bypass_patterns":
+                return isinstance(value, list) and all(isinstance(p, str) for p in value)
+            elif key == "proxy_detection.proxy_hostnames":
+                return isinstance(value, list) and all(isinstance(h, str) for h in value)
+            elif key == "proxy_detection.enable_hostname_validation":
+                return isinstance(value, bool)
+            elif key == "proxy_detection.enable_authenticity_validation":
+                return isinstance(value, bool)
+            elif key == "proxy_detection.warn_on_proxy_detection":
+                return isinstance(value, bool)
             # Unknown sub-key under proxy_detection
             return False
 

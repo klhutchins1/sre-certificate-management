@@ -109,7 +109,6 @@ class DatabaseCacheManager:
         # Initialize databases
         self._initialize_databases()
         
-<<<<<<< HEAD
         # Initialize enhanced session manager after databases are ready
         self._setup_enhanced_session_manager()
         
@@ -117,12 +116,6 @@ class DatabaseCacheManager:
         self._load_pending_writes_from_tracking()
         
         # Start background sync and database worker
-=======
-        # Load any unsynced operations from previous sessions
-        self._load_pending_writes_from_tracking()
-        
-        # Start background sync
->>>>>>> 79b9744 (Fix database sync issues with persistent tracking and remote execution)
         self.start_sync()
         self.start_db_worker()
     
@@ -134,35 +127,6 @@ class DatabaseCacheManager:
             logger.info("Enhanced session manager initialized for operation tracking")
         except Exception as e:
             logger.warning(f"Failed to initialize enhanced session manager: {e}")
-    
-    def _load_pending_writes_from_tracking(self):
-        """Load unsynced operations from sync_tracking table."""
-        if not self.local_engine:
-            return
-        
-        try:
-            with self.local_engine.connect() as local_conn:
-                unsynced_ops = local_conn.execute(text("""
-                    SELECT table_name, record_id, operation, timestamp 
-                    FROM sync_tracking 
-                    WHERE synced = FALSE
-                    ORDER BY timestamp ASC
-                """)).fetchall()
-                
-                with self.write_lock:
-                    for op in unsynced_ops:
-                        self.pending_writes.append({
-                            'table_name': op.table_name,
-                            'record_id': op.record_id,
-                            'operation': op.operation,
-                            'timestamp': op.timestamp
-                        })
-                
-                if unsynced_ops:
-                    logger.info(f"Loaded {len(unsynced_ops)} unsynced operations from previous session")
-                    
-        except Exception as e:
-            logger.warning(f"Failed to load pending writes from tracking: {str(e)}")
     
     def _load_pending_writes_from_tracking(self):
         """Load unsynced operations from sync_tracking table."""
@@ -361,7 +325,6 @@ class DatabaseCacheManager:
             
             # Also persist to sync_tracking table for durability
             if self.local_engine:
-<<<<<<< HEAD
                 self._queue_database_operation('persist_sync_tracking', table_name, record_id, operation)
     
     def _retry_database_operation(self, operation_func, *args, max_retries=5, **kwargs):
@@ -517,23 +480,6 @@ class DatabaseCacheManager:
         
         if final_queue_size > 0:
             logger.warning(f"Database queue still has {final_queue_size} operations after waiting")
-=======
-                try:
-                    with self.local_engine.connect() as local_conn:
-                        local_conn.execute(text("""
-                            INSERT OR IGNORE INTO sync_tracking 
-                            (table_name, record_id, operation, timestamp, synced) 
-                            VALUES (:table_name, :record_id, :operation, :timestamp, FALSE)
-                        """), {
-                            'table_name': table_name,
-                            'record_id': record_id,
-                            'operation': operation,
-                            'timestamp': datetime.now()
-                        })
-                        local_conn.commit()
-                except Exception as e:
-                    logger.warning(f"Failed to persist pending write to sync_tracking: {str(e)}")
->>>>>>> 79b9744 (Fix database sync issues with persistent tracking and remote execution)
     
     def start_sync(self):
         """Start the background sync thread."""
@@ -727,25 +673,17 @@ class DatabaseCacheManager:
                         
                         # Only mark as synced after successful execution
                         if self.local_engine:
-                            with self.local_engine.connect() as local_conn:
-                                local_conn.execute(text("""
-                                    UPDATE sync_tracking 
-                                    SET synced = TRUE 
-                                    WHERE table_name = :table_name 
-                                    AND record_id = :record_id 
-                                    AND operation = :operation
-                                """), {
-                                    'table_name': table_name,
-                                    'record_id': write['record_id'],
-                                    'operation': write['operation']
-                                })
-                                local_conn.commit()
+                            self._queue_database_operation(
+                                'mark_sync_completed', 
+                                table_name, 
+                                write['record_id'], 
+                                write['operation']
+                            )
                             
                     except Exception as op_e:
                         logger.error(f"Failed to sync {write['operation']} operation for {table_name}:{write['record_id']}: {str(op_e)}")
-                        # Re-add this specific failed write to pending queue
-                        with self.write_lock:
-                            self.pending_writes.append(write)
+                        # Add to failed writes list
+                        failed_writes.append(write)
                         
         except Exception as e:
             logger.error(f"Failed to sync writes for table {table_name}: {str(e)}")

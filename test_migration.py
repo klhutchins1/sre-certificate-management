@@ -169,6 +169,41 @@ def test_migration():
         except:
             pass
 
+def test_config_loading():
+    """Test that the config loading works correctly."""
+    print("\n🧪 Testing config loading...")
+    
+    try:
+        from migrate_proxy_detection import load_config, get_database_path_from_config
+        
+        # Test loading config
+        config = load_config()
+        if config is None:
+            print("⚠️  No config.yaml found, skipping config test")
+            return True
+        
+        print("✅ Config loaded successfully")
+        
+        # Test getting database path
+        db_path = get_database_path_from_config()
+        if db_path:
+            print(f"✅ Database path from config: {db_path}")
+        else:
+            print("⚠️  No database path found in config")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Config test failed: {e}")
+        return False
+
 if __name__ == "__main__":
-    success = test_migration()
+    # Test config loading first
+    config_success = test_config_loading()
+    
+    # Test migration
+    migration_success = test_migration()
+    
+    # Both tests should pass
+    success = config_success and migration_success
     sys.exit(0 if success else 1)

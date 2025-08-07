@@ -15,10 +15,11 @@ I've created a comprehensive migration system to add the missing columns to your
 
 ### Files Created
 
-1. **`migrate_proxy_detection.py`** - Main migration script
-2. **`run_with_migration.py`** - Application launcher with automatic migration
-3. **`test_migration.py`** - Test script to verify migration works
-4. **`MIGRATION_GUIDE.md`** - Comprehensive documentation
+1. **`migrate_proxy_detection.py`** - Main migration script (reads from config.yaml)
+2. **`migrate_remote_database.py`** - Enhanced script for remote/network databases
+3. **`run_with_migration.py`** - Application launcher with automatic migration
+4. **`test_migration.py`** - Test script to verify migration works
+5. **`MIGRATION_GUIDE.md`** - Comprehensive documentation
 
 ### Columns Added
 
@@ -35,15 +36,23 @@ python run_with_migration.py
 
 This will automatically migrate your database and start your application.
 
-### Option 2: Manual Migration
+### Option 2: Manual Migration (Local/Network)
 
 ```bash
 python migrate_proxy_detection.py
 ```
 
-This will migrate your database and show you the results.
+This will migrate your database using the path from `config.yaml`.
 
-### Option 3: Verify Only
+### Option 3: Remote Database Migration
+
+```bash
+python migrate_remote_database.py
+```
+
+This is specifically designed for databases on network shares with enhanced error handling.
+
+### Option 4: Verify Only
 
 ```bash
 python migrate_proxy_detection.py --verify-only
@@ -53,11 +62,12 @@ This will check if migration is already applied.
 
 ## What the Migration Does
 
-1. **Creates a backup** of your existing database
-2. **Adds the missing columns** (`proxied` and `proxy_info`)
-3. **Preserves all existing data** (no data loss)
-4. **Verifies the migration** was successful
-5. **Shows you the results**
+1. **Reads database path from config.yaml** - No more hardcoded paths!
+2. **Creates a backup** of your existing database
+3. **Adds the missing columns** (`proxied` and `proxy_info`)
+4. **Preserves all existing data** (no data loss)
+5. **Verifies the migration** was successful
+6. **Shows you the results**
 
 ## Safety Features
 
@@ -66,12 +76,19 @@ This will check if migration is already applied.
 - ✅ **Verification** - Checks that migration worked correctly
 - ✅ **Idempotent** - Safe to run multiple times
 - ✅ **Tested** - Migration script has been tested and verified
+- ✅ **Config-aware** - Reads database path from your config.yaml
+- ✅ **Network support** - Enhanced scripts for remote databases
 
 ## Example Output
 
 ```
 ============================================================
 🔧 Proxy Detection Database Migration Tool
+============================================================
+ℹ️  Using database path from config.yaml: E:\Projects\programming_2\SRE-CertificateManagement\data\certificates.db
+Database path: E:\Projects\programming_2\SRE-CertificateManagement\data\certificates.db
+Verify only: False
+Skip backup: False
 ============================================================
 ✅ Database backed up to: data/certificates.db.backup.1703123456
 ✅ Found 'certificates' table
@@ -89,6 +106,24 @@ This will check if migration is already applied.
 
 🎉 Your database is now ready for proxy detection!
 ```
+
+## Remote Database Support
+
+The migration scripts now support remote databases and network shares:
+
+### Network Path Detection
+- Automatically detects network paths (UNC paths like `\\server\share`)
+- Provides helpful troubleshooting for network issues
+- Uses longer timeouts for network databases
+
+### Enhanced Error Handling
+- Better error messages for network connectivity issues
+- Database locking detection and suggestions
+- Permission error handling
+
+### Backup Location
+- Creates backups in the same directory as the database
+- Works with network shares and mapped drives
 
 ## After Migration
 
@@ -123,11 +158,29 @@ If you encounter any issues:
 3. **Restore from backup** if needed
 4. **Check the MIGRATION_GUIDE.md** for detailed troubleshooting
 
+### Network-Specific Issues
+
+For remote databases:
+1. **Check network connectivity** to the database location
+2. **Verify permissions** on the network share
+3. **Try mapping the network drive** if using UNC paths
+4. **Use the remote migration script** for better error handling
+
 ## Files to Use
 
 - **For automatic migration**: `run_with_migration.py`
-- **For manual migration**: `migrate_proxy_detection.py`
+- **For local databases**: `migrate_proxy_detection.py`
+- **For remote/network databases**: `migrate_remote_database.py`
 - **For testing**: `test_migration.py`
 - **For documentation**: `MIGRATION_GUIDE.md`
 
-The migration is designed to be safe, simple, and reliable. Your existing data will be preserved, and you'll be able to use all the new proxy detection features.
+## Configuration Integration
+
+The migration scripts now properly integrate with your existing configuration:
+
+- **Reads database path** from `config.yaml` under `paths.database`
+- **Handles relative paths** correctly
+- **Supports network paths** and UNC paths
+- **Works with your existing setup** without manual path specification
+
+The migration is designed to be safe, simple, and reliable. Your existing data will be preserved, and you'll be able to use all the new proxy detection features immediately after migration.

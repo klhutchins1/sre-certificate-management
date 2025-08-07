@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Database Migration Script: Add Proxy Detection Columns
+Remote Database Migration Script: Add Proxy Detection Columns
 
-This script migrates an existing database to add proxy detection support.
-It adds the 'proxied' and 'proxy_info' columns to the certificates table.
+This script is specifically designed for migrating databases on network shares
+or remote locations. It includes enhanced error handling and network path support.
 
 Usage:
-    python migrate_proxy_detection.py [--db-path PATH_TO_DATABASE]
+    python migrate_remote_database.py [--db-path PATH_TO_DATABASE]
     
 Example:
-    python migrate_proxy_detection.py --db-path data/certificates.db
+    python migrate_remote_database.py --db-path \\\\server\\share\\certificates.db
 """
 
 import argparse
@@ -17,6 +17,7 @@ import sqlite3
 import sys
 import os
 import yaml
+import time
 from pathlib import Path
 
 def load_config():
@@ -45,34 +46,80 @@ def get_database_path_from_config():
         return db_path
     return None
 
+def check_network_path(path):
+    """Check if a path is a network path and provide helpful information."""
+    if path.startswith('\\\\') or path.startswith('//'):
+        print(f"🌐 Detected network path: {path}")
+        print("   Make sure you have access to the network share")
+        return True
+    elif ':' in path and not path.startswith('C:') and not path.startswith('D:'):
+        # Could be a mapped drive or other network path
+        print(f"🌐 Possible network path: {path}")
+        return True
+    return False
+
+def test_database_connection(db_path):
+    """Test if we can connect to the database."""
+    try:
+        print(f"🔍 Testing connection to: {db_path}")
+        conn = sqlite3.connect(db_path, timeout=30.0)  # 30 second timeout
+        cursor = conn.cursor()
+        
+        # Test basic operations
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = cursor.fetchall()
+        
+        conn.close()
+        print(f"✅ Successfully connected to database")
+        print(f"   Found {len(tables)} tables")
+        return True
+        
+    except sqlite3.OperationalError as e:
+        if "database is locked" in str(e).lower():
+            print(f"❌ Database is locked. Please ensure no other applications are using it.")
+            print(f"   Error: {e}")
+        elif "unable to open database" in str(e).lower():
+            print(f"❌ Cannot open database. Check file permissions and path.")
+            print(f"   Error: {e}")
+        else:
+            print(f"❌ Database connection failed: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Unexpected error connecting to database: {e}")
+        return False
+
 def check_database_exists(db_path):
     """Check if the database file exists."""
     if not os.path.exists(db_path):
         print(f"❌ Error: Database file not found at {db_path}")
+        
+        # Provide helpful suggestions for network paths
+        if check_network_path(db_path):
+            print("\n💡 Network path troubleshooting:")
+            print("   1. Check if the network share is accessible")
+            print("   2. Verify you have read/write permissions")
+            print("   3. Try mapping the network drive")
+            print("   4. Check if the path is correct")
+        
         return False
     return True
 
-def check_table_exists(cursor, table_name):
-    """Check if a table exists in the database."""
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-    return cursor.fetchone() is not None
-
-def check_column_exists(cursor, table_name, column_name):
-    """Check if a column exists in a table."""
-    cursor.execute("PRAGMA table_info(?)", (table_name,))
-    columns = [row[1] for row in cursor.fetchall()]
-    return column_name in columns
-
 def backup_database(db_path):
     """Create a backup of the database before migration."""
-    backup_path = f"{db_path}.backup.{int(__import__('time').time())}"
     try:
+        # Create backup path in the same directory as the database
+        db_dir = os.path.dirname(db_path)
+        db_name = os.path.basename(db_path)
+        timestamp = int(time.time())
+        backup_path = os.path.join(db_dir, f"{db_name}.backup.{timestamp}")
+        
         import shutil
         shutil.copy2(db_path, backup_path)
         print(f"✅ Database backed up to: {backup_path}")
         return backup_path
     except Exception as e:
         print(f"⚠️  Warning: Could not create backup: {e}")
+        print("   Continuing without backup (not recommended)")
         return None
 
 def migrate_proxy_detection_columns(db_path):
@@ -91,16 +138,21 @@ def migrate_proxy_detection_columns(db_path):
     if not check_database_exists(db_path):
         return False
     
+    # Test connection before proceeding
+    if not test_database_connection(db_path):
+        return False
+    
     # Create backup
     backup_path = backup_database(db_path)
     
     try:
-        # Connect to database
-        conn = sqlite3.connect(db_path)
+        # Connect to database with longer timeout for network databases
+        conn = sqlite3.connect(db_path, timeout=60.0)  # 60 second timeout
         cursor = conn.cursor()
         
         # Check if certificates table exists
-        if not check_table_exists(cursor, 'certificates'):
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='certificates'")
+        if not cursor.fetchone():
             print("❌ Error: 'certificates' table not found in database")
             return False
         
@@ -152,6 +204,13 @@ def migrate_proxy_detection_columns(db_path):
             print("❌ Error: Migration verification failed")
             return False
             
+    except sqlite3.OperationalError as e:
+        print(f"❌ Database operation failed: {e}")
+        if "database is locked" in str(e).lower():
+            print("   The database may be in use by another application")
+        if backup_path and os.path.exists(backup_path):
+            print(f"🔄 You can restore from backup: {backup_path}")
+        return False
     except Exception as e:
         print(f"❌ Error during migration: {e}")
         if backup_path and os.path.exists(backup_path):
@@ -164,7 +223,7 @@ def migrate_proxy_detection_columns(db_path):
 def verify_migration(db_path):
     """Verify that the migration was successful."""
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30.0)
         cursor = conn.cursor()
         
         # Check if columns exist
@@ -195,13 +254,13 @@ def verify_migration(db_path):
 def main():
     """Main function to handle command line arguments and run migration."""
     parser = argparse.ArgumentParser(
-        description="Migrate database to add proxy detection columns",
+        description="Migrate remote database to add proxy detection columns",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python migrate_proxy_detection.py
-  python migrate_proxy_detection.py --db-path data/certificates.db
-  python migrate_proxy_detection.py --verify-only --db-path data/certificates.db
+  python migrate_remote_database.py
+  python migrate_remote_database.py --db-path \\\\server\\share\\certificates.db
+  python migrate_remote_database.py --verify-only --db-path \\\\server\\share\\certificates.db
         """
     )
     
@@ -239,8 +298,11 @@ Examples:
             print("Please specify --db-path or ensure config.yaml contains paths.database")
             sys.exit(1)
     
+    # Check if it's a network path
+    check_network_path(str(db_path))
+    
     print("=" * 60)
-    print("🔧 Proxy Detection Database Migration Tool")
+    print("🔧 Remote Database Migration Tool")
     print("=" * 60)
     print(f"Database path: {db_path}")
     print(f"Verify only: {args.verify_only}")
@@ -264,7 +326,7 @@ Examples:
         verify_success = verify_migration(str(db_path))
         
         if verify_success:
-            print("\n🎉 Your database is now ready for proxy detection!")
+            print("\n🎉 Your remote database is now ready for proxy detection!")
             print("\nNext steps:")
             print("1. Restart your application")
             print("2. The proxy detection features will now work")

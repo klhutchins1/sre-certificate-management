@@ -8,15 +8,48 @@ before starting the main application.
 
 import sys
 import os
+import yaml
 from pathlib import Path
+
+def load_config():
+    """Load configuration from config.yaml file."""
+    config_path = 'config.yaml'
+    if not os.path.exists(config_path):
+        print(f"⚠️  Warning: config.yaml not found at {config_path}")
+        return None
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        return config
+    except Exception as e:
+        print(f"⚠️  Warning: Could not load config.yaml: {e}")
+        return None
+
+def get_database_path_from_config():
+    """Get database path from config.yaml file."""
+    config = load_config()
+    if config and 'paths' in config and 'database' in config['paths']:
+        db_path = config['paths']['database']
+        # Handle relative paths
+        if not os.path.isabs(db_path):
+            db_path = os.path.join(os.getcwd(), db_path)
+        return db_path
+    return None
 
 def run_migration():
     """Run the database migration if needed."""
     try:
         from migrate_proxy_detection import migrate_proxy_detection_columns, verify_migration
         
-        # Default database path
-        db_path = 'data/certificates.db'
+        # Get database path from config
+        db_path = get_database_path_from_config()
+        if not db_path:
+            print("❌ Error: Could not determine database path from config.yaml")
+            print("Please ensure config.yaml contains paths.database")
+            return False
+        
+        print(f"ℹ️  Using database path from config.yaml: {db_path}")
         
         # Check if database exists
         if not os.path.exists(db_path):

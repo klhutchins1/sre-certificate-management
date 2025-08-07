@@ -6,8 +6,8 @@ from infra_mgmt.models import Certificate, Host, HostIP, CertificateBinding, Cer
 from infra_mgmt.constants import HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION
 import re
 
-# Import deduplication functionality
-from .certificate_deduplication import deduplicate_certificate
+# Import enhanced deduplication functionality
+from .proxy_certificate_deduplication import enhanced_deduplicate_certificate
 
 class CertificateDBUtil:
     """
@@ -46,8 +46,8 @@ class CertificateDBUtil:
             if status_callback:
                 status_callback(msg)
 
-        # ENHANCED: Check for certificate deduplication first
-        should_save_new, existing_cert_to_update, dedup_reason = deduplicate_certificate(
+        # ENHANCED: Check for enhanced certificate deduplication first
+        should_save_new, existing_cert_to_update, dedup_reason = enhanced_deduplicate_certificate(
             session, cert_info, domain, port
         )
         

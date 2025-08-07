@@ -75,9 +75,14 @@ proxy_detection:
   - '*.microsoft.com'
   - '*.amazon.com'
   - '*.cloudflare.com'
-  ca_fingerprints: null
+  ca_fingerprints: []
   ca_serials: []
-  ca_subjects: null
+  ca_subjects:
+    # Add your corporate proxy CA names here
+    # Example: - "Corporate Proxy CA"
+    # Example: - "BlueCoat ProxySG CA" 
+    # Example: - "Zscaler Root CA"
+    []
   enable_authenticity_validation: true
   enable_hostname_validation: true
   enabled: true

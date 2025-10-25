@@ -34,10 +34,21 @@ class ProxyCertificateIdentity:
     def __eq__(self, other):
         if not isinstance(other, ProxyCertificateIdentity):
             return False
+        
+        # Normalize datetime objects for comparison (handle timezone differences and microsecond precision)
+        def normalize_datetime(dt):
+            if dt is None:
+                return None
+            # Remove timezone info and truncate to seconds
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            # Truncate microseconds to seconds precision
+            return dt.replace(microsecond=0)
+        
         return (
             self.issuer_cn == other.issuer_cn and
             self.common_name == other.common_name and
-            self.expiration_date == other.expiration_date and
+            normalize_datetime(self.expiration_date) == normalize_datetime(other.expiration_date) and
             self.san == other.san
         )
     
@@ -82,6 +93,10 @@ class ProxyCertificateDeduplicator:
         if not issuer_cn:
             return False
         
+        # Check if proxy detection is disabled
+        if not settings.get("proxy_detection.enabled", True):
+            return False
+        
         # Get proxy CA subjects from config
         proxy_subjects = settings.get("proxy_detection.ca_subjects", [])
         if not isinstance(proxy_subjects, list):
@@ -93,7 +108,7 @@ class ProxyCertificateDeduplicator:
             if proxy_subject.lower() in issuer_lower:
                 return True
         
-                    # Check for common proxy indicators
+        # Check for common proxy indicators
         proxy_indicators = ['proxy', 'corporate', 'internal', 'firewall', 'gateway', 'bluecoat', 'zscaler', 'forcepoint']
         for indicator in proxy_indicators:
             if indicator in issuer_lower:
@@ -371,17 +386,26 @@ def enhanced_deduplicate_certificate(session: Session, cert_info: Any, domain: s
     # First try proxy-specific deduplication
     proxy_result = deduplicate_proxy_certificate(session, cert_info, domain, port)
     
-    # If proxy deduplication determined it's not a proxy certificate, 
-    # or if it found a match, return the result
-    if proxy_result[2].startswith("Not a proxy certificate") or not proxy_result[0]:
+    # If proxy deduplication found a match, return the result
+    if not proxy_result[0]:
         return proxy_result
+    
+    # If proxy deduplication determined it's not a proxy certificate, fall back to normal deduplication
+    if proxy_result[2].startswith("Not a proxy certificate"):
+        # Fallback to normal deduplication (import here to avoid circular imports)
+        try:
+            from .certificate_deduplication import deduplicate_certificate
+            return deduplicate_certificate(session, cert_info, domain, port)
+        except ImportError:
+            # If normal deduplication is not available, default to saving
+            return True, None, "Normal deduplication not available - saving certificate"
     
     # If proxy deduplication didn't find a match and it is a proxy certificate,
     # we can save it as a new proxy certificate
     if proxy_result[0]:
         return proxy_result
     
-    # Fallback to normal deduplication (import here to avoid circular imports)
+    # Final fallback to normal deduplication
     try:
         from .certificate_deduplication import deduplicate_certificate
         return deduplicate_certificate(session, cert_info, domain, port)

@@ -140,9 +140,6 @@ def render_scan_interface(engine) -> None:
     
     # Create a placeholder for notifications at the top
     notification_placeholder = st.empty()
-    # Call show_notifications() ONCE here. This will be updated on reruns.
-    with notification_placeholder.container():
-        show_notifications(SCANNER_PAGE_KEY)
     
     # Use persistent ScanService in session_state
     if 'scan_service' not in st.session_state:
@@ -175,8 +172,9 @@ def render_scan_interface(engine) -> None:
             level='info',
             page_key=SCANNER_PAGE_KEY
         )
-        # st.rerun() # Removed for now, let Streamlit handle update timing
-        # No st.markdown("---") here, as notify will handle display
+        # Show notifications immediately after adding offline mode notification
+        with notification_placeholder.container():
+            show_notifications(SCANNER_PAGE_KEY)
 
     # Create main layout columns
     col1, col2 = st.columns([3, 1])
@@ -225,8 +223,24 @@ internal.server.local:444"""
             validate_chain = st.checkbox("Validate Certificate Chain", value=True,
                 help="Validate the complete certificate chain")
         
-        # Scan initiation button below both columns
-        scan_button_clicked = st.button("Start Scan", type="primary", disabled=st.session_state.scan_in_progress)
+        # Scan control buttons below both columns
+        button_cols = st.columns(3)
+        
+        # Handle cases where st.columns might return fewer columns than requested
+        if len(button_cols) >= 3:
+            with button_cols[0]:
+                scan_button_clicked = st.button("Start Scan", type="primary", disabled=st.session_state.scan_in_progress)
+            
+            with button_cols[1]:
+                pause_button_clicked = st.button("Pause", disabled=not st.session_state.scan_in_progress or getattr(scan_service, 'scan_paused', False))
+            
+            with button_cols[2]:
+                stop_button_clicked = st.button("Stop", disabled=not st.session_state.scan_in_progress)
+        else:
+            # Fallback for test environments or older Streamlit versions
+            scan_button_clicked = st.button("Start Scan", type="primary", disabled=st.session_state.scan_in_progress)
+            pause_button_clicked = st.button("Pause", disabled=not st.session_state.scan_in_progress or getattr(scan_service, 'scan_paused', False))
+            stop_button_clicked = st.button("Stop", disabled=not st.session_state.scan_in_progress)
         
         # Input format help section
         with st.expander("ℹ️ Input Format Help"):
@@ -240,6 +254,33 @@ internal.server.local:444"""
             ```
             """)
         
+        # Handle pause button
+        if pause_button_clicked and st.session_state.scan_in_progress:
+            if getattr(scan_service, 'scan_paused', False):
+                scan_service.resume_scan()
+                notify("Scan resumed", "info", page_key=SCANNER_PAGE_KEY)
+            else:
+                scan_service.pause_scan()
+                notify("Scan paused", "info", page_key=SCANNER_PAGE_KEY)
+            # Show notifications immediately after pause/resume actions
+            with notification_placeholder.container():
+                show_notifications(SCANNER_PAGE_KEY)
+            # Only call st.rerun() in actual Streamlit environment, not in tests
+            if hasattr(st, 'rerun'):
+                st.rerun()
+        
+        # Handle stop button
+        if stop_button_clicked and st.session_state.scan_in_progress:
+            scan_service.stop_scan()
+            st.session_state.scan_in_progress = False
+            notify("Scan stopped by user", "warning", page_key=SCANNER_PAGE_KEY)
+            # Show notifications immediately after stop action
+            with notification_placeholder.container():
+                show_notifications(SCANNER_PAGE_KEY)
+            # Only call st.rerun() in actual Streamlit environment, not in tests
+            if hasattr(st, 'rerun'):
+                st.rerun()
+        
         # Handle scan initiation
         if scan_button_clicked and not st.session_state.scan_in_progress:
             # Clear notifications ONLY when a new scan is initiated by this page's button
@@ -247,6 +288,7 @@ internal.server.local:444"""
             
             # Always reset scan state and tracker at the start of every scan
             scan_service.scan_manager.reset_scan_state()
+            scan_service.reset_scan_control()  # Reset pause/stop state
             logger.debug("[SCAN_VIEW] Called reset_scan_state on scan_manager at scan start.")
             st.session_state.scan_in_progress = True
             st.session_state.scan_results = {
@@ -284,22 +326,30 @@ internal.server.local:444"""
                 if validation_errors:
                     for err in validation_errors:
                         notify(err, level="error", page_key=SCANNER_PAGE_KEY)
-                    # No explicit show_notifications() here. It will show on rerun.
+                    # Show notifications immediately after adding error notifications
+                    with notification_placeholder.container():
+                        show_notifications(SCANNER_PAGE_KEY)
                     st.session_state.scan_in_progress = False
                     progress_bar.empty()
                     status_container.empty()
                     queue_status.empty()
-                    # st.rerun() # Optionally, force a rerun to show notifications immediately
+                    # Only call st.rerun() in actual Streamlit environment, not in tests
+                    if hasattr(st, 'rerun'):
+                        st.rerun()  # Force rerun to show notifications immediately
                     return # End execution here to show notifications and stop scan
                 if not valid_targets:
                     notify("Please enter at least one valid domain to scan", level="warning", page_key=SCANNER_PAGE_KEY)
-                    # No explicit show_notifications() here.
+                    # Show notifications immediately after adding warning notifications
+                    with notification_placeholder.container():
+                        show_notifications(SCANNER_PAGE_KEY)
                     st.session_state.scan_in_progress = False
                     # Clear progress containers
                     progress_bar.empty()
                     status_container.empty()
                     queue_status.empty()
-                    # st.rerun() # Optionally, force a rerun
+                    # Only call st.rerun() in actual Streamlit environment, not in tests
+                    if hasattr(st, 'rerun'):
+                        st.rerun()  # Force rerun to show notifications immediately
                     return # End execution here
 
                 # Prepare scan options
@@ -332,8 +382,12 @@ internal.server.local:444"""
                 status_container.empty()
                 queue_status.empty()
                 st.session_state.scan_in_progress = False
-                # Notifications will be shown by the top-level show_notifications() on rerun
-                # No explicit show_notifications() here.
+                # Show notifications immediately after scan completion
+                with notification_placeholder.container():
+                    show_notifications(SCANNER_PAGE_KEY)
+                # Only call st.rerun() in actual Streamlit environment, not in tests
+                if hasattr(st, 'rerun'):
+                    st.rerun()  # Force rerun to show notifications
     
     # Only show results if a scan has been performed
     has_results = (
@@ -450,9 +504,11 @@ internal.server.local:444"""
                                         button_key = f"scan_sans_{cert.serial_number}"
                                         if st.button(f"Scan SANs ({len(sans)} found)", key=button_key):
                                             st.session_state.scan_targets = sans
-                                            st.rerun()
-                    else:
-                        st.markdown("No certificates found yet.")
+                                            # Only call st.rerun() in actual Streamlit environment, not in tests
+                                            if hasattr(st, 'rerun'):
+                                                st.rerun()
+                                    else:
+                                        st.markdown("No certificates found yet.")
             
             # DNS Records tab
             with tab_dns:
@@ -535,6 +591,10 @@ internal.server.local:444"""
                           st.session_state.scan_results["no_cert"]):
                         st.markdown("### No Issues Found")
                         st.markdown("All scans completed successfully with no issues detected.")
+    
+    # Final notification display at the end of the function to catch any remaining notifications
+    with notification_placeholder.container():
+        show_notifications(SCANNER_PAGE_KEY)
 
 def calculate_progress(sub_step: int, total_sub_steps: int, current_step: int, total_steps: int) -> float:
     """
@@ -566,6 +626,12 @@ def update_progress(sub_step: int, total_sub_steps: int, progress_container: Str
     if progress_container and current_step is not None and total_steps is not None:
         progress = calculate_progress(sub_step, total_sub_steps, current_step, total_steps)
         progress_container.progress(progress)
-        queue_size = st.session_state.scan_manager.infra_mgmt.tracker.queue_size()
+        # Use ScanService stored in session_state to access tracker safely
+        queue_size = 0
+        try:
+            if 'scan_service' in st.session_state and hasattr(st.session_state.scan_service, 'scan_manager'):
+                queue_size = st.session_state.scan_service.scan_manager.infra_mgmt.tracker.queue_size()
+        except Exception:
+            queue_size = 0
         # Only show progress numbers, not domain/port or completed/remaining
         progress_container.text(f"Scanning target {current_step} of {total_steps} (Remaining in queue: {queue_size})")

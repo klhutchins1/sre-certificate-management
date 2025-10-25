@@ -254,3 +254,146 @@ class CertificateService:
             import logging
             logging.getLogger(__name__).exception(f"Error deleting certificate binding: {str(e)}")
             return {'success': False, 'error': str(e)}
+    
+    def update_proxy_override(self, cert_id, real_serial_number, real_thumbprint, 
+                            real_issuer, real_subject, real_valid_from, real_valid_until, 
+                            override_notes, session):
+        """
+        Update proxy override information for a certificate.
+        
+        Args:
+            cert_id (int): Certificate ID
+            real_serial_number (str): Real serial number
+            real_thumbprint (str): Real thumbprint
+            real_issuer (dict): Real issuer information
+            real_subject (dict): Real subject information
+            real_valid_from (datetime): Real valid from date
+            real_valid_until (datetime): Real valid until date
+            override_notes (str): Notes about the override
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            cert = session.get(Certificate, cert_id)
+            if not cert:
+                return {'success': False, 'error': 'Certificate not found'}
+            
+            # Update override fields
+            cert.real_serial_number = real_serial_number
+            cert.real_thumbprint = real_thumbprint
+            cert.real_issuer_dict = real_issuer
+            cert.real_subject_dict = real_subject
+            cert.real_valid_from = real_valid_from
+            cert.real_valid_until = real_valid_until
+            cert.override_notes = override_notes
+            cert.override_created_at = datetime.now()
+            
+            session.commit()
+            return {'success': True}
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error updating proxy override: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def clear_proxy_override(self, cert_id, session):
+        """
+        Clear proxy override information for a certificate.
+        
+        Args:
+            cert_id (int): Certificate ID
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            cert = session.get(Certificate, cert_id)
+            if not cert:
+                return {'success': False, 'error': 'Certificate not found'}
+            
+            # Clear override fields
+            cert.real_serial_number = None
+            cert.real_thumbprint = None
+            cert.real_issuer = None
+            cert.real_subject = None
+            cert.real_valid_from = None
+            cert.real_valid_until = None
+            cert.override_notes = None
+            cert.override_created_at = None
+            
+            session.commit()
+            return {'success': True}
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error clearing proxy override: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def update_tracking_entry(self, tracking_id, change_number, planned_date, status, notes, session):
+        """
+        Update a certificate tracking entry.
+        
+        Args:
+            tracking_id (int): Tracking entry ID
+            change_number (str): Change/ticket number
+            planned_date (datetime): Planned change date
+            status (str): Change status
+            notes (str): Change notes
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            from infra_mgmt.models import CertificateTracking
+            tracking = session.get(CertificateTracking, tracking_id)
+            if not tracking:
+                return {'success': False, 'error': 'Tracking entry not found'}
+            
+            # Update fields
+            tracking.change_number = change_number
+            tracking.planned_change_date = planned_date
+            tracking.status = status
+            tracking.notes = notes
+            tracking.updated_at = datetime.now()
+            
+            session.commit()
+            return {'success': True}
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error updating tracking entry: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def delete_tracking_entry(self, tracking_id, session):
+        """
+        Delete a certificate tracking entry.
+        
+        Args:
+            tracking_id (int): Tracking entry ID
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            from infra_mgmt.models import CertificateTracking
+            tracking = session.get(CertificateTracking, tracking_id)
+            if not tracking:
+                return {'success': False, 'error': 'Tracking entry not found'}
+            
+            session.delete(tracking)
+            session.commit()
+            return {'success': True}
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error deleting tracking entry: {str(e)}")
+            return {'success': False, 'error': str(e)}

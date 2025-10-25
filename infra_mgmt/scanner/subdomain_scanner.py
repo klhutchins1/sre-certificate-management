@@ -123,7 +123,11 @@ class SubdomainScanner:
             scan_result = self.infra_mgmt.scan_certificate(domain, port, offline_mode=offline_mode)
             if scan_result:
                 if scan_result.error:
-                    logger.warning(f"[CERT] Error scanning certificate for {domain}: {scan_result.error}")
+                    # Reduce noise for expected offline mode errors during testing
+                    if "offline mode enabled" in scan_result.error:
+                        logger.debug(f"[CERT] Error scanning certificate for {domain}: {scan_result.error}")
+                    else:
+                        logger.warning(f"[CERT] Error scanning certificate for {domain}: {scan_result.error}")
                     return subdomains
                 
                 if scan_result.certificate_info:

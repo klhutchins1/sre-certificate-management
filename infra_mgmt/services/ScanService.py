@@ -30,7 +30,28 @@ class ScanService:
             "info_only": []  # New category for domains with partial info
         }
         self.session_factory = sessionmaker(bind=engine)
+        # Scan control state
+        self.scan_paused = False
+        self.scan_stopped = False
         print(f"[DEBUG] ScanService initialized: {id(self)}")
+    
+    def pause_scan(self):
+        """Pause the current scan."""
+        self.scan_paused = True
+    
+    def resume_scan(self):
+        """Resume a paused scan."""
+        self.scan_paused = False
+    
+    def stop_scan(self):
+        """Stop the current scan."""
+        self.scan_stopped = True
+        self.scan_paused = False
+    
+    def reset_scan_control(self):
+        """Reset scan control state."""
+        self.scan_paused = False
+        self.scan_stopped = False
 
     def validate_and_prepare_targets(self, scan_input: str) -> Tuple[List[Tuple[str, int]], List[str]]:
         """
@@ -106,7 +127,18 @@ class ScanService:
                 self.scan_manager.add_to_queue(root, port, session)
             # Main scan loop: process the queue until empty
             # This ensures that any new targets (e.g., discovered hostnames) are also scanned
-            while self.scan_manager.has_pending_targets():
+            while self.scan_manager.has_pending_targets() and not self.scan_stopped:
+                # Check for pause condition
+                if self.scan_paused:
+                    if options.get("status_container"):
+                        options["status_container"].text("Scan paused. Click Resume to continue.")
+                    # Wait in a loop while paused
+                    import time
+                    while self.scan_paused and not self.scan_stopped:
+                        time.sleep(0.1)  # Small delay to prevent busy waiting
+                    if self.scan_stopped:
+                        break
+                
                 target = self.scan_manager.get_next_target()
                 if not target:
                     break
@@ -135,9 +167,12 @@ class ScanService:
                 progress = completed / total if total > 0 else 1.0
                 if options.get("progress_container"):
                     options["progress_container"].progress(progress)
-                    options["progress_container"].text(
-                        f"Scanning target {completed} of {total} (Remaining in queue: {remaining})"
-                    )
+                    if self.scan_stopped:
+                        options["progress_container"].text("Scan stopped by user")
+                    else:
+                        options["progress_container"].text(
+                            f"Scanning target {completed} of {total} (Remaining in queue: {remaining})"
+                        )
                 if options.get("status_container"):
                     options["status_container"].text(
                         f"Scanning {target[0]}:{target[1]}"

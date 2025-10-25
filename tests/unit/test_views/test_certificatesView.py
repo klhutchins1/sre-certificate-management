@@ -404,7 +404,7 @@ def test_render_certificate_bindings(mock_streamlit, sample_certificate, sample_
     )
 
 def test_render_certificate_tracking(mock_streamlit, sample_certificate, session):
-    """Test rendering certificate tracking"""
+    """Test rendering certificate tracking with enhanced edit/delete functionality"""
     # Set up tracking data
     sample_certificate.last_scan_date = datetime(2024, 1, 1, 12, 0)
     sample_certificate.scan_status = "Completed"
@@ -454,11 +454,347 @@ def test_render_certificate_tracking(mock_streamlit, sample_certificate, session
             use_container_width=True
         )
     
-    # Verify notification was added for no entries
-    assert len(mock_state['notifications']) == 1, "Notification not added"
-    assert mock_state['notifications'][0]['message'] == "No change entries found for this certificate", "Incorrect notification message"
-    assert mock_state['notifications'][0]['level'] == 'info', "Incorrect notification level"
-    assert mock_state['notifications'][0]['page_key'] == 'certificates', "Incorrect page key"
+    # Verify info message was shown for no entries (st.info instead of notify)
+    mock_st.info.assert_called_with("📝 No change entries found for this certificate")
+
+def test_render_certificate_tracking_with_entries(mock_streamlit, sample_certificate, session):
+    """Test rendering certificate tracking with existing entries and edit/delete functionality"""
+    from infra_mgmt.models import CertificateTracking
+    
+    # Create a tracking entry
+    tracking_entry = CertificateTracking(
+        certificate_id=sample_certificate.id,
+        change_number="CHG001234",
+        planned_change_date=datetime.now() + timedelta(days=30),
+        status="Pending",
+        notes="Test change entry",
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
+    session.add(tracking_entry)
+    session.commit()
+    
+    # Add the tracking entry to the certificate's tracking_entries relationship
+    sample_certificate.tracking_entries = [tracking_entry]
+    session.add(sample_certificate)
+    session.commit()
+    
+    # Mock session state
+    mock_state = {'notifications': []}
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_st, mock_header_st = mock_streamlit
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
+    
+    # Mock expander
+    mock_expander = MagicMock()
+    mock_st.expander.return_value = mock_expander
+    
+    # Mock columns for expander content
+    mock_col1, mock_col2 = MagicMock(), MagicMock()
+    mock_st.columns.return_value = [mock_col1, mock_col2]
+    
+    with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
+        def notify_side_effect(msg, level, page_key=None):
+            mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
+        mock_notify.side_effect = notify_side_effect
+        render_certificate_tracking(sample_certificate, session)
+    
+    # Verify expander was created with proper title
+    mock_st.expander.assert_called_with(
+        f"📋 {tracking_entry.change_number} - {tracking_entry.status}",
+        expanded=False
+    )
+    
+    # Verify columns were created within expander
+    mock_st.columns.assert_called_with([3, 1])
+    
+    # Verify edit and delete buttons
+    with mock_col2:
+        mock_st.button.assert_any_call("✏️ Edit", key=f"edit_tracking_{tracking_entry.id}", type="secondary")
+        mock_st.button.assert_any_call("🗑️ Delete", key=f"delete_tracking_{tracking_entry.id}", type="secondary")
+
+def test_render_certificate_tracking_edit_mode(mock_streamlit, sample_certificate, session):
+    """Test rendering certificate tracking in edit mode"""
+    from infra_mgmt.models import CertificateTracking
+    
+    # Create a tracking entry
+    tracking_entry = CertificateTracking(
+        certificate_id=sample_certificate.id,
+        change_number="CHG001234",
+        planned_change_date=datetime.now() + timedelta(days=30),
+        status="Pending",
+        notes="Test change entry",
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
+    session.add(tracking_entry)
+    session.commit()
+    
+    # Add the tracking entry to the certificate's tracking_entries relationship
+    sample_certificate.tracking_entries = [tracking_entry]
+    session.add(sample_certificate)
+    session.commit()
+    
+    # Mock session state for edit mode
+    mock_state = {
+        'notifications': [],
+        'editing_tracking_id': tracking_entry.id,
+        'editing_cert_id': sample_certificate.id
+    }
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_st, mock_header_st = mock_streamlit
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
+    
+    # Mock form
+    mock_form = MagicMock()
+    mock_st.form.return_value = mock_form
+    
+    # Mock columns for form
+    mock_col1, mock_col2, mock_col3 = MagicMock(), MagicMock(), MagicMock()
+    mock_st.columns.return_value = [mock_col1, mock_col2, mock_col3]
+    
+    # Mock date input to return a real date
+    mock_st.date_input.return_value = datetime.now().date()
+    
+    with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
+        def notify_side_effect(msg, level, page_key=None):
+            mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
+        mock_notify.side_effect = notify_side_effect
+        render_certificate_tracking(sample_certificate, session)
+    
+    # Verify edit form was created
+    mock_st.info.assert_called_with("✏️ **Editing Change Entry**")
+    mock_st.form.assert_called_with("edit_tracking_form", clear_on_submit=False)
+    
+    # Verify form fields
+    with mock_form:
+        mock_st.text_input.assert_called()
+        mock_st.date_input.assert_called()
+        mock_st.selectbox.assert_called()
+        mock_st.text_area.assert_called()
+        mock_st.form_submit_button.assert_any_call("💾 Save", type="primary")
+        mock_st.form_submit_button.assert_any_call("❌ Cancel", type="secondary")
+
+def test_render_certificate_tracking_delete_mode(mock_streamlit, sample_certificate, session):
+    """Test rendering certificate tracking in delete confirmation mode"""
+    from infra_mgmt.models import CertificateTracking
+    
+    # Create a tracking entry
+    tracking_entry = CertificateTracking(
+        certificate_id=sample_certificate.id,
+        change_number="CHG001234",
+        planned_change_date=datetime.now() + timedelta(days=30),
+        status="Pending",
+        notes="Test change entry",
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
+    session.add(tracking_entry)
+    session.commit()
+    
+    # Add the tracking entry to the certificate's tracking_entries relationship
+    sample_certificate.tracking_entries = [tracking_entry]
+    session.add(sample_certificate)
+    session.commit()
+    
+    # Mock session state for delete mode
+    mock_state = {
+        'notifications': [],
+        'deleting_tracking_id': tracking_entry.id,
+        'editing_cert_id': sample_certificate.id
+    }
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_st, mock_header_st = mock_streamlit
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
+    
+    # Mock columns for delete confirmation
+    mock_col1, mock_col2 = MagicMock(), MagicMock()
+    mock_st.columns.return_value = [mock_col1, mock_col2]
+    
+    # Mock date input to return a real date
+    mock_st.date_input.return_value = datetime.now().date()
+    
+    with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
+        def notify_side_effect(msg, level, page_key=None):
+            mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
+        mock_notify.side_effect = notify_side_effect
+        render_certificate_tracking(sample_certificate, session)
+    
+    # Verify delete confirmation was shown
+    mock_st.error.assert_called_with("⚠️ **Delete Confirmation**")
+    mock_st.write.assert_called()
+    
+    # Verify delete and cancel buttons
+    mock_st.button.assert_any_call("🗑️ Yes, Delete", type="primary", key=f"confirm_delete_{tracking_entry.id}")
+    mock_st.button.assert_any_call("❌ Cancel", type="secondary", key=f"cancel_delete_{tracking_entry.id}")
+
+def test_render_certificate_overview_with_proxy_override(mock_streamlit, sample_certificate, session):
+    """Test rendering certificate overview with proxy override functionality"""
+    # Set up certificate with proxy detection but NO real_serial_number (so it shows the form)
+    sample_certificate.proxied = True
+    sample_certificate.proxy_info = '{"detected": "short_validity_period", "confidence": 0.8}'
+    # Don't set real_serial_number so it shows the form instead of the info section
+    # Also need to ensure the certificate has SANs to trigger the SAN expander
+    sample_certificate.san = ["test.example.com", "*.example.com"]
+    session.add(sample_certificate)
+    session.commit()
+    
+    # Mock session state
+    mock_state = {'notifications': []}
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_st, mock_header_st = mock_streamlit
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
+    
+    # Mock expander for proxy override section
+    mock_expander = MagicMock()
+    mock_st.expander.return_value = mock_expander
+    
+    # Mock form for proxy override
+    mock_form = MagicMock()
+    mock_st.form.return_value = mock_form
+    
+    # Mock columns
+    mock_col1, mock_col2 = MagicMock(), MagicMock()
+    mock_st.columns.return_value = [mock_col1, mock_col2]
+    
+    # Mock date input to return a real date
+    mock_st.date_input.return_value = datetime.now().date()
+    
+    # Mock text inputs to return proper values
+    mock_st.text_input.return_value = "test_serial"
+    mock_st.text_area.return_value = "test notes"
+    
+    with patch('infra_mgmt.views.certificatesView.notify') as mock_notify:
+        def notify_side_effect(msg, level, page_key=None):
+            mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
+        mock_notify.side_effect = notify_side_effect
+        render_certificate_overview(sample_certificate, session)
+    
+    # Check if proxy override expander was created (it should be called with the proxy override title)
+    expander_calls = mock_st.expander.call_args_list
+    proxy_override_called = any(
+        call[0][0] == "🔧 Proxy Override Information" for call in expander_calls
+    )
+    assert proxy_override_called, f"Proxy override expander not found. Expander calls: {expander_calls}"
+    
+    # Verify form was created for proxy override
+    mock_st.form.assert_called_with("proxy_override_form")
+    
+    # Verify form fields
+    with mock_form:
+        mock_st.text_input.assert_called()
+        mock_st.text_area.assert_called()
+        mock_st.form_submit_button.assert_any_call("Save Override Information", type="primary")
+
+def test_render_certificate_overview_proxy_override_form_submission(mock_streamlit, sample_certificate, session):
+    """Test proxy override form submission"""
+    # Set up certificate with proxy detection
+    sample_certificate.proxied = True
+    sample_certificate.proxy_info = '{"detected": "short_validity_period", "confidence": 0.8}'
+    session.add(sample_certificate)
+    session.commit()
+    
+    # Mock session state for form submission
+    mock_state = {'notifications': []}
+    def mock_setitem(key, value):
+        if key == 'notifications':
+            mock_state[key].append(value)
+        else:
+            mock_state[key] = value
+    def mock_getitem(key):
+        return mock_state.get(key)
+    def mock_get(key, default=None):
+        return mock_state.get(key, default)
+    
+    mock_st, mock_header_st = mock_streamlit
+    mock_st.session_state.__setitem__.side_effect = mock_setitem
+    mock_st.session_state.__getitem__.side_effect = mock_getitem
+    mock_st.session_state.get.side_effect = mock_get
+    
+    # Mock form submission
+    mock_form = MagicMock()
+    mock_form.form_submit_button.return_value = True
+    mock_st.form.return_value = mock_form
+    
+    # Mock form inputs
+    mock_st.text_input.return_value = "real_serial_789"
+    mock_st.text_area.return_value = "Certificate behind Cloudflare proxy"
+    
+    # Mock date inputs
+    mock_st.date_input.return_value = datetime.now().date()
+    
+    # Mock selectbox
+    mock_st.selectbox.return_value = "Let's Encrypt"
+    
+    with patch('infra_mgmt.views.certificatesView.notify') as mock_notify, \
+         patch('infra_mgmt.views.certificatesView.CertificateService') as mock_service_class:
+        
+        # Mock service response
+        mock_service = MagicMock()
+        mock_service_class.return_value = mock_service
+        mock_service.update_proxy_override.return_value = {
+            'success': True,
+            'message': 'Proxy override information updated successfully'
+        }
+        
+        def notify_side_effect(msg, level, page_key=None):
+            mock_state['notifications'].append({'message': msg, 'level': level, 'page_key': page_key})
+        mock_notify.side_effect = notify_side_effect
+        
+        render_certificate_overview(sample_certificate, session)
+    
+    # Verify service was called
+    mock_service.update_proxy_override.assert_called_once()
+    
+    # Verify success notification (there should be 2 notifications: warning and success)
+    assert len(mock_state['notifications']) == 2
+    success_notifications = [n for n in mock_state['notifications'] if n['level'] == 'success']
+    assert len(success_notifications) == 1
+    assert success_notifications[0]['message'] == 'Override information saved successfully'
 
 def test_render_certificate_card(mock_streamlit, sample_certificate, session):
     """Test rendering certificate details card"""
@@ -707,6 +1043,7 @@ def test_certificate_selection(mock_streamlit, mock_aggrid, engine, sample_certi
         
         mock_datetime.now.return_value = datetime(2024, 6, 1)
         mock_datetime.strptime = datetime.strptime
+        mock_datetime.combine = datetime.combine
         
         def notify_side_effect(msg, level, page_key=None):
             pass

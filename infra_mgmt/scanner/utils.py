@@ -28,12 +28,17 @@ def is_ip_address(address: str) -> bool:
         False
     """
     try:
+        # Fast guard for None and non-string inputs
+        if address is None:
+            return False
+        if not isinstance(address, (str, bytes, bytearray)):
+            return False
         ipaddress.ip_address(address)
         return True
     except ValueError:
         return False
     except Exception as e:
-        logging.getLogger(__name__).exception(f"Unexpected error in is_ip_address for {address}: {str(e)}")
+        logging.getLogger(__name__).error(f"Unexpected error in is_ip_address for {address}: {str(e)}")
         return False
 
 def get_ip_info(ip: str) -> Dict[str, Any]:

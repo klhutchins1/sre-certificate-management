@@ -27,15 +27,28 @@ class CertificateIdentity:
     
     def __init__(self, common_name: str, expiration_date: datetime, san: Optional[List[str]] = None):
         self.common_name = common_name.lower().strip() if common_name else ""
-        self.expiration_date = expiration_date
+        # Normalize datetime to timezone-naive for consistent operations
+        if expiration_date.tzinfo is not None:
+            self.expiration_date = expiration_date.replace(tzinfo=None)
+        else:
+            self.expiration_date = expiration_date
         self.san = sorted([s.lower().strip() for s in (san or []) if s.strip()])
     
     def __eq__(self, other):
         if not isinstance(other, CertificateIdentity):
             return False
+        
+        # Normalize datetime objects for comparison (handle timezone differences)
+        def normalize_datetime(dt):
+            if dt is None:
+                return None
+            if dt.tzinfo is not None:
+                return dt.replace(tzinfo=None)
+            return dt
+        
         return (
             self.common_name == other.common_name and
-            self.expiration_date == other.expiration_date and
+            normalize_datetime(self.expiration_date) == normalize_datetime(other.expiration_date) and
             self.san == other.san
         )
     
@@ -95,8 +108,13 @@ class CertificateDeduplicator:
         """
         try:
             # Calculate tolerance window for expiration date
-            exp_start = identity.expiration_date - timedelta(hours=tolerance_hours)
-            exp_end = identity.expiration_date + timedelta(hours=tolerance_hours)
+            # Ensure expiration_date is timezone-naive
+            exp_date = identity.expiration_date
+            if exp_date.tzinfo is not None:
+                exp_date = exp_date.replace(tzinfo=None)
+            
+            exp_start = exp_date - timedelta(hours=tolerance_hours)
+            exp_end = exp_date + timedelta(hours=tolerance_hours)
             
             # Find certificates with same common name and similar expiration
             candidates = self.session.query(Certificate).filter(
@@ -193,7 +211,17 @@ class CertificateDeduplicator:
         # If both are authentic but different serials, this might be a certificate renewal
         # Check if they're significantly different in time
         if hasattr(cert_info, 'valid_from') and cert_info.valid_from and existing_cert.valid_from:
-            time_diff = abs((cert_info.valid_from - existing_cert.valid_from).days)
+            # Normalize datetime objects to avoid timezone mismatch
+            new_valid_from = cert_info.valid_from
+            existing_valid_from = existing_cert.valid_from
+            
+            # Convert to timezone-naive if needed
+            if new_valid_from.tzinfo is not None:
+                new_valid_from = new_valid_from.replace(tzinfo=None)
+            if existing_valid_from.tzinfo is not None:
+                existing_valid_from = existing_valid_from.replace(tzinfo=None)
+            
+            time_diff = abs((new_valid_from - existing_valid_from).days)
             if time_diff > 30:  # More than 30 days difference might be a renewal
                 return False, f"Certificates have significant time difference ({time_diff} days), might be renewal"
         

@@ -47,7 +47,7 @@ def prevent_all_network_calls(request):
     This ensures complete test isolation from external services.
     """
     test_name = request.node.nodeid
-    print(f"🔒 Activating network isolation for: {test_name}")
+    print(f"[isolation] Activating network isolation for: {test_name}")
     
     # Start comprehensive network isolation
     _isolation_manager.start()
@@ -56,7 +56,7 @@ def prevent_all_network_calls(request):
     
     # Stop network isolation
     _isolation_manager.stop()
-    print(f"🔓 Deactivated network isolation for: {test_name}")
+    print(f"[isolation] Deactivated network isolation for: {test_name}")
 
 # Create test data directory if it doesn't exist
 @pytest.fixture(autouse=True)
@@ -171,12 +171,12 @@ def pytest_configure(config):
     )
     
     # Ensure network isolation is configured
-    print("🔒 Pytest configuration: Network isolation enabled for ALL tests")
+    print("[pytest] Configuration: Network isolation enabled for ALL tests")
 
 def pytest_unconfigure(config):
     """Clean up network isolation after pytest"""
     _isolation_manager.stop()
-    print("🔓 Pytest cleanup: Network isolation disabled")
+    print("[pytest] Cleanup: Network isolation disabled")
 
 @pytest.fixture
 def fast_rate_limits():
@@ -262,9 +262,9 @@ def pytest_collection_modifyitems(config, items):
 def pytest_sessionstart(session):
     """Ensure network isolation is active for the entire session"""
     ensure_network_isolation()
-    print("🔒 Session started with network isolation ACTIVE")
+    print("[session] Network isolation ACTIVE")
 
 def pytest_sessionfinish(session, exitstatus):
     """Clean up after session"""
     _isolation_manager.stop()
-    print("🔓 Session finished, network isolation DEACTIVATED") 
+    print("[session] Network isolation DEACTIVATED")

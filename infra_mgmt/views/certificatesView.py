@@ -317,6 +317,103 @@ def render_certificate_overview(cert: Certificate, session) -> None:
     if getattr(cert, 'proxied', False):
         notify(f"⚠️ This certificate is flagged as a PROXY/MITM certificate!\n\nReason: {cert.proxy_info or 'Matched proxy CA'}", "warning", page_key=CERTIFICATES_PAGE_KEY)
     
+    # Proxy Override Section
+    if getattr(cert, 'proxied', False) or cert.real_serial_number:
+        with st.expander("🔧 Proxy Override Information", expanded=bool(cert.real_serial_number)):
+            if cert.real_serial_number:
+                st.success("✅ Real certificate information has been provided")
+                st.markdown("**Real Certificate Information:**")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown(f"**Real Serial Number:** `{cert.real_serial_number}`")
+                    st.markdown(f"**Real Thumbprint:** `{cert.real_thumbprint}`")
+                    if cert.real_valid_from:
+                        st.markdown(f"**Real Valid From:** {cert.real_valid_from.strftime('%Y-%m-%d')}")
+                    if cert.real_valid_until:
+                        st.markdown(f"**Real Valid Until:** {cert.real_valid_until.strftime('%Y-%m-%d')}")
+                
+                with col2:
+                    real_issuer = cert.real_issuer_dict
+                    if real_issuer:
+                        issuer_cn = real_issuer.get('commonName') or real_issuer.get('CN') or '*Not specified*'
+                        st.markdown(f"**Real Issuer:** {issuer_cn}")
+                    
+                    real_subject = cert.real_subject_dict
+                    if real_subject:
+                        subject_cn = real_subject.get('commonName') or real_subject.get('CN') or '*Not specified*'
+                        st.markdown(f"**Real Subject:** {subject_cn}")
+                
+                if cert.override_notes:
+                    st.markdown(f"**Override Notes:** {cert.override_notes}")
+                
+                if cert.override_created_at:
+                    st.markdown(f"**Override Created:** {cert.override_created_at.strftime('%Y-%m-%d %H:%M')}")
+                
+                if st.button("🗑️ Clear Override", type="secondary", key=f"clear_override_{cert.id}"):
+                    service = CertificateService()
+                    result = service.clear_proxy_override(cert.id, session)
+                    if result['success']:
+                        notify("Override information cleared", "success", page_key=CERTIFICATES_PAGE_KEY)
+                        st.rerun()
+                    else:
+                        notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
+            else:
+                st.info("This certificate was detected behind a proxy. You can provide the real certificate information below.")
+                
+                with st.form("proxy_override_form"):
+                    st.markdown("**Enter Real Certificate Information:**")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        real_serial = st.text_input("Real Serial Number", key=f"real_serial_{cert.id}")
+                        real_thumbprint = st.text_input("Real Thumbprint", key=f"real_thumbprint_{cert.id}")
+                        real_valid_from = st.date_input("Real Valid From", key=f"real_valid_from_{cert.id}")
+                        real_valid_until = st.date_input("Real Valid Until", key=f"real_valid_until_{cert.id}")
+                    
+                    with col2:
+                        real_issuer_cn = st.text_input("Real Issuer Common Name", key=f"real_issuer_cn_{cert.id}")
+                        real_issuer_org = st.text_input("Real Issuer Organization", key=f"real_issuer_org_{cert.id}")
+                        real_subject_cn = st.text_input("Real Subject Common Name", key=f"real_subject_cn_{cert.id}")
+                        real_subject_org = st.text_input("Real Subject Organization", key=f"real_subject_org_{cert.id}")
+                    
+                    override_notes = st.text_area("Override Notes", key=f"override_notes_{cert.id}", 
+                                               placeholder="Notes about this override...")
+                    
+                    submitted = st.form_submit_button("Save Override Information", type="primary")
+                    if submitted:
+                        if not real_serial or not real_thumbprint:
+                            notify("Serial number and thumbprint are required", "error", page_key=CERTIFICATES_PAGE_KEY)
+                        else:
+                            # Prepare issuer and subject data
+                            real_issuer = {}
+                            if real_issuer_cn:
+                                real_issuer['commonName'] = real_issuer_cn
+                            if real_issuer_org:
+                                real_issuer['organizationName'] = real_issuer_org
+                            
+                            real_subject = {}
+                            if real_subject_cn:
+                                real_subject['commonName'] = real_subject_cn
+                            if real_subject_org:
+                                real_subject['organizationName'] = real_subject_org
+                            
+                            # Convert dates to datetime
+                            real_valid_from_dt = datetime.combine(real_valid_from, datetime.min.time()) if real_valid_from else None
+                            real_valid_until_dt = datetime.combine(real_valid_until, datetime.min.time()) if real_valid_until else None
+                            
+                            service = CertificateService()
+                            result = service.update_proxy_override(
+                                cert.id, real_serial, real_thumbprint, real_issuer, real_subject,
+                                real_valid_from_dt, real_valid_until_dt, override_notes, session
+                            )
+                            
+                            if result['success']:
+                                notify("Override information saved successfully", "success", page_key=CERTIFICATES_PAGE_KEY)
+                                st.rerun()
+                            else:
+                                notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
+    
     # Create columns for layout
     col1, col2 = st.columns(2)
     
@@ -570,7 +667,6 @@ def render_certificate_tracking(cert, session):
             submitted = st.form_submit_button("Save Entry")
             if submitted:
                 # Create new tracking entry
-                from datetime import datetime
                 new_entry = CertificateTracking(
                     certificate_id=cert.id,
                     change_number=change_number,
@@ -586,55 +682,122 @@ def render_certificate_tracking(cert, session):
                 st.session_state.show_tracking_entry = False
                 st.rerun()
     
-    # Display existing tracking entries
+    # Display existing tracking entries in a compact format
     if cert.tracking_entries:
-        # Create DataFrame for display
-        tracking_data = []
-        for entry in cert.tracking_entries:
-            tracking_data.append({
-                "Change Number": entry.change_number,
-                "Planned Date": entry.planned_change_date,
-                "Status": entry.status,
-                "Notes": entry.notes,
-                "Created": entry.created_at,
-                "Updated": entry.updated_at
-            })
+        st.markdown("### Existing Change Entries")
         
-        df = pd.DataFrame(tracking_data)
-        st.dataframe(
-            df,
-            column_config={
-                "Change Number": st.column_config.TextColumn(
-                    "Change Number",
-                    width="medium"
-                ),
-                "Planned Date": st.column_config.DatetimeColumn(
-                    "Planned Date",
-                    format="DD/MM/YYYY"
-                ),
-                "Status": st.column_config.TextColumn(
-                    "Status",
-                    width="small"
-                ),
-                "Notes": st.column_config.TextColumn(
-                    "Notes",
-                    width="large"
-                ),
-                "Created": st.column_config.DatetimeColumn(
-                    "Created",
-                    format="DD/MM/YYYY HH:mm"
-                ),
-                "Updated": st.column_config.DatetimeColumn(
-                    "Updated",
-                    format="DD/MM/YYYY HH:mm"
-                )
-            },
-            hide_index=True,
-            use_container_width=True
-        )
+        # Use expanders to save space
+        for i, entry in enumerate(cert.tracking_entries):
+            with st.expander(f"📋 {entry.change_number or 'Unnamed Change'} - {entry.status or 'Unknown'}", expanded=False):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.write(f"**Change Number:** {entry.change_number or 'N/A'}")
+                    st.write(f"**Status:** {entry.status or 'N/A'}")
+                    st.write(f"**Planned Date:** {entry.planned_change_date.strftime('%Y-%m-%d') if entry.planned_change_date else 'Not set'}")
+                    if entry.notes:
+                        st.write(f"**Notes:** {entry.notes}")
+                    st.caption(f"Created: {entry.created_at.strftime('%Y-%m-%d %H:%M') if entry.created_at else 'N/A'}")
+                
+                with col2:
+                    if st.button("✏️ Edit", key=f"edit_tracking_{entry.id}", type="secondary"):
+                        st.session_state.editing_tracking_id = entry.id
+                        st.session_state.editing_cert_id = cert.id
+                        st.rerun()
+                    
+                    if st.button("🗑️ Delete", key=f"delete_tracking_{entry.id}", type="secondary"):
+                        st.session_state.deleting_tracking_id = entry.id
+                        st.session_state.editing_cert_id = cert.id
+                        st.rerun()
+        
+        # Handle edit form in a compact modal-like approach
+        if st.session_state.get('editing_tracking_id') and st.session_state.get('editing_cert_id') == cert.id:
+            tracking_id = st.session_state.editing_tracking_id
+            tracking_entry = next((e for e in cert.tracking_entries if e.id == tracking_id), None)
+            
+            if tracking_entry:
+                st.info("✏️ **Editing Change Entry**")
+                with st.form("edit_tracking_form", clear_on_submit=False):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        change_number = st.text_input(
+                            "Change/Ticket Number",
+                            value=tracking_entry.change_number or "",
+                            placeholder="e.g., CHG0012345",
+                            key=f"edit_change_number_{tracking_id}"
+                        )
+                        planned_date = st.date_input(
+                            "Planned Change Date",
+                            value=tracking_entry.planned_change_date.date() if tracking_entry.planned_change_date else None,
+                            key=f"edit_planned_date_{tracking_id}"
+                        )
+                    
+                    with col2:
+                        status = st.selectbox(
+                            "Change Status",
+                            options=["Pending", "Completed", "Cancelled"],
+                            index=["Pending", "Completed", "Cancelled"].index(tracking_entry.status) if tracking_entry.status in ["Pending", "Completed", "Cancelled"] else 0,
+                            key=f"edit_status_{tracking_id}"
+                        )
+                    
+                    notes = st.text_area(
+                        "Change Notes",
+                        value=tracking_entry.notes or "",
+                        placeholder="Enter any additional notes about this change...",
+                        key=f"edit_notes_{tracking_id}",
+                        height=100
+                    )
+                    
+                    col1, col2, col3 = st.columns([1, 1, 2])
+                    with col1:
+                        if st.form_submit_button("💾 Save", type="primary"):
+                            service = CertificateService()
+                            result = service.update_tracking_entry(
+                                tracking_id, change_number, 
+                                datetime.combine(planned_date, datetime.min.time()) if planned_date else None,
+                                status, notes, session
+                            )
+                            if result['success']:
+                                notify("Change entry updated successfully!", "success", page_key=CERTIFICATES_PAGE_KEY)
+                                st.session_state.editing_tracking_id = None
+                                st.rerun()
+                            else:
+                                notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
+                    
+                    with col2:
+                        if st.form_submit_button("❌ Cancel", type="secondary"):
+                            st.session_state.editing_tracking_id = None
+                            st.rerun()
+        
+        # Handle delete confirmation
+        if st.session_state.get('deleting_tracking_id') and st.session_state.get('editing_cert_id') == cert.id:
+            tracking_id = st.session_state.deleting_tracking_id
+            tracking_entry = next((e for e in cert.tracking_entries if e.id == tracking_id), None)
+            
+            if tracking_entry:
+                st.error(f"⚠️ **Delete Confirmation**")
+                st.write(f"Are you sure you want to delete the change entry **'{tracking_entry.change_number}'**?")
+                st.write("This action cannot be undone.")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🗑️ Yes, Delete", type="primary", key=f"confirm_delete_{tracking_id}"):
+                        service = CertificateService()
+                        result = service.delete_tracking_entry(tracking_id, session)
+                        if result['success']:
+                            notify("Change entry deleted successfully!", "success", page_key=CERTIFICATES_PAGE_KEY)
+                            st.session_state.deleting_tracking_id = None
+                            st.rerun()
+                        else:
+                            notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
+                
+                with col2:
+                    if st.button("❌ Cancel", type="secondary", key=f"cancel_delete_{tracking_id}"):
+                        st.session_state.deleting_tracking_id = None
+                        st.rerun()
     else:
-        notify("No change entries found for this certificate", "info", page_key=CERTIFICATES_PAGE_KEY)
-        # show_notifications(CERTIFICATES_PAGE_KEY) # Handled by placeholder
+        st.info("📝 No change entries found for this certificate")
 
 def render_manual_entry_form(session):
     """
@@ -740,6 +903,11 @@ def execute_scan(scan_targets, session):
     # Get ALL certificates
     certs = session.query(Certificate).all()
     
+    # Collect all hosts and scans for bulk insertion
+    hosts_to_create = []
+    scans_to_create = []
+    current_time = datetime.now()
+    
     # For each certificate
     for cert in certs:
         # Get SANs
@@ -754,19 +922,28 @@ def execute_scan(scan_targets, session):
                 name=san.lower(),
                 host_type=HOST_TYPE_SERVER,
                 environment=ENV_PRODUCTION,
-                last_seen=datetime.now()
+                last_seen=current_time
             )
-            session.add(host)
+            hosts_to_create.append(host)
             
-            # Create scan record
+            # Create scan record (will be linked after hosts are inserted)
             scan = CertificateScan(
                 certificate=cert,
-                host=host,
-                scan_date=datetime.now(),
+                host=host,  # This will be resolved after bulk insert
+                scan_date=current_time,
                 status='Attempted',
                 port=443
             )
-            session.add(scan)
+            scans_to_create.append(scan)
+    
+    # Bulk insert hosts first
+    if hosts_to_create:
+        session.bulk_save_objects(hosts_to_create)
+        session.flush()  # Ensure hosts get IDs
+    
+    # Bulk insert scans
+    if scans_to_create:
+        session.bulk_save_objects(scans_to_create)
     
     # Commit all changes
     session.commit()

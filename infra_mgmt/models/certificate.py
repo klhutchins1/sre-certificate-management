@@ -57,6 +57,17 @@ class Certificate(Base):
     version = Column(Integer, nullable=True)
     proxied = Column(Boolean, default=False)  # True if detected as proxy/MITM cert
     proxy_info = Column(Text, nullable=True)  # Info about proxy detection (e.g., matched CA, fingerprint, etc)
+    
+    # Proxy override fields for real certificate information
+    real_serial_number = Column(String, nullable=True)  # Real serial number when behind proxy
+    real_thumbprint = Column(String, nullable=True)  # Real thumbprint when behind proxy
+    real_issuer = Column(Text, nullable=True)  # Real issuer info when behind proxy
+    real_subject = Column(Text, nullable=True)  # Real subject info when behind proxy
+    real_valid_from = Column(DateTime, nullable=True)  # Real valid from date when behind proxy
+    real_valid_until = Column(DateTime, nullable=True)  # Real valid until date when behind proxy
+    override_notes = Column(Text, nullable=True)  # Notes about the override
+    override_created_at = Column(DateTime, nullable=True)  # When override was created
+    
     certificate_bindings = relationship("CertificateBinding", back_populates="certificate", cascade="all, delete-orphan")
     tracking_entries = relationship("CertificateTracking", back_populates="certificate", cascade="all, delete-orphan")
     scans = relationship("CertificateScan", back_populates="certificate", cascade="all, delete-orphan")
@@ -121,6 +132,46 @@ class Certificate(Base):
             self._san = json.dumps(list(value))
         else:
             self._san = None
+    
+    @hybrid_property
+    def real_issuer_dict(self):
+        """Get real issuer as dictionary when behind proxy."""
+        if self.real_issuer:
+            try:
+                return json.loads(self.real_issuer)
+            except:
+                return {}
+        return {}
+    
+    @real_issuer_dict.setter
+    def real_issuer_dict(self, value):
+        """Set real issuer from dictionary when behind proxy."""
+        if isinstance(value, str):
+            self.real_issuer = value
+        elif value is not None:
+            self.real_issuer = json.dumps(value)
+        else:
+            self.real_issuer = None
+    
+    @hybrid_property
+    def real_subject_dict(self):
+        """Get real subject as dictionary when behind proxy."""
+        if self.real_subject:
+            try:
+                return json.loads(self.real_subject)
+            except:
+                return {}
+        return {}
+    
+    @real_subject_dict.setter
+    def real_subject_dict(self, value):
+        """Set real subject from dictionary when behind proxy."""
+        if isinstance(value, str):
+            self.real_subject = value
+        elif value is not None:
+            self.real_subject = json.dumps(value)
+        else:
+            self.real_subject = None
 
 class CertificateScan(Base):
     """

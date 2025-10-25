@@ -211,11 +211,14 @@ class DomainScanner:
         time_since_last = current_time - last_time
         min_time_between_queries = 60.0 / rate_limit
         
-        if time_since_last < min_time_between_queries:
+        # Only apply rate limiting if we have a previous query and need to wait
+        if last_time > 0 and time_since_last < min_time_between_queries:
             sleep_time = min_time_between_queries - time_since_last
-            logger.debug(f"[{query_type}] Rate limiting: sleeping for {sleep_time:.2f} seconds")
-            time.sleep(sleep_time)
-            current_time = time.time()
+            # Only sleep if the sleep time is significant (> 0.01 seconds)
+            if sleep_time > 0.01:
+                logger.debug(f"[{query_type}] Rate limiting: sleeping for {sleep_time:.2f} seconds")
+                time.sleep(sleep_time)
+                current_time = time.time()
         
         return current_time
     

@@ -358,4 +358,161 @@ def test_direct_upsert_with_proxy_fields(test_session, mock_status_container):
     cert = test_session.query(Certificate).filter_by(serial_number="direct-proxy-serial").first()
     assert cert is not None, "Certificate should be found in DB"
     assert cert.proxied is True, "Certificate.proxied should be True"
-    assert cert.proxy_info == "Direct test: Matched proxy CA", "Certificate.proxy_info should match" 
+    assert cert.proxy_info == "Direct test: Matched proxy CA", "Certificate.proxy_info should match"
+
+def test_enhanced_deduplication_integration(test_session, mock_status_container):
+    """Test that enhanced deduplication is properly integrated into CertificateDBUtil."""
+    now = datetime.now(timezone.utc)
+    
+    # Create first certificate
+    cert_info1 = CertificateInfo(
+        serial_number="dedup_test_serial_1",
+        thumbprint="dedup_test_thumb_1",
+        common_name="deduptest.com",
+        valid_from=now - timedelta(days=30),
+        expiration_date=now + timedelta(days=365),
+        subject={"CN": "deduptest.com"},
+        issuer={"CN": "Test CA"},
+        san=["deduptest.com"],
+        ip_addresses=["192.168.1.1"]
+    )
+    
+    # Create domain object
+    domain_obj = Domain(domain_name="deduptest.com", created_at=now, updated_at=now)
+    test_session.add(domain_obj)
+    test_session.commit()
+    
+    # Mock enhanced deduplication to return new certificate for first call
+    with patch('infra_mgmt.utils.certificate_db.enhanced_deduplicate_certificate') as mock_enhanced:
+        mock_enhanced.return_value = (True, None, "New certificate")
+        
+        # First upsert - should create new certificate
+        result1 = CertificateDBUtil.upsert_certificate_and_binding(
+            test_session,
+            "deduptest.com",
+            443,
+            cert_info1,
+            domain_obj=domain_obj,
+            status_callback=mock_status_container.text
+        )
+        test_session.commit()
+        
+        # Verify first certificate was created
+        assert result1 is not None
+        assert result1.common_name == "deduptest.com"
+        assert result1.serial_number == "dedup_test_serial_1"
+        
+        # Create second certificate with same logical identity but different serial/thumbprint
+        cert_info2 = CertificateInfo(
+            serial_number="dedup_test_serial_2",  # Different serial
+            thumbprint="dedup_test_thumb_2",      # Different thumbprint
+            common_name="deduptest.com",         # Same CN
+            valid_from=now - timedelta(days=30),
+            expiration_date=now + timedelta(days=365),  # Same expiry
+            subject={"CN": "deduptest.com"},
+            issuer={"CN": "Test CA"},            # Same issuer
+            san=["deduptest.com"],
+            ip_addresses=["192.168.1.1"]
+        )
+        
+        # Mock enhanced deduplication to return existing certificate for second call
+        mock_enhanced.return_value = (False, result1, "Certificate deduplicated")
+        
+        # Second upsert - should deduplicate and return existing certificate
+        result2 = CertificateDBUtil.upsert_certificate_and_binding(
+            test_session,
+            "deduptest.com",
+            443,
+            cert_info2,
+            domain_obj=domain_obj,
+            status_callback=mock_status_container.text
+        )
+        test_session.commit()
+        
+        # Verify deduplication worked
+        assert result2.id == result1.id  # Should return same certificate
+        assert result2.serial_number == "dedup_test_serial_1"  # Should keep original serial
+        
+        # Verify only one certificate exists in database
+        cert_count = test_session.query(Certificate).filter_by(common_name="deduptest.com").count()
+        assert cert_count == 1, f"Expected 1 certificate, found {cert_count}"
+
+def test_enhanced_deduplication_proxy_certificates(test_session, mock_status_container):
+    """Test enhanced deduplication with proxy certificates."""
+    now = datetime.now(timezone.utc)
+    
+    # Create proxy certificate info
+    proxy_cert_info = CertificateInfo(
+        serial_number="proxy_dedup_serial_1",
+        thumbprint="proxy_dedup_thumb_1",
+        common_name="proxydeduptest.com",
+        valid_from=now - timedelta(days=30),
+        expiration_date=now + timedelta(days=365),
+        subject={"CN": "proxydeduptest.com"},
+        issuer={"CN": "Corporate Proxy CA"},
+        san=["proxydeduptest.com"],
+        ip_addresses=["192.168.1.1"],
+        proxied=True,
+        proxy_info="Detected as proxy certificate"
+    )
+    
+    # Create domain object
+    domain_obj = Domain(domain_name="proxydeduptest.com", created_at=now, updated_at=now)
+    test_session.add(domain_obj)
+    test_session.commit()
+    
+    # First upsert - should create new proxy certificate
+    result1 = CertificateDBUtil.upsert_certificate_and_binding(
+        test_session,
+        "proxydeduptest.com",
+        443,
+        proxy_cert_info,
+        domain_obj=domain_obj,
+        status_callback=mock_status_container.text
+    )
+    test_session.commit()
+    
+    # Verify first proxy certificate was created
+    assert result1 is not None
+    assert result1.common_name == "proxydeduptest.com"
+    assert result1.proxied is True
+    assert "Detected as proxy certificate" in result1.proxy_info
+    
+    # Create second proxy certificate with same logical identity
+    proxy_cert_info2 = CertificateInfo(
+        serial_number="proxy_dedup_serial_2",  # Different serial
+        thumbprint="proxy_dedup_thumb_2",      # Different thumbprint
+        common_name="proxydeduptest.com",     # Same CN
+        valid_from=now - timedelta(days=30),
+        expiration_date=now + timedelta(days=365),  # Same expiry
+        subject={"CN": "proxydeduptest.com"},
+        issuer={"CN": "Corporate Proxy CA"},  # Same issuer
+        san=["proxydeduptest.com"],
+        ip_addresses=["192.168.1.1"],
+        proxied=True,
+        proxy_info="Additional proxy detection"
+    )
+    
+    # Second upsert - should deduplicate and merge proxy info
+    result2 = CertificateDBUtil.upsert_certificate_and_binding(
+        test_session,
+        "proxydeduptest.com",
+        443,
+        proxy_cert_info2,
+        domain_obj=domain_obj,
+        status_callback=mock_status_container.text
+    )
+    test_session.commit()
+    
+    # Verify deduplication worked
+    assert result2.id == result1.id  # Should return same certificate
+    assert result2.serial_number == "proxy_dedup_serial_1"  # Should keep original serial
+    
+    # Verify proxy info was merged
+    test_session.refresh(result2)
+    assert "Detected as proxy certificate" in result2.proxy_info
+    assert "Additional proxy detection" in result2.proxy_info
+    
+    # Verify only one certificate exists in database
+    cert_count = test_session.query(Certificate).filter_by(common_name="proxydeduptest.com").count()
+    assert cert_count == 1, f"Expected 1 certificate, found {cert_count}" 

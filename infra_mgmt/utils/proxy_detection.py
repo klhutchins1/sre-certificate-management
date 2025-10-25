@@ -200,7 +200,17 @@ def validate_certificate_authenticity(cert_info, target_hostname, settings):
     # Check for very short validity periods (common with proxy certificates)
     if hasattr(cert_info, 'valid_from') and hasattr(cert_info, 'expiration_date'):
         if cert_info.valid_from and cert_info.expiration_date:
-            validity_days = (cert_info.expiration_date - cert_info.valid_from).days
+            # Normalize datetime objects to avoid timezone mismatch
+            exp_date = cert_info.expiration_date
+            valid_from = cert_info.valid_from
+            
+            # Convert to timezone-naive if needed
+            if exp_date.tzinfo is not None:
+                exp_date = exp_date.replace(tzinfo=None)
+            if valid_from.tzinfo is not None:
+                valid_from = valid_from.replace(tzinfo=None)
+            
+            validity_days = (exp_date - valid_from).days
             if validity_days < 90:  # Less than 3 months is suspicious for public certs
                 warnings.append(f"Short certificate validity period: {validity_days} days")
     

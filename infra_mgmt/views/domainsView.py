@@ -183,6 +183,14 @@ def render_domain_list(engine):
     ], columns=4)
     # Create a search box
     search = st.text_input("Search Domains", placeholder="Enter domain name...")
+    
+    # Clear domain selection if search has changed
+    if 'last_search' not in st.session_state:
+        st.session_state['last_search'] = search
+    elif st.session_state['last_search'] != search:
+        st.session_state['domain_selection'] = None
+        st.session_state['last_search'] = search
+    
     # Use service to get filtered domains and hierarchy
     result = DomainService.get_filtered_domain_hierarchy(engine, search)
     if not result['success']:
@@ -199,48 +207,83 @@ def render_domain_list(engine):
     
     with col_list:
         st.subheader("Domains")
-        # Create hierarchical domain selection
-        domain_options = []
         
-        def add_domain_to_options(domain, prefix="", level=0):
-            """Recursively add domain and its subdomains to options."""
-            display_name = domain.domain_name
-            if level == 0:
-                # Always show folder icon for domains that have children
-                if display_name in domain_hierarchy:
-                    domain_options.append(f"📁 {display_name}")
-                else:
-                    # Only show plain domain if it's a real domain
-                    if not isinstance(domain, VirtualDomain):
-                        domain_options.append(display_name)
-            else:
-                # Create cascading effect with increasing dashes
-                indent = "└" + ("─" * (level))
-                domain_options.append(f"{indent}{display_name}")
-            
-            # Add subdomains
-            if display_name in domain_hierarchy:
-                for subdomain in domain_hierarchy[display_name]:
-                    add_domain_to_options(subdomain, "", level + 1)
+        # Initialize session state for domain selection
+        if 'domain_selection' not in st.session_state:
+            st.session_state['domain_selection'] = None
         
-        # Add all root domains and their hierarchies
+        selected_domain = st.session_state['domain_selection']
+        
+        # Display all domains in consistent expanders
         for root in root_domains:
-            if isinstance(root, VirtualDomain) or root.domain_name in domain_hierarchy:
-                add_domain_to_options(root)
+            parent_name = root.domain_name
+            subdomains = domain_hierarchy.get(parent_name, [])
+            
+            if subdomains:
+                # Create expander for parent domain with subdomains
+                with st.expander(f"📁 {parent_name} ({len(subdomains)} subdomains)", expanded=False):
+                    # Add parent domain as first option
+                    subdomain_options = [parent_name] + [sub.domain_name for sub in subdomains]
+                    
+                    if selected_domain and selected_domain in subdomain_options:
+                        default_index = subdomain_options.index(selected_domain)
+                    else:
+                        default_index = 0
+                    
+                    selected_subdomain = st.radio(
+                        f"Select from {parent_name}",
+                        options=subdomain_options,
+                        index=default_index if subdomain_options else None,
+                        label_visibility="collapsed",
+                        key=f"parent_{parent_name.replace('.', '_')}"
+                    )
+                    
+                    if selected_subdomain:
+                        st.session_state['domain_selection'] = selected_subdomain
+                        selected_domain = selected_subdomain
             else:
-                domain_options.append(root.domain_name)
+                # Create expander for standalone domain (no subdomains)
+                with st.expander(f"🌐 {parent_name}", expanded=False):
+                    if selected_domain and selected_domain == parent_name:
+                        default_index = 0
+                    else:
+                        default_index = 0
+                    
+                    selected_standalone = st.radio(
+                        f"Select {parent_name}",
+                        options=[parent_name],
+                        index=default_index,
+                        label_visibility="collapsed",
+                        key=f"standalone_{parent_name.replace('.', '_')}"
+                    )
+                    
+                    if selected_standalone:
+                        st.session_state['domain_selection'] = selected_standalone
+                        selected_domain = selected_standalone
         
-        if domain_options:
-            selected_option = st.radio(
-                "Select a domain to view details",
-                options=domain_options,
-                label_visibility="collapsed"
-            )
-            # Extract actual domain name from selection
-            selected_domain = selected_option.replace("📁 ", "").strip()
-            if "└" in selected_domain:
-                selected_domain = selected_domain.split("└")[-1].replace("─", "").strip()
-        else:
+        # Update selected_domain from session state and validate it's still available
+        if st.session_state['domain_selection']:
+            selected_domain = st.session_state['domain_selection']
+            
+            # Check if selected domain is still available in filtered results
+            all_available_domains = []
+            for root in root_domains:
+                all_available_domains.append(root.domain_name)
+                subdomains = domain_hierarchy.get(root.domain_name, [])
+                for sub in subdomains:
+                    all_available_domains.append(sub.domain_name)
+            
+            if selected_domain not in all_available_domains:
+                # Selected domain is no longer available, clear selection
+                st.session_state['domain_selection'] = None
+                selected_domain = None
+        
+        if not selected_domain and root_domains:
+            # Auto-select first available domain if none selected
+            selected_domain = root_domains[0].domain_name
+            st.session_state['domain_selection'] = selected_domain
+        
+        if not root_domains:
             notify("No domains match your search.", "info", page_key=DOMAINS_PAGE_KEY)
             return
     

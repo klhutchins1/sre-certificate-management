@@ -89,6 +89,12 @@ class ScanManager:
         }
         self.logger = logging.getLogger(__name__)
         self.processor = None
+        
+        # Scan state management
+        self.scan_state = "idle"  # idle, running, paused, stopped
+        self.scan_paused = False
+        self.scan_stopped = False
+        
         self.logger.info(f"[DEBUG] ScanManager initialized: {id(self)}")
     
     def reset_scan_state(self):
@@ -313,6 +319,18 @@ class ScanManager:
                                     if cert and cert not in san_domain_obj.certificates:
                                         san_domain_obj.certificates.append(cert)
                                         self.logger.info(f"[SCAN] Associated certificate {cert.serial_number} with SAN domain {san_item}")
+                                
+                                # Process SANs for scanning if check_sans is enabled
+                                if kwargs.get('check_sans', False):
+                                    # Clean up SAN (remove wildcards, etc.)
+                                    clean_san = san_item.strip('*. ')
+                                    if clean_san and clean_san != domain:  # Don't add the same domain
+                                        # Add SAN to scan queue if not already scanned
+                                        if not self.infra_mgmt.tracker.is_domain_scanned(clean_san):
+                                            self.add_to_queue(clean_san, port, session)
+                                            self.logger.info(f"[SANS] Added SAN domain to scan queue: {clean_san}:{port}")
+                                        else:
+                                            self.logger.info(f"[SANS] SAN domain already scanned: {clean_san}")
                     session.commit()
                     target_key = f"{domain}:{port}"
                     if target_key not in self.scan_results["success"]:
@@ -403,6 +421,18 @@ class ScanManager:
                                 if cert and cert not in san_domain_obj.certificates:
                                     san_domain_obj.certificates.append(cert)
                                     self.logger.info(f"[SCAN] Associated certificate {cert.serial_number} with SAN domain {san_item}")
+                            
+                            # Process SANs for scanning if check_sans is enabled
+                            if kwargs.get('check_sans', False):
+                                # Clean up SAN (remove wildcards, etc.)
+                                clean_san = san_item.strip('*. ')
+                                if clean_san and clean_san != domain:  # Don't add the same domain
+                                    # Add SAN to scan queue if not already scanned
+                                    if not self.infra_mgmt.tracker.is_domain_scanned(clean_san):
+                                        self.add_to_queue(clean_san, port, session)
+                                        self.logger.info(f"[SANS] Added SAN domain to scan queue: {clean_san}:{port}")
+                                    else:
+                                        self.logger.info(f"[SANS] SAN domain already scanned: {clean_san}")
                 session.commit()
                 target_key = f"{domain}:{port}"
                 if target_key not in self.scan_results["success"]:
@@ -413,110 +443,122 @@ class ScanManager:
                 self.scan_results["error"].append(f"{domain}:{port} - Certificate scan failed or no certificate info")
             # 2. getDNSRecords
             dns_records = []
-            try:
-                dns_info = self.domain_scanner.scan_domain(domain, session, get_whois=False, get_dns=True, offline_mode=is_offline)
-                if dns_info and dns_info.dns_records:
-                    dns_records = dns_info.dns_records
-                    # Update DNS records in DB
-                    existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
-                    existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
-                    seen_records = set()
-                    for record in dns_records:
-                        record_key = (record['type'], record['name'], record['value'])
-                        seen_records.add(record_key)
-                        if record_key in existing_map:
-                            existing_record = existing_map[record_key]
-                            existing_record.ttl = record['ttl']
-                            existing_record.priority = record.get('priority')
-                            existing_record.updated_at = datetime.now()
-                        else:
-                            dns_record = DomainDNSRecord(
-                                domain=domain_obj,
-                                record_type=record['type'],
-                                name=record['name'],
-                                value=record['value'],
-                                ttl=record['ttl'],
-                                priority=record.get('priority'),
-                                created_at=datetime.now(),
-                                updated_at=datetime.now()
-                            )
-                            session.add(dns_record)
-                    for key, record in existing_map.items():
-                        if key not in seen_records:
-                            session.delete(record)
-                    try:
-                        session.commit()
-                    except Exception as e:
-                        self.logger.error(f"Error committing DNS records for {domain}: {str(e)}")
-                        session.rollback()
-                        self.scan_results["warning"].append(f"{domain}:{port} - DNS DB error: {str(e)}")
-                else:
-                    self.scan_results["warning"].append(f"{domain}:{port} - No DNS records found")
-            except Exception as e:
-                self.scan_results["warning"].append(f"{domain}:{port} - DNS error: {str(e)}")
-                session.rollback()
-            # 3. getWhoIsRecords
-            whois_info = None
-            try:
-                if is_offline:
-                    self.logger.info(f"[SCAN] Offline mode: Skipping WHOIS query for domain {domain}")
-                    self.scan_results["info"].append(f"{domain}:{port} - WHOIS skipped (offline mode)")
-                else:
-                    whois_info = self.domain_scanner.scan_domain(domain, session, get_whois=True, get_dns=False, offline_mode=is_offline)
-                    if whois_info and whois_info.registrar:
-                        domain_obj.registrar = whois_info.registrar
-                        domain_obj.registration_date = whois_info.registration_date
-                        domain_obj.expiration_date = whois_info.expiration_date
-                        domain_obj.owner = whois_info.registrant
-                        domain_obj.updated_at = datetime.now()
+            if kwargs.get('check_dns', True):  # Default to True for backward compatibility
+                try:
+                    dns_info = self.domain_scanner.scan_domain(domain, session, get_whois=False, get_dns=True, offline_mode=is_offline)
+                    if dns_info and dns_info.dns_records:
+                        dns_records = dns_info.dns_records
+                        # Update DNS records in DB
+                        existing_records = session.query(DomainDNSRecord).filter_by(domain_id=domain_obj.id).all()
+                        existing_map = {(r.record_type, r.name, r.value): r for r in existing_records}
+                        seen_records = set()
+                        for record in dns_records:
+                            record_key = (record['type'], record['name'], record['value'])
+                            seen_records.add(record_key)
+                            if record_key in existing_map:
+                                existing_record = existing_map[record_key]
+                                existing_record.ttl = record['ttl']
+                                existing_record.priority = record.get('priority')
+                                existing_record.updated_at = datetime.now()
+                            else:
+                                dns_record = DomainDNSRecord(
+                                    domain=domain_obj,
+                                    record_type=record['type'],
+                                    name=record['name'],
+                                    value=record['value'],
+                                    ttl=record['ttl'],
+                                    priority=record.get('priority'),
+                                    created_at=datetime.now(),
+                                    updated_at=datetime.now()
+                                )
+                                session.add(dns_record)
+                        for key, record in existing_map.items():
+                            if key not in seen_records:
+                                session.delete(record)
                         try:
                             session.commit()
                         except Exception as e:
-                            self.logger.error(f"Error committing WHOIS info for {domain}: {str(e)}")
+                            self.logger.error(f"Error committing DNS records for {domain}: {str(e)}")
                             session.rollback()
-                            self.scan_results["error"].append(f"{domain}:{port} - WHOIS DB error: {str(e)}")
+                            self.scan_results["warning"].append(f"{domain}:{port} - DNS DB error: {str(e)}")
                     else:
-                        self.scan_results["error"].append(f"{domain}:{port} - No WHOIS info found")
-            except Exception as e:
-                self.scan_results["error"].append(f"{domain}:{port} - WHOIS error: {str(e)}")
-                session.rollback()
-            # 4. getIPaddresses
-            try:
-                ip_list = []
-                import socket
-                try:
-                    hostname_ip = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
-                    for item in hostname_ip:
-                        ip_address = item[4][0]
-                        if ip_address not in ip_list:
-                            ip_list.append(ip_address)
-                    if not ip_list:
-                        self.scan_results["warning"].append(f"{domain}:{port} - No IP addresses found")
+                        self.scan_results["warning"].append(f"{domain}:{port} - No DNS records found")
                 except Exception as e:
-                    self.scan_results["warning"].append(f"{domain}:{port} - IP address lookup error: {str(e)}")
+                    self.scan_results["warning"].append(f"{domain}:{port} - DNS error: {str(e)}")
+                    session.rollback()
+            else:
+                self.logger.info(f"[SCAN] DNS scanning disabled for {domain}:{port}")
+            # 3. getWhoIsRecords
+            whois_info = None
+            if kwargs.get('check_whois', True):  # Default to True for backward compatibility
+                try:
+                    if is_offline:
+                        self.logger.info(f"[SCAN] Offline mode: Skipping WHOIS query for domain {domain}")
+                        self.scan_results["info"].append(f"{domain}:{port} - WHOIS skipped (offline mode)")
+                    else:
+                        whois_info = self.domain_scanner.scan_domain(domain, session, get_whois=True, get_dns=False, offline_mode=is_offline)
+                        if whois_info and whois_info.registrar:
+                            domain_obj.registrar = whois_info.registrar
+                            domain_obj.registration_date = whois_info.registration_date
+                            domain_obj.expiration_date = whois_info.expiration_date
+                            domain_obj.owner = whois_info.registrant
+                            domain_obj.updated_at = datetime.now()
+                            try:
+                                session.commit()
+                            except Exception as e:
+                                self.logger.error(f"Error committing WHOIS info for {domain}: {str(e)}")
+                                session.rollback()
+                                self.scan_results["error"].append(f"{domain}:{port} - WHOIS DB error: {str(e)}")
+                        else:
+                            self.scan_results["error"].append(f"{domain}:{port} - No WHOIS info found")
+                except Exception as e:
+                    self.scan_results["error"].append(f"{domain}:{port} - WHOIS error: {str(e)}")
+                    session.rollback()
+            else:
+                self.logger.info(f"[SCAN] WHOIS scanning disabled for {domain}:{port}")
+            # 4. getIPaddresses (skip in offline mode to avoid unnecessary resolver calls)
+            try:
+                if is_offline:
+                    self.logger.info(f"[SCAN] Offline mode: Skipping IP resolution for {domain}")
+                else:
+                    ip_list = []
+                    import socket
+                    try:
+                        hostname_ip = socket.getaddrinfo(domain, port, proto=socket.IPPROTO_TCP)
+                        for item in hostname_ip:
+                            ip_address = item[4][0]
+                            if ip_address not in ip_list:
+                                ip_list.append(ip_address)
+                        if not ip_list:
+                            self.scan_results["warning"].append(f"{domain}:{port} - No IP addresses found")
+                    except Exception as e:
+                        self.scan_results["warning"].append(f"{domain}:{port} - IP address lookup error: {str(e)}")
             except Exception as e:
                 self.scan_results["warning"].append(f"{domain}:{port} - IP address error: {str(e)}")
             # 5. getSubdomains
-            try:
-                subdomains = self.subdomain_scanner.scan_and_process_subdomains(
-                    domain=domain,
-                    session=session,
-                    port=port,
-                    check_whois=False,
-                    check_dns=False,
-                    scanned_domains=self.infra_mgmt.tracker.scanned_domains,
-                    enable_ct=kwargs.get('enable_ct', True),
-                    offline_mode=is_offline
-                )
-                # Add discovered subdomains to scan queue if not already scanned in this session
-                for sub in subdomains:
-                    subdomain_name = sub['domain'] if isinstance(sub, dict) and 'domain' in sub else sub
-                    if not self.infra_mgmt.tracker.is_domain_scanned(subdomain_name):
-                        self.add_to_queue(subdomain_name, port, session)
-                if not subdomains:
-                    self.scan_results["info"].append(f"{domain}:{port} - No subdomains found")
-            except Exception as e:
-                self.scan_results["info"].append(f"{domain}:{port} - Subdomain scan error: {str(e)}")
+            if kwargs.get('check_subdomains', False):  # Default to False since it's expensive
+                try:
+                    subdomains = self.subdomain_scanner.scan_and_process_subdomains(
+                        domain=domain,
+                        session=session,
+                        port=port,
+                        check_whois=False,
+                        check_dns=False,
+                        scanned_domains=self.infra_mgmt.tracker.scanned_domains,
+                        enable_ct=kwargs.get('enable_ct', True),
+                        offline_mode=is_offline
+                    )
+                    # Add discovered subdomains to scan queue if not already scanned in this session
+                    for sub in subdomains:
+                        subdomain_name = sub['domain'] if isinstance(sub, dict) and 'domain' in sub else sub
+                        if not self.infra_mgmt.tracker.is_domain_scanned(subdomain_name):
+                            self.add_to_queue(subdomain_name, port, session)
+                    if not subdomains:
+                        self.scan_results["info"].append(f"{domain}:{port} - No subdomains found")
+                except Exception as e:
+                    self.scan_results["info"].append(f"{domain}:{port} - Subdomain scan error: {str(e)}")
+            else:
+                self.logger.info(f"[SCAN] Subdomain scanning disabled for {domain}:{port}")
             # 6. detect platform (if implemented)
             # ...
             self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
@@ -596,3 +638,85 @@ class ScanManager:
             >>> domain_scanner, cert_scanner, subdomain_scanner = get_scanners()
         """
         return self.domain_scanner, self.infra_mgmt, self.subdomain_scanner
+    
+    def pause_scan(self):
+        """
+        Pause the current scan operation.
+        
+        This method sets the pause flag to stop processing new targets while
+        allowing the current scan to complete gracefully.
+        """
+        self.scan_paused = True
+        self.scan_state = "paused"
+        self.logger.info("Scan paused by user")
+    
+    def resume_scan(self):
+        """
+        Resume a paused scan operation.
+        
+        This method clears the pause flag to allow processing of new targets.
+        """
+        self.scan_paused = False
+        self.scan_state = "running"
+        self.logger.info("Scan resumed by user")
+    
+    def stop_scan(self):
+        """
+        Stop the current scan operation.
+        
+        This method sets the stop flag to halt all scanning operations
+        immediately. The scan state will be reset to idle.
+        """
+        self.scan_stopped = True
+        self.scan_paused = False
+        self.scan_state = "stopped"
+        self.logger.info("Scan stopped by user")
+    
+    def is_scan_paused(self):
+        """
+        Check if the scan is currently paused.
+        
+        Returns:
+            bool: True if scan is paused, False otherwise
+        """
+        return self.scan_paused
+    
+    def is_scan_stopped(self):
+        """
+        Check if the scan has been stopped.
+        
+        Returns:
+            bool: True if scan is stopped, False otherwise
+        """
+        return self.scan_stopped
+    
+    def get_scan_state(self):
+        """
+        Get the current scan state.
+        
+        Returns:
+            str: Current scan state (idle, running, paused, stopped)
+        """
+        return self.scan_state
+    
+    def start_scan(self):
+        """
+        Start a new scan operation.
+        
+        This method resets the scan state and prepares for a new scan session.
+        """
+        self.scan_state = "running"
+        self.scan_paused = False
+        self.scan_stopped = False
+        self.logger.info("Scan started")
+    
+    def reset_scan_controls(self):
+        """
+        Reset scan control flags.
+        
+        This method clears all scan control flags and resets the state to idle.
+        """
+        self.scan_paused = False
+        self.scan_stopped = False
+        self.scan_state = "idle"
+        self.logger.info("Scan controls reset")

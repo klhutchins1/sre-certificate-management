@@ -185,12 +185,19 @@ class DatabaseCacheManager:
                 # Create schema on remote first, then copy to local
                 Base.metadata.create_all(self.remote_engine)
                 
+                # Update remote schema to include any missing columns
+                from .schema import update_database_schema
+                update_database_schema(self.remote_engine)
+                
                 # Copy remote schema to local
                 self._copy_schema_from_remote()
             else:
                 logger.warning("Remote database not available, operating in offline mode")
                 # Create schema locally
                 Base.metadata.create_all(self.local_engine)
+                # Update local schema to include any missing columns
+                from .schema import update_database_schema
+                update_database_schema(self.local_engine)
             
             # Add sync tracking tables to local and enable WAL mode
             with self.local_engine.connect() as conn:

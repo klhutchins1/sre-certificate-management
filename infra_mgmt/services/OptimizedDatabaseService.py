@@ -29,7 +29,8 @@ from sqlalchemy import create_engine, text, func, select, case, desc, asc
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import QueuePool
 
-from ..models import Certificate, Host, Domain, Application, CertificateBinding
+from ..models import Certificate, Host, Domain, Application
+from ..models.certificate import CertificateBinding
 from ..utils.lazy_imports import ImportTimer
 from infra_mgmt.utils.SessionManager import SessionManager
 
@@ -245,10 +246,11 @@ class OptimizedDatabaseService:
             order_func = desc if order_dir.lower() == 'desc' else asc
             
             # Get paginated results
+            # Note: Using certificate_bindings relationship instead of non-existent hosts
             certificates = self._execute_timed_query(
                 session,
                 select(Certificate)
-                .options(selectinload(Certificate.hosts))
+                .options(selectinload(Certificate.certificate_bindings).selectinload(CertificateBinding.host))
                 .order_by(order_func(order_column))
                 .offset(offset)
                 .limit(per_page),

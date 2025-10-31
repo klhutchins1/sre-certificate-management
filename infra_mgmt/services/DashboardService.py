@@ -97,12 +97,52 @@ class DashboardService:
 
     @staticmethod
     def get_certificate_timeline_data(session, limit=100):
+        """
+        Get certificate timeline data, ensuring each certificate has a unique name
+        to prevent gaps in the timeline visualization caused by duplicate common names.
+        
+        Args:
+            session: SQLAlchemy session
+            limit: Maximum number of certificates to return
+            
+        Returns:
+            List of dictionaries with 'Name', 'Start', and 'End' keys
+        """
         certs = session.query(
-            Certificate.common_name.label('Name'),
-            Certificate.valid_from.label('Start'),
-            Certificate.valid_until.label('End')
+            Certificate.id,
+            Certificate.common_name,
+            Certificate.serial_number,
+            Certificate.valid_from,
+            Certificate.valid_until
         ).order_by(Certificate.valid_until).limit(limit).all()
-        return certs
+        
+        # Convert to list of dictionaries, ensuring unique names
+        timeline_data = []
+        common_name_counts = {}
+        
+        for cert in certs:
+            cn = cert.common_name or f"Unknown (ID: {cert.id})"
+            
+            # Track how many times we've seen this common name
+            if cn not in common_name_counts:
+                common_name_counts[cn] = 0
+            common_name_counts[cn] += 1
+            
+            # Make name unique by appending serial number if we have duplicates
+            if common_name_counts[cn] > 1:
+                # Use serial number (first 8 chars) to make it unique
+                serial_suffix = f" ({cert.serial_number[:8]}...)" if cert.serial_number else f" (ID: {cert.id})"
+                unique_name = f"{cn}{serial_suffix}"
+            else:
+                unique_name = cn
+            
+            timeline_data.append({
+                'Name': unique_name,
+                'Start': cert.valid_from,
+                'End': cert.valid_until
+            })
+        
+        return timeline_data
 
     @staticmethod
     def get_domain_timeline_data(root_domains):

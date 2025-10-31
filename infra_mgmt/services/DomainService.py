@@ -99,17 +99,119 @@ class DomainService:
             return {'success': False, 'error': str(e)}
 
     @staticmethod
-    def delete_domain_by_id(engine, domain_id):
+    def delete_domain_by_id(engine, domain_id, recursive=False):
+        """
+        Delete a domain by ID, optionally including all child domains.
+        
+        Args:
+            engine: SQLAlchemy engine
+            domain_id: ID of the domain to delete
+            recursive: If True, also delete all child domains (subdomains)
+            
+        Returns:
+            dict: {'success': bool, 'error': str or None, 'deleted_count': int}
+        """
         try:
             with SessionManager(engine) as session:
                 domain = session.get(Domain, domain_id)
                 if not domain:
-                    return {'success': False, 'error': 'Domain not found'}
+                    return {'success': False, 'error': 'Domain not found', 'deleted_count': 0}
+                
+                deleted_count = 0
+                
+                if recursive:
+                    # Recursively find and delete all child domains
+                    child_domains = DomainService._get_all_child_domains(session, domain_id)
+                    
+                    # Delete children first (to maintain referential integrity)
+                    for child in child_domains:
+                        try:
+                            session.delete(child)
+                            deleted_count += 1
+                        except Exception as e:
+                            session.rollback()
+                            return {
+                                'success': False,
+                                'error': f'Error deleting child domain {child.domain_name}: {str(e)}',
+                                'deleted_count': deleted_count
+                            }
+                    
+                    # Commit child deletions before deleting parent
+                    if child_domains:
+                        session.commit()
+                        # Re-query parent to ensure we have fresh object after commit
+                        domain = session.get(Domain, domain_id)
+                        if not domain:
+                            return {'success': False, 'error': 'Domain was deleted unexpectedly', 'deleted_count': deleted_count}
+                
+                # Delete the parent domain
+                domain_name = domain.domain_name
                 session.delete(domain)
+                deleted_count += 1
+                
                 session.commit()
-                return {'success': True}
+                return {
+                    'success': True,
+                    'error': None,
+                    'deleted_count': deleted_count,
+                    'deleted_domains': [domain_name] + ([d.domain_name for d in child_domains] if recursive else [])
+                }
+        except SQLAlchemyError as e:
+            return {'success': False, 'error': f'Database error: {str(e)}', 'deleted_count': 0}
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {'success': False, 'error': str(e), 'deleted_count': 0}
+    
+    @staticmethod
+    def _get_all_child_domains(session, domain_id):
+        """
+        Recursively get all child domains (subdomains) of a domain.
+        
+        Args:
+            session: SQLAlchemy session
+            domain_id: ID of the parent domain
+            
+        Returns:
+            list: List of Domain objects that are children of the given domain
+        """
+        # Get direct children
+        children = session.query(Domain).filter_by(parent_domain_id=domain_id).all()
+        
+        # Recursively get grandchildren and deeper
+        all_children = list(children)
+        for child in children:
+            all_children.extend(DomainService._get_all_child_domains(session, child.id))
+        
+        return all_children
+    
+    @staticmethod
+    def get_child_domains_for_display(engine, domain_id):
+        """
+        Get list of child domains for display in UI (for confirmation dialog).
+        
+        Args:
+            engine: SQLAlchemy engine
+            domain_id: ID of the parent domain
+            
+        Returns:
+            dict: {'success': bool, 'children': list of domain names, 'count': int}
+        """
+        try:
+            with SessionManager(engine) as session:
+                domain = session.get(Domain, domain_id)
+                if not domain:
+                    return {'success': False, 'error': 'Domain not found', 'children': [], 'count': 0}
+                
+                child_domains = DomainService._get_all_child_domains(session, domain_id)
+                child_names = [d.domain_name for d in child_domains]
+                
+                return {
+                    'success': True,
+                    'children': child_names,
+                    'count': len(child_names),
+                    'parent': domain.domain_name
+                }
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'children': [], 'count': 0}
 
     @staticmethod
     def add_to_ignore_list_by_name(engine, domain_name):

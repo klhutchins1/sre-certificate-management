@@ -97,6 +97,19 @@ def init_session_state():
                 logger.info("Database engine initialized successfully")
             else:
                 logger.error("Failed to initialize database engine")
+            # Check offline mode and update config if needed
+            from .utils.network_detection import check_offline_mode
+            try:
+                is_offline, details = check_offline_mode(force_check=False)
+                config_offline = settings.get("scanning.offline_mode", False)
+                # Auto-detect and update if config doesn't match detected state (optional - commented out to avoid auto-changing config)
+                # if is_offline != config_offline:
+                #     logger.info(f"Network detection shows offline={is_offline}, but config has offline_mode={config_offline}")
+                #     settings.update("scanning.offline_mode", is_offline)
+                #     logger.info(f"Auto-updated config to match network state: offline_mode={is_offline}")
+            except Exception as e:
+                logger.warning(f"Failed to check offline mode during initialization: {e}")
+            
             st.session_state.initialized = True
 
 def render_sidebar():

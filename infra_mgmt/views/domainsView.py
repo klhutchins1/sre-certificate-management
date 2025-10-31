@@ -385,17 +385,45 @@ def render_domain_list(engine):
                         notify("No DNS records found for this domain.", "info", page_key=DOMAINS_PAGE_KEY)
                     # Add Danger Zone for domain deletion
                     st.markdown("### \u26A0\uFE0F Danger Zone")
+                    
+                    # Check for child domains for recursive deletion option
+                    child_domains_info = DomainService.get_child_domains_for_display(engine, domain.id)
+                    has_child_domains = child_domains_info.get('success', False) and child_domains_info.get('count', 0) > 0
+                    
                     dependencies = {
                         "Certificates": [cert.common_name for cert in domain.certificates],
                         "DNS Records": [f"{r.record_type} {r.name}" for r in domain.dns_records],
                         "Subdomains": [d.domain_name for d in domain.subdomains]
                     }
-                    def delete_domain(_):
-                        result = DomainService.delete_domain_by_id(engine, domain.id)
+                    
+                    # Add recursive deletion option if child domains exist
+                    recursive_delete = False
+                    if has_child_domains:
+                        st.info(f"⚠️ This domain has {child_domains_info['count']} child domain(s). Enable recursive deletion to delete them all.")
+                        recursive_delete = st.checkbox(
+                            f"Also delete {child_domains_info['count']} child domain(s)",
+                            key=f"recursive_delete_{domain.id}",
+                            help="When enabled, all subdomains will be deleted along with this domain"
+                        )
+                        if recursive_delete and child_domains_info.get('children'):
+                            with st.expander("View child domains that will be deleted"):
+                                for child_name in child_domains_info['children']:
+                                    st.markdown(f"- {child_name}")
+                    
+                    def delete_domain(session=None):
+                        # Note: session parameter is expected by render_danger_zone but we use engine directly
+                        result = DomainService.delete_domain_by_id(engine, domain.id, recursive=recursive_delete)
                         if result['success']:
+                            deleted_count = result.get('deleted_count', 1)
+                            if deleted_count > 1:
+                                notify(f"Successfully deleted {deleted_count} domain(s) (including {deleted_count - 1} child domain(s))", "success", page_key=DOMAINS_PAGE_KEY)
+                            else:
+                                notify(f"Domain '{domain.domain_name}' deleted successfully", "success", page_key=DOMAINS_PAGE_KEY)
                             return True
                         else:
-                            logger.exception(f"Error deleting domain: {result['error']}")
+                            error_msg = result.get('error', 'Unknown error')
+                            logger.exception(f"Error deleting domain: {error_msg}")
+                            notify(f"Error deleting domain: {error_msg}", "error", page_key=DOMAINS_PAGE_KEY)
                             return False
                     def add_to_ignore_list(_):
                         result = DomainService.add_to_ignore_list_by_name(engine, domain.domain_name)

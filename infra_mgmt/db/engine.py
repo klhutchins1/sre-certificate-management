@@ -189,8 +189,11 @@ def init_database(db_path=None, enable_cache: bool = True):
         logger.info("Creating database tables...")
         Base.metadata.create_all(engine)
         
+        # Update schema to include any missing columns
+        from .schema import update_database_schema, migrate_database, sync_default_ignore_patterns
+        update_database_schema(engine)
+        
         # Perform migrations
-        from .schema import migrate_database, sync_default_ignore_patterns
         migrate_database(engine)
         
         # Sync default ignore patterns

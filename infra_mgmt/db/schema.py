@@ -91,28 +91,73 @@ def update_database_schema(engine):
                                 column = model_columns[column_name]
                                 nullable = 'NOT NULL' if not column.nullable else ''
                                 
+                                # Convert SQLAlchemy type to SQLite type
+                                col_type_str = str(column.type)
+                                # Handle common SQLAlchemy types
+                                if 'VARCHAR' in col_type_str or 'String' in col_type_str:
+                                    sqlite_type = 'TEXT'
+                                elif 'Integer' in col_type_str:
+                                    sqlite_type = 'INTEGER'
+                                elif 'Boolean' in col_type_str:
+                                    sqlite_type = 'BOOLEAN'
+                                elif 'DateTime' in col_type_str or 'DATETIME' in col_type_str:
+                                    sqlite_type = 'DATETIME'
+                                elif 'Text' in col_type_str:
+                                    sqlite_type = 'TEXT'
+                                else:
+                                    # For SQLite, most types can be TEXT, INTEGER, REAL, BLOB, or DATETIME
+                                    # Default to TEXT for unknown types
+                                    sqlite_type = 'TEXT'
+                                
                                 # Handle default values
                                 default = ''
                                 if column.server_default is not None:
-                                    default = f"DEFAULT {column.server_default.arg}"
-                                elif column.default is not None:
-                                    if isinstance(column.default.arg, str):
-                                        default = f"DEFAULT '{column.default.arg}'"
+                                    default_val = str(column.server_default.arg).strip("'\"")
+                                    if sqlite_type == 'TEXT':
+                                        default = f"DEFAULT '{default_val}'"
+                                    elif sqlite_type == 'BOOLEAN':
+                                        default = f"DEFAULT {1 if default_val.lower() == 'true' else 0}"
                                     else:
-                                        default = f"DEFAULT {column.default.arg}"
+                                        default = f"DEFAULT {default_val}"
+                                elif column.default is not None:
+                                    if hasattr(column.default, 'arg'):
+                                        default_val = str(column.default.arg)
+                                    else:
+                                        default_val = str(column.default)
+                                    if sqlite_type == 'TEXT':
+                                        default = f"DEFAULT '{default_val}'"
+                                    elif sqlite_type == 'BOOLEAN':
+                                        default = f"DEFAULT {1 if str(default_val).lower() == 'true' else 0}"
+                                    else:
+                                        default = f"DEFAULT {default_val}"
                                 
-                                # For SQLite, we need to handle NOT NULL with DEFAULT in a specific way
-                                if not column.nullable and default:
-                                    # First add the column without NOT NULL
-                                    sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {default}"
-                                    connection.execute(text(sql.strip()))
-                                    
-                                    # Then update any NULL values with the default
-                                    sql = f"UPDATE {table_name} SET {column_name} = {column.server_default.arg} WHERE {column_name} IS NULL"
-                                    connection.execute(text(sql.strip()))
-                                else:
-                                    sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column.type} {nullable} {default}"
-                                    connection.execute(text(sql.strip()))
+                                # For SQLite, we can add nullable columns directly
+                                # Only add NOT NULL if column is not nullable and has no default
+                                nullable_clause = ''
+                                if not column.nullable and not default:
+                                    nullable_clause = 'NOT NULL'
+                                
+                                # Build the SQL statement
+                                parts = [f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sqlite_type}"]
+                                if nullable_clause:
+                                    parts.append(nullable_clause)
+                                if default:
+                                    parts.append(default)
+                                
+                                sql = ' '.join(parts)
+                                connection.execute(text(sql.strip()))
+                                
+                                # If column was NOT NULL without default, update existing rows if needed
+                                if not column.nullable and not default:
+                                    # For Boolean, set to 0 (False)
+                                    if sqlite_type == 'BOOLEAN':
+                                        connection.execute(text(f"UPDATE {table_name} SET {column_name} = 0 WHERE {column_name} IS NULL"))
+                                    # For Integer, set to 0
+                                    elif sqlite_type == 'INTEGER':
+                                        connection.execute(text(f"UPDATE {table_name} SET {column_name} = 0 WHERE {column_name} IS NULL"))
+                                    # For Text/String, set to empty string
+                                    elif sqlite_type == 'TEXT':
+                                        connection.execute(text(f"UPDATE {table_name} SET {column_name} = '' WHERE {column_name} IS NULL"))
                     except Exception as e:
                         logger.error(f"Failed to add columns to table {table_name}: {str(e)}")
                         return False

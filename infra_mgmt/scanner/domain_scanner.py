@@ -384,8 +384,15 @@ class DomainScanner:
         
         Edge Cases:
             - Handles missing/invalid WHOIS data, multiple date formats, and ignore list skips.
+            - Respects offline mode configuration and skips WHOIS queries when offline.
         """
         try:
+            # Check offline mode before doing WHOIS query
+            from ..utils.network_detection import is_offline
+            if is_offline(respect_config=True):
+                self.logger.info(f"[WHOIS] Skipping WHOIS query for {domain} - System is in offline mode")
+                return {}
+            
             # Use cache if available
             cached = self.session_cache.get_whois(domain)
             if cached is not None:

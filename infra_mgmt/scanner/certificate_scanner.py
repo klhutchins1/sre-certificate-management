@@ -16,7 +16,7 @@ import socket
 import logging
 import time
 from collections import deque
-from typing import Optional, List, Dict, Set, Tuple
+from typing import Optional, List, Dict, Set, Tuple, Any
 import binascii
 from datetime import datetime, timezone
 import requests
@@ -123,6 +123,12 @@ class CertificateInfo:
         self.headers = headers or {}
         self.proxied = proxied
         self.proxy_info = proxy_info
+        
+        # Revocation status fields
+        self.revocation_status = None  # 'good', 'revoked', 'unknown', 'error', 'not_checked'
+        self.revocation_date = None
+        self.revocation_reason = None
+        self.revocation_check_method = None  # 'OCSP', 'CRL', or 'both'
         
         # Validate the certificate
         self._validate()
@@ -356,6 +362,9 @@ class CertificateScanner:
         
         # Initialize validation flags
         self._last_cert_chain = False
+        self._last_error = None
+        self._last_headers = {}
+        self._last_issuer_cert = None  # Store issuer cert from SSL chain for revocation checking
         
         # Initialize scan tracker
         from . import ScanTracker
@@ -552,6 +561,35 @@ class CertificateScanner:
                             cert_info.proxy_info = "; ".join(auth_warnings)
                         self.logger.warning(f"Certificate authenticity issues for {address}:{port}: {'; '.join(auth_warnings)}")
                 
+                # Check revocation status if enabled
+                if settings.get("scanning.revocation.check_on_scan", True):
+                    try:
+                        revocation_result = self._check_revocation_status(
+                            cert_binary,
+                            address,
+                            port,
+                            settings
+                        )
+                        if revocation_result:
+                            cert_info.revocation_status = revocation_result.get('status')
+                            cert_info.revocation_date = revocation_result.get('revocation_date')
+                            cert_info.revocation_reason = revocation_result.get('revocation_reason')
+                            cert_info.revocation_check_method = revocation_result.get('check_method')
+                            
+                            # Log revocation status
+                            if revocation_result.get('status') == 'revoked':
+                                self.logger.warning(
+                                    f"⚠️ Certificate REVOKED for {address}:{port} - "
+                                    f"Revoked on {revocation_result.get('revocation_date')}, "
+                                    f"Reason: {revocation_result.get('revocation_reason', 'Not specified')}"
+                                )
+                                warnings.append(f"Certificate is REVOKED (checked via {revocation_result.get('check_method')})")
+                            elif revocation_result.get('status') == 'error':
+                                self.logger.debug(f"Revocation check error for {address}:{port}: {revocation_result.get('error')}")
+                    except Exception as e:
+                        self.logger.warning(f"Error during revocation check for {address}:{port}: {e}")
+                        # Don't fail the scan if revocation check fails
+                
                 # Create result with warnings if any
                 if warnings:
                     result = ScanResult(certificate_info=cert_info, warnings=warnings)
@@ -578,6 +616,8 @@ class CertificateScanner:
         """
         Retrieve the certificate from the server at the given address and port.
         Returns the certificate in binary form, or None if retrieval fails.
+        
+        Also stores the certificate chain for revocation checking.
         """
         import socket
         context = ssl.create_default_context()
@@ -588,6 +628,12 @@ class CertificateScanner:
             sock = socket.create_connection((address, port), timeout=socket_timeout)
             ssock = context.wrap_socket(sock, server_hostname=address)
             cert_binary = ssock.getpeercert(binary_form=True)
+            
+            # Get certificate chain for revocation checking using pyOpenSSL
+            # We'll get the issuer certificate separately using pyOpenSSL
+            # since Python's ssl module doesn't expose the certificate chain
+            self._last_issuer_cert = self._get_issuer_certificate_pyopenssl(address, port, socket_timeout)
+            
             ssock.close()
             return cert_binary
         except ssl.SSLError as e:
@@ -619,6 +665,106 @@ class CertificateScanner:
                     sock.close()
                 except Exception:
                     pass
+    
+    def _get_issuer_certificate_pyopenssl(self, address: str, port: int, timeout: int) -> Optional[x509.Certificate]:
+        """
+        Get issuer certificate from certificate chain using pyOpenSSL.
+        
+        Args:
+            address: Hostname or IP
+            port: Port number
+            timeout: Connection timeout
+            
+        Returns:
+            cryptography x509.Certificate object for issuer, or None if not available
+        """
+        try:
+            import OpenSSL
+            from OpenSSL import SSL
+        except ImportError:
+            self.logger.debug("pyOpenSSL not available for issuer certificate retrieval")
+            return None
+        
+        try:
+            # Create OpenSSL context
+            ctx = SSL.Context(SSL.TLS_METHOD)
+            ctx.check_hostname = False
+            ctx.set_verify(SSL.VERIFY_NONE, None)
+            
+            # Create socket and OpenSSL connection
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            conn = SSL.Connection(ctx, sock)
+            
+            try:
+                # Connect and perform handshake
+                conn.connect((address, port))
+                conn.setblocking(1)
+                conn.do_handshake()
+                
+                # Get certificate chain
+                cert_chain = conn.get_peer_cert_chain()
+                
+                if cert_chain and len(cert_chain) > 1:
+                    # Issuer certificate is typically the second certificate in the chain
+                    issuer_cert_pyopenssl = cert_chain[1]
+                    
+                    # Convert pyOpenSSL certificate to cryptography certificate
+                    issuer_cert = issuer_cert_pyopenssl.to_cryptography()
+                    self.logger.debug(f"Retrieved issuer certificate for {address}:{port} from certificate chain")
+                    
+                    # Close connection before returning
+                    try:
+                        conn.shutdown()
+                    except:
+                        pass
+                    try:
+                        conn.close()
+                    except:
+                        pass
+                    
+                    return issuer_cert
+                else:
+                    self.logger.debug(f"Certificate chain too short for {address}:{port} (length: {len(cert_chain) if cert_chain else 0})")
+                    try:
+                        conn.shutdown()
+                    except:
+                        pass
+                    try:
+                        conn.close()
+                    except:
+                        pass
+                    return None
+                    
+            except SSL.Error as e:
+                self.logger.debug(f"OpenSSL error getting issuer certificate for {address}:{port}: {e}")
+                try:
+                    conn.shutdown()
+                except:
+                    pass
+                try:
+                    conn.close()
+                except:
+                    pass
+                return None
+            except Exception as e:
+                self.logger.debug(f"Error getting issuer certificate for {address}:{port}: {e}")
+                try:
+                    conn.shutdown()
+                except:
+                    pass
+                try:
+                    conn.close()
+                except:
+                    pass
+                return None
+                    
+        except socket.timeout:
+            self.logger.debug(f"Timeout getting issuer certificate for {address}:{port}")
+            return None
+        except Exception as e:
+            self.logger.debug(f"Unexpected error getting issuer certificate for {address}:{port}: {e}")
+            return None
     
     def _validate_cert_chain(self, address: str, port: int, timeout: float) -> None:
         """
@@ -679,6 +825,77 @@ class CertificateScanner:
                 self.logger.info(f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}")
             self._last_error = f"Certificate chain validation attempt failed for {address}:{port}: {str(verify_error)}"
     
+    def _check_revocation_status(
+        self,
+        cert_binary: bytes,
+        address: str,
+        port: int,
+        settings
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check certificate revocation status using OCSP/CRL.
+        
+        Args:
+            cert_binary: DER-encoded certificate bytes
+            address: Hostname/IP (for logging)
+            port: Port (for logging)
+            settings: Settings object
+            
+        Returns:
+            dict: Revocation check result or None if checking disabled/failed
+        """
+        try:
+            from ..utils.revocation_checker import RevocationChecker
+            
+            # Check if revocation checking is enabled
+            if not settings.get("scanning.revocation.check_on_scan", True):
+                return None
+            
+            enable_ocsp = settings.get("scanning.revocation.enable_ocsp", True)
+            enable_crl = settings.get("scanning.revocation.enable_crl", True)
+            
+            if not enable_ocsp and not enable_crl:
+                return None
+            
+            # Initialize revocation checker
+            ocsp_timeout = settings.get("scanning.revocation.ocsp_timeout", 5.0)
+            crl_timeout = settings.get("scanning.revocation.crl_timeout", 10.0)
+            fallback_to_crl = settings.get("scanning.revocation.fallback_to_crl", True)
+            
+            checker = RevocationChecker(
+                enable_ocsp=enable_ocsp,
+                enable_crl=enable_crl,
+                ocsp_timeout=float(ocsp_timeout),
+                crl_timeout=float(crl_timeout),
+                fallback_to_crl=fallback_to_crl
+            )
+            
+            # Load certificate
+            cert = x509.load_der_x509_certificate(cert_binary, default_backend())
+            
+            # Get issuer certificate from chain if available
+            issuer = None
+            if hasattr(self, '_last_issuer_cert') and self._last_issuer_cert:
+                # _last_issuer_cert is already a cryptography x509.Certificate object
+                # from _get_issuer_certificate_pyopenssl()
+                issuer = self._last_issuer_cert
+            
+            # If no issuer from chain, OCSP may not work (but CRL still can)
+            if not issuer and enable_ocsp:
+                self.logger.debug(f"Issuer certificate not available from chain for {address}:{port}, OCSP may be limited")
+            
+            # Check revocation
+            result = checker.check_revocation_status(cert, issuer)
+            
+            return result
+            
+        except ImportError as e:
+            self.logger.debug(f"Revocation checking not available: {e}")
+            return None
+        except Exception as e:
+            self.logger.warning(f"Error checking revocation status for {address}:{port}: {e}")
+            return None
+    
     def _check_dns_for_platform(self, domain: str) -> Optional[str]:
         """
         Check DNS records for platform indicators (Akamai, Cloudflare, etc.).
@@ -732,7 +949,7 @@ class CertificateScanner:
             
             return None
             
-        except dns.resolver.Resolver as e:
+        except (dns.resolver.ResolverError, dns.resolver.NXDOMAIN, dns.resolver.NoAnswer) as e:
             self.logger.warning(f"DNS resolver error in platform check for {domain}: {str(e)}")
             return None
         except Exception as e:

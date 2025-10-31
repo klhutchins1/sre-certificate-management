@@ -72,6 +72,79 @@ class CertificateService:
                 'last_seen': binding.last_seen,
             })
         return bindings
+    
+    def get_certificate_bindings_for_scan(self, cert_id, session, binding_ids=None):
+        """
+        Get scan targets from certificate bindings.
+        
+        Args:
+            cert_id: Certificate ID
+            session: SQLAlchemy session
+            binding_ids: Optional list of binding IDs to scan (if None, scans all IP bindings)
+            
+        Returns:
+            dict: {
+                'success': bool,
+                'targets': list of tuples (hostname/ip: str, port: int),
+                'bindings': list of binding info dicts,
+                'count': int
+            }
+        """
+        try:
+            cert = session.query(Certificate).options(
+                joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host),
+                joinedload(Certificate.certificate_bindings).joinedload(CertificateBinding.host_ip)
+            ).filter(Certificate.id == cert_id).first()
+            
+            if not cert:
+                return {'success': False, 'error': 'Certificate not found', 'targets': [], 'bindings': [], 'count': 0}
+            
+            targets = []
+            binding_infos = []
+            
+            for binding in cert.certificate_bindings:
+                # Only scan IP-based bindings (not JWT or CLIENT bindings)
+                if binding.binding_type != 'IP':
+                    continue
+                
+                # Filter by binding_ids if specified
+                if binding_ids is not None and binding.id not in binding_ids:
+                    continue
+                
+                # Determine target hostname/IP and port
+                target_host = None
+                target_port = binding.port or 443  # Default to 443 if port not specified
+                
+                # Prefer hostname over IP if both available
+                if binding.host and binding.host.name:
+                    target_host = binding.host.name
+                elif binding.host_ip and binding.host_ip.ip_address:
+                    target_host = binding.host_ip.ip_address
+                else:
+                    # Skip bindings without hostname or IP
+                    continue
+                
+                targets.append((target_host, target_port))
+                binding_infos.append({
+                    'id': binding.id,
+                    'host_name': binding.host.name if binding.host else None,
+                    'host_ip': binding.host_ip.ip_address if binding.host_ip else None,
+                    'port': target_port,
+                    'platform': binding.platform,
+                    'last_seen': binding.last_seen,
+                })
+            
+            return {
+                'success': True,
+                'targets': targets,
+                'bindings': binding_infos,
+                'count': len(targets)
+            }
+            
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception(f"Error getting certificate bindings for scan: {str(e)}")
+            return {'success': False, 'error': str(e), 'targets': [], 'bindings': [], 'count': 0}
 
     def add_host_to_certificate(self, cert_id, hostname, ip, port, platform, binding_type, session):
         """Add a new host binding to a certificate."""
@@ -396,4 +469,158 @@ class CertificateService:
             session.rollback()
             import logging
             logging.getLogger(__name__).exception(f"Error deleting tracking entry: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def check_revocation_status(self, cert_id, session):
+        """
+        Manually check revocation status for a certificate.
+        
+        Args:
+            cert_id (int): Certificate ID
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: {
+                'success': bool,
+                'status': str (if successful),
+                'error': str (if any),
+                'revocation_status': str,
+                'revocation_date': datetime or None,
+                'revocation_reason': str or None,
+                'check_method': str or None
+            }
+        """
+        try:
+            cert = session.get(Certificate, cert_id)
+            if not cert:
+                return {'success': False, 'error': 'Certificate not found'}
+            
+            # Import here to avoid circular dependencies
+            from cryptography import x509
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.backends import default_backend
+            from infra_mgmt.utils.revocation_checker import RevocationChecker
+            from infra_mgmt.settings import settings
+            
+            # Check if revocation checking is enabled
+            enable_ocsp = settings.get("scanning.revocation.enable_ocsp", True)
+            enable_crl = settings.get("scanning.revocation.enable_crl", True)
+            
+            if not enable_ocsp and not enable_crl:
+                return {
+                    'success': False,
+                    'error': 'Revocation checking is disabled in configuration'
+                }
+            
+            # Get certificate DER from database (need to reconstruct from stored data)
+            # Since we don't store the raw DER, we'll need to scan the certificate again
+            # or extract it from bindings. For now, let's try to get it from a binding.
+            
+            # Find a binding with this certificate to get the host/port for scanning
+            binding = None
+            if cert.certificate_bindings:
+                # Prefer IP-based bindings for scanning
+                binding = next(
+                    (b for b in cert.certificate_bindings if b.host_ip and b.port),
+                    cert.certificate_bindings[0]
+                )
+            
+            if not binding or not binding.host_ip or not binding.port:
+                return {
+                    'success': False,
+                    'error': 'No suitable binding found to check revocation status. Need a binding with IP address and port.'
+                }
+            
+            # Use CertificateScanner to scan and get the certificate
+            try:
+                from infra_mgmt.scanner.certificate_scanner import CertificateScanner
+            except ImportError as e:
+                return {
+                    'success': False,
+                    'error': f'CertificateScanner not available: {str(e)}. Please ensure all dependencies are installed.'
+                }
+            
+            try:
+                scanner = CertificateScanner()
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': f'Failed to initialize CertificateScanner: {str(e)}'
+                }
+            
+            # Scan to get the certificate binary and issuer
+            address = binding.host_ip.ip_address
+            port = binding.port
+            
+            # Use the internal _get_certificate method to get the certificate binary
+            try:
+                cert_binary = scanner._get_certificate(address, port)
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': f'Failed to retrieve certificate from {address}:{port}: {str(e)}'
+                }
+            
+            if not cert_binary:
+                return {
+                    'success': False,
+                    'error': 'Could not retrieve certificate binary for revocation checking'
+                }
+            
+            # Load certificate from binary
+            cert_x509 = x509.load_der_x509_certificate(cert_binary, default_backend())
+            
+            # Get issuer certificate (should be set by _get_certificate)
+            issuer_x509 = None
+            if hasattr(scanner, '_last_issuer_cert') and scanner._last_issuer_cert:
+                issuer_x509 = scanner._last_issuer_cert
+            
+            # Initialize revocation checker
+            ocsp_timeout = settings.get("scanning.revocation.ocsp_timeout", 5.0)
+            crl_timeout = settings.get("scanning.revocation.crl_timeout", 10.0)
+            fallback_to_crl = settings.get("scanning.revocation.fallback_to_crl", True)
+            
+            checker = RevocationChecker(
+                enable_ocsp=enable_ocsp,
+                enable_crl=enable_crl,
+                ocsp_timeout=float(ocsp_timeout),
+                crl_timeout=float(crl_timeout),
+                fallback_to_crl=fallback_to_crl
+            )
+            
+            # Check revocation status
+            revocation_result = checker.check_revocation_status(cert_x509, issuer_x509)
+            
+            # Update certificate with revocation status
+            cert.revocation_status = revocation_result.get('status', 'unknown')
+            cert.revocation_date = revocation_result.get('revocation_date')
+            cert.revocation_reason = revocation_result.get('revocation_reason')
+            cert.revocation_check_method = revocation_result.get('check_method')
+            cert.revocation_last_checked = datetime.now()
+            
+            # Set OCSP cache expiration if OCSP was used
+            if revocation_result.get('check_method') in ('OCSP', 'both'):
+                ocsp_result = revocation_result.get('ocsp_result')
+                if ocsp_result and ocsp_result.get('next_update'):
+                    cert.ocsp_response_cached_until = ocsp_result.get('next_update')
+                else:
+                    # Default cache time
+                    from datetime import timedelta
+                    cert.ocsp_response_cached_until = datetime.now() + timedelta(hours=24)
+            
+            session.commit()
+            
+            return {
+                'success': True,
+                'status': 'Revocation check completed',
+                'revocation_status': cert.revocation_status,
+                'revocation_date': cert.revocation_date,
+                'revocation_reason': cert.revocation_reason,
+                'check_method': cert.revocation_check_method
+            }
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error checking revocation status: {str(e)}")
             return {'success': False, 'error': str(e)}

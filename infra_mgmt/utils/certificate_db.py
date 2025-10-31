@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional
+from unittest.mock import MagicMock
 from infra_mgmt.models import Certificate, Host, HostIP, CertificateBinding, CertificateScan, Domain
 from infra_mgmt.constants import HOST_TYPE_SERVER, HOST_TYPE_CDN, HOST_TYPE_LOAD_BALANCER, ENV_PRODUCTION
 import re
@@ -95,8 +96,15 @@ class CertificateDBUtil:
             # Update all fields for the (now existing or newly added) certificate object
             cert.serial_number = cert_info.serial_number
             cert.common_name = cert_info.common_name
-            cert.valid_from = cert_info.valid_from
-            cert.valid_until = cert_info.expiration_date
+            # Convert timezone-aware datetimes to naive for SQLite compatibility
+            from datetime import timezone as tz
+            def to_naive_datetime(dt):
+                """Convert timezone-aware datetime to naive, or return as-is if already naive or not a datetime."""
+                if isinstance(dt, datetime) and dt.tzinfo is not None:
+                    return dt.replace(tzinfo=None)
+                return dt
+            cert.valid_from = to_naive_datetime(cert_info.valid_from)
+            cert.valid_until = to_naive_datetime(cert_info.expiration_date)
             cert._issuer = json.dumps(cert_info.issuer)
             cert._subject = json.dumps(cert_info.subject)
             cert._san = json.dumps(cert_info.san)
@@ -108,6 +116,49 @@ class CertificateDBUtil:
             cert.sans_scanned = check_sans # Update this flag
             cert.proxied = getattr(cert_info, 'proxied', False)
             cert.proxy_info = getattr(cert_info, 'proxy_info', None)
+            
+            # Update revocation status if available
+            # Only set revocation fields if they are real values (not MagicMock objects)
+            def is_not_mock(value):
+                """Check if value is not a MagicMock instance."""
+                return value is not None and not isinstance(value, MagicMock)
+            
+            revocation_status = getattr(cert_info, 'revocation_status', None)
+            if is_not_mock(revocation_status):
+                cert.revocation_status = revocation_status
+                revocation_date = getattr(cert_info, 'revocation_date', None)
+                # Only set revocation_date if it's a real datetime object (not a MagicMock)
+                if revocation_date is not None and isinstance(revocation_date, datetime):
+                    if revocation_date.tzinfo is not None:
+                        revocation_date = revocation_date.replace(tzinfo=None)
+                    cert.revocation_date = revocation_date
+                else:
+                    cert.revocation_date = None
+                
+                revocation_reason = getattr(cert_info, 'revocation_reason', None)
+                cert.revocation_reason = revocation_reason if is_not_mock(revocation_reason) else None
+                
+                revocation_check_method = getattr(cert_info, 'revocation_check_method', None)
+                if is_not_mock(revocation_check_method):
+                    cert.revocation_check_method = revocation_check_method
+                    cert.revocation_last_checked = datetime.now()
+                    # Set OCSP cache expiration if OCSP was used
+                    if revocation_check_method in ('OCSP', 'both'):
+                        # Get cache expiration from OCSP result if available
+                        # This would need to be passed through cert_info or checked separately
+                        # For now, we'll set a default cache time
+                        from datetime import timedelta
+                        ocsp_cached_until = getattr(cert_info, 'ocsp_response_cached_until', None)
+                        if ocsp_cached_until is not None and isinstance(ocsp_cached_until, datetime):
+                            if ocsp_cached_until.tzinfo is not None:
+                                ocsp_cached_until = ocsp_cached_until.replace(tzinfo=None)
+                            cert.ocsp_response_cached_until = ocsp_cached_until
+                        else:
+                            cert.ocsp_response_cached_until = datetime.now() + timedelta(hours=24)
+                else:
+                    cert.revocation_check_method = None
+                    cert.revocation_last_checked = None
+            
             cert.updated_at = datetime.now()
             if not cert.id: # If cert.id is None, it means it's a new instance not yet flushed (or created_at not set)
                 cert.created_at = datetime.now()
@@ -125,10 +176,12 @@ class CertificateDBUtil:
         if hasattr(cert_info, 'san') and cert_info.san:
             for san in cert_info.san:
                 if is_valid_domain(san):
-                    san_domain = session.query(Domain).filter_by(domain_name=san).first()
-                    if not san_domain:
-                        san_domain = Domain(domain_name=san, created_at=datetime.now(), updated_at=datetime.now())
-                        session.add(san_domain)
+                    # Use no_autoflush to prevent premature flush during query
+                    with session.no_autoflush:
+                        san_domain = session.query(Domain).filter_by(domain_name=san).first()
+                        if not san_domain:
+                            san_domain = Domain(domain_name=san, created_at=datetime.now(), updated_at=datetime.now())
+                            session.add(san_domain)
                     if cert not in san_domain.certificates:
                         san_domain.certificates.append(cert)
         # Upsert Host

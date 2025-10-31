@@ -68,6 +68,14 @@ class Certificate(Base):
     override_notes = Column(Text, nullable=True)  # Notes about the override
     override_created_at = Column(DateTime, nullable=True)  # When override was created
     
+    # Revocation status fields
+    revocation_status = Column(String, nullable=True)  # 'good', 'revoked', 'unknown', 'error', 'not_checked'
+    revocation_date = Column(DateTime, nullable=True)  # When certificate was revoked
+    revocation_reason = Column(String, nullable=True)  # Reason for revocation
+    revocation_check_method = Column(String, nullable=True)  # 'OCSP', 'CRL', or 'both'
+    revocation_last_checked = Column(DateTime, nullable=True)  # Last time revocation was checked
+    ocsp_response_cached_until = Column(DateTime, nullable=True)  # OCSP response cache expiration
+    
     certificate_bindings = relationship("CertificateBinding", back_populates="certificate", cascade="all, delete-orphan")
     tracking_entries = relationship("CertificateTracking", back_populates="certificate", cascade="all, delete-orphan")
     scans = relationship("CertificateScan", back_populates="certificate", cascade="all, delete-orphan")

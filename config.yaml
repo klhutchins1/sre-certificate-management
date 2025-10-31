@@ -107,6 +107,13 @@ scanning:
     domains: []
     rate_limit: 120
   offline_mode: false
+  revocation:
+    check_on_scan: true
+    crl_timeout: 10.0
+    enable_crl: true
+    enable_ocsp: true
+    fallback_to_crl: true
+    ocsp_timeout: 5.0
   timeouts:
     dns: 2.0
     request: 2

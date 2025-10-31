@@ -163,15 +163,44 @@ def render_scan_interface(engine) -> None:
     
     render_page_header(title="Domain & Certificate Scanner")
     
-    # Display Offline Mode indicator if enabled
-    is_offline = settings.get("scanning.offline_mode", False)
-    if is_offline:
-        notify(
-            "📢 **Offline Mode Enabled:** External lookups (Whois, CT Logs) are disabled. "
-            "DNS resolution may be limited to local network and cached entries.",
-            level='info',
-            page_key=SCANNER_PAGE_KEY
-        )
+    # Display Offline Mode indicator
+    from ..utils.network_detection import check_offline_mode, is_offline
+    config_offline = settings.get("scanning.offline_mode", False)
+    detected_offline, network_details = check_offline_mode(force_check=False)
+    is_offline_active = is_offline(respect_config=True)
+    
+    # Show offline mode status
+    if is_offline_active or detected_offline:
+        if config_offline:
+            notify(
+                "📢 **Offline Mode Enabled (Config):** External lookups (Whois, CT Logs) are disabled. "
+                "DNS resolution may be limited to local network and cached entries.",
+                level='info',
+                page_key=SCANNER_PAGE_KEY
+            )
+        elif detected_offline:
+            notify(
+                f"⚠️ **Offline Mode Detected:** No internet connectivity detected. "
+                f"External lookups (Whois, CT Logs) will be skipped. "
+                f"To enable offline mode permanently, update config.yaml: scanning.offline_mode: true",
+                level='warning',
+                page_key=SCANNER_PAGE_KEY
+            )
+        
+        # Show network details in expander
+        with st.expander("📊 Network Status Details"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("DNS Available", "✅ Yes" if network_details.get('dns_available') else "❌ No")
+                st.metric("Internet Available", "✅ Yes" if network_details.get('internet_available') else "❌ No")
+            with col2:
+                st.metric("Config Setting", "Offline" if config_offline else "Online")
+                st.metric("Detected State", "Offline" if detected_offline else "Online")
+                if network_details.get('check_timestamp'):
+                    from datetime import datetime
+                    check_time = datetime.fromtimestamp(network_details['check_timestamp'])
+                    st.caption(f"Last check: {check_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
         # Show notifications immediately after adding offline mode notification
         with notification_placeholder.container():
             show_notifications(SCANNER_PAGE_KEY)

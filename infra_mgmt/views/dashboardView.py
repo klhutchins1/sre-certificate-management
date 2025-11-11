@@ -19,187 +19,16 @@ of their certificate infrastructure and identify potential issues requiring atte
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import func, select, case
-from ..models import (
-    Certificate, Host, Domain, Application,
-    CertificateBinding
-)
+from datetime import datetime
 import plotly.express as px
-from infra_mgmt.utils.SessionManager import SessionManager
 from ..static.styles import load_warning_suppression, load_css
-from collections import defaultdict
-from ..notifications import initialize_page_notifications, show_notifications, notify, clear_page_notifications
+from ..notifications import initialize_page_notifications, show_notifications, notify
 from ..monitoring import monitor_rendering, performance_metrics
-import functools
-from typing import Dict, Any, Optional
-import logging
-from ..services.DashboardService import DashboardService
 from ..services.ViewDataService import ViewDataService
 from infra_mgmt.components.page_header import render_page_header
 from infra_mgmt.components.metrics_row import render_metrics_row
 
-# Cache for dashboard data
-_dashboard_cache: Dict[str, Any] = {}
-_cache_timeout = 300  # 5 minutes
-
-DASHBOARD_PAGE_KEY = "dashboard" # Define page key
-
-def get_cached_data(key: str) -> Optional[Any]:
-    """Get data from cache if it exists and is not expired."""
-    if key in _dashboard_cache:
-        data, timestamp = _dashboard_cache[key]
-        if (datetime.now() - timestamp).total_seconds() < _cache_timeout:
-            return data
-    return None
-
-def set_cached_data(key: str, data: Any) -> None:
-    """Store data in cache with current timestamp."""
-    _dashboard_cache[key] = (data, datetime.now())
-
-def clear_cache() -> None:
-    """Clear the dashboard cache."""
-    _dashboard_cache.clear()
-
-@functools.lru_cache(maxsize=100)
-def get_root_domain(domain_name: str) -> str:
-    """Cached version of root domain calculation."""
-    parts = domain_name.split('.')
-    if len(parts) >= 2:
-        return '.'.join(parts[-2:])
-    return domain_name
-
-def get_domain_hierarchy(domains):
-    """
-    Organize domains into a hierarchy of parent domains and subdomains.
-    Only returns true root domains (e.g., example.com, not sub.example.com).
-    """
-    domain_tree = defaultdict(list)
-    all_domain_names = {domain.domain_name for domain in domains}
-    
-    # First identify all possible root domains from all domain names
-    root_domains = set()
-    for domain in domains:
-        root_name = get_root_domain(domain.domain_name)
-        root_domains.add(root_name)
-    
-    # Initialize the tree with root domains
-    for root_name in root_domains:
-        # Find or create a Domain object for the root domain
-        root_domain = next((d for d in domains if d.domain_name == root_name), None)
-        if root_domain:
-            # Root domain exists in database
-            domain_tree[root_name] = []
-        else:
-            # Root domain only exists as part of subdomains
-            # Only add it if it has subdomains
-            subdomains = [d for d in domains if get_root_domain(d.domain_name) == root_name]
-            if subdomains:
-                domain_tree[root_name] = []
-    
-    # Organize subdomains under their root domains
-    for domain in domains:
-        root_name = get_root_domain(domain.domain_name)
-        if root_name in domain_tree and domain.domain_name != root_name:
-            domain_tree[root_name].append(domain)
-    
-    # Sort subdomains within each root domain
-    for root_name in domain_tree:
-        domain_tree[root_name].sort(key=lambda d: d.domain_name)
-    
-    return domain_tree
-
-def get_root_domains(session, domains=None):
-    """Get all root domains (e.g., example.com, not sub.example.com)."""
-    # Use provided domains or query if not provided
-    if domains is None:
-        domains = session.query(Domain).all()
-    
-    # Get domain hierarchy using set operations for better performance
-    root_domain_names = {get_root_domain(d.domain_name) for d in domains}
-    root_domains = [d for d in domains if d.domain_name in root_domain_names]
-    
-    # Update registration info in bulk if needed
-    domains_to_update = []
-    for domain in root_domains:
-        if not domain.registration_date or not domain.expiration_date:
-            domain.registration_date = datetime(2007, 5, 31, 21, 27, 42)
-            domain.expiration_date = datetime(2025, 5, 31, 21, 27, 42)
-            domain.updated_at = datetime.now()
-            domains_to_update.append(domain)
-    
-    # Bulk update if needed
-    if domains_to_update:
-        session.bulk_save_objects(domains_to_update, update_changed_only=True)
-        session.commit()
-    
-    return root_domains
-
-def get_root_domains_count(session):
-    """Count the number of root domains."""
-    return len(get_root_domains(session))
-
-def get_dashboard_metrics(session: Session) -> Dict[str, Any]:
-    """Get all dashboard metrics in a single optimized query."""
-    cache_key = 'dashboard_metrics'
-    cached_data = get_cached_data(cache_key)
-    if cached_data:
-        return cached_data
-
-    thirty_days = datetime.now() + timedelta(days=30)
-    now = datetime.now()
-    
-    # Get certificate metrics
-    cert_metrics_query = select(
-        func.count(func.distinct(Certificate.id)).label('total_certs'),
-        func.sum(
-            case(
-                (Certificate.valid_until <= thirty_days, 1),
-                else_=0
-            )
-        ).label('expiring_certs')
-    ).select_from(Certificate)
-    
-    cert_result = session.execute(cert_metrics_query).first()
-    
-    # Get domain count separately
-    domain_count = session.query(func.count(func.distinct(Domain.id))).scalar()
-    
-    # Get application count
-    app_count = session.query(func.count(func.distinct(Application.id))).scalar()
-    
-    # Get host count
-    host_count = session.query(func.count(func.distinct(Host.id))).scalar()
-    
-    # Get domains with optimized query
-    domains = session.query(Domain).options(
-        selectinload(Domain.certificates)
-    ).all()
-    
-    # Calculate root domains efficiently
-    root_domain_names = {get_root_domain(d.domain_name) for d in domains}
-    root_domains = [d for d in domains if d.domain_name in root_domain_names]
-    
-    # Calculate metrics
-    metrics = {
-        'total_certs': cert_result.total_certs or 0,
-        'expiring_certs': cert_result.expiring_certs or 0,
-        'total_domains': domain_count or 0,
-        'total_root_domains': len(root_domains),
-        'expiring_domains': sum(
-            1 for d in root_domains
-            if d.expiration_date and now < d.expiration_date <= thirty_days
-        ),
-        'total_apps': app_count or 0,
-        'total_hosts': host_count or 0,
-        'total_subdomains': (domain_count or 0) - len(root_domains),
-        'root_domains': root_domains
-    }
-    
-    # Cache the results
-    set_cached_data(cache_key, metrics)
-    return metrics
+DASHBOARD_PAGE_KEY = "dashboard"  # Define page key
 
 def create_timeline(df, title, height=500, color='rgb(31, 119, 180)', title_size=24):
     """Create a standardized timeline visualization."""
@@ -260,14 +89,6 @@ def create_timeline(df, title, height=500, color='rgb(31, 119, 180)', title_size
     )
     
     return fig
-
-def update_domain_registration_info(domain):
-    """Update domain registration and expiration dates if not set."""
-    if not domain.registration_date or not domain.expiration_date:
-        # Set some reasonable defaults for now
-        domain.registration_date = datetime(2007, 5, 31, 21, 27, 42)
-        domain.expiration_date = datetime(2025, 5, 31, 21, 27, 42)
-        domain.updated_at = datetime.now()
 
 @monitor_rendering("performance_metrics")
 def render_performance_metrics():

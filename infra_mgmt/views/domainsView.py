@@ -105,19 +105,6 @@ def get_domain_hierarchy(domains):
     
     return root_domains, domain_tree
 
-def get_root_domain_info(domain_name, domains):
-    """
-    Get registration information from the root domain.
-    For example: w1.mercurypay.com would get info from mercurypay.com
-    """
-    parts = domain_name.split('.')
-    if len(parts) > 2:
-        root_name = '.'.join(parts[-2:])  # Get root domain (e.g., mercurypay.com)
-        # Find the root domain in our domains list
-        root_domain = next((d for d in domains if d.domain_name == root_name), None)
-        return root_domain
-    return None
-
 def any_descendant_has_cert(domain, domain_hierarchy, visited=None):
     if visited is None:
         visited = set()

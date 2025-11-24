@@ -10,12 +10,9 @@ from ..models import Certificate, IgnoredDomain, IgnoredCertificate
 from infra_mgmt.utils.SessionManager import SessionManager
 from ..exports import (
     export_certificates_to_csv,
-    export_certificates_to_pdf,
-    export_hosts_to_csv,
-    export_hosts_to_pdf
+    export_hosts_to_csv
 )
 from ..backup import create_backup
-from .CertificateExportService import CertificateExportService
 from sqlalchemy.orm import Session
 
 class SettingsService:
@@ -144,40 +141,38 @@ class SettingsService:
         return settings.save()
 
     @staticmethod
-    def export_certificates_to_csv(engine) -> Tuple[bool, str]:
+    def export_certificates_to_csv(engine) -> Tuple[bool, Union[str, Tuple[bytes, str]]]:
+        """
+        Export certificates to CSV and return file data for download.
+        Returns: (success, (file_data, filename)) or (False, error_message)
+        """
         try:
             with SessionManager(engine) as session:
                 output_path = export_certificates_to_csv(session)
-            return True, output_path
+                # Read the file and return its contents
+                with open(output_path, 'rb') as f:
+                    file_data = f.read()
+                # Extract filename from path
+                filename = Path(output_path).name
+                return True, (file_data, filename)
         except Exception as e:
             return False, str(e)
 
     @staticmethod
-    def export_certificates_to_pdf(engine) -> Tuple[bool, str]:
-        try:
-            with SessionManager(engine) as session:
-                certificates = session.query(Certificate).all()
-                output_path = "certificates_export.pdf"
-                CertificateExportService.export_certificates_to_pdf(certificates, output_path)
-            return True, output_path
-        except Exception as e:
-            return False, str(e)
-
-    @staticmethod
-    def export_hosts_to_csv(engine) -> Tuple[bool, str]:
+    def export_hosts_to_csv(engine) -> Tuple[bool, Union[str, Tuple[bytes, str]]]:
+        """
+        Export hosts to CSV and return file data for download.
+        Returns: (success, (file_data, filename)) or (False, error_message)
+        """
         try:
             with SessionManager(engine) as session:
                 output_path = export_hosts_to_csv(session)
-            return True, output_path
-        except Exception as e:
-            return False, str(e)
-
-    @staticmethod
-    def export_hosts_to_pdf(engine) -> Tuple[bool, str]:
-        try:
-            with SessionManager(engine) as session:
-                output_path = export_hosts_to_pdf(session)
-            return True, output_path
+                # Read the file and return its contents
+                with open(output_path, 'rb') as f:
+                    file_data = f.read()
+                # Extract filename from path
+                filename = Path(output_path).name
+                return True, (file_data, filename)
         except Exception as e:
             return False, str(e)
 

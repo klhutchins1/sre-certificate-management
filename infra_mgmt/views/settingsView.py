@@ -10,15 +10,15 @@ Key Features:
   - Path settings (database, backups)
   - Scanning configuration (rate limits, domain settings)
   - Alert settings (expiry warnings, scan failures)
-  - Export settings (CSV/PDF configuration)
+  - Export settings (CSV configuration)
 - Backup Management:
   - Create system backups (database and configuration)
   - List available backups
   - Restore from backups
   - Backup verification and validation
 - Export Capabilities:
-  - Certificate exports (CSV/PDF)
-  - Host exports (CSV/PDF)
+  - Certificate exports (CSV)
+  - Host exports (CSV)
   - Custom export configuration
 - Alert Configuration:
   - Certificate expiry warnings
@@ -92,8 +92,8 @@ def render_settings_view(engine) -> None:
                 - Delimiter settings
                 - Encoding options
             - Export functionality:
-                - Certificate exports (CSV/PDF)
-                - Host exports (CSV/PDF)
+                - Certificate exports (CSV)
+                - Host exports (CSV)
                 - Real-time export generation
 
     The interface provides immediate feedback for all operations and
@@ -408,6 +408,13 @@ def render_settings_view(engine) -> None:
                 notify("Failed to save export settings", "error", page_key=SETTINGS_PAGE_KEY)
         st.divider()
         st.subheader("Generate Reports")
+        
+        # Initialize session state for export files if not exists
+        if 'export_cert_csv' not in st.session_state:
+            st.session_state.export_cert_csv = None
+        if 'export_host_csv' not in st.session_state:
+            st.session_state.export_host_csv = None
+        
         col1, col2 = st.columns(2)
         with col1:
             st.write("Certificate Reports")
@@ -415,32 +422,46 @@ def render_settings_view(engine) -> None:
                 clear_page_notifications(SETTINGS_PAGE_KEY)
                 success, result = SettingsService.export_certificates_to_csv(engine)
                 if success:
-                    notify(f"Certificates exported to CSV: {result}", "success", page_key=SETTINGS_PAGE_KEY)
+                    file_data, filename = result
+                    st.session_state.export_cert_csv = (file_data, filename)
+                    notify(f"Certificates exported to CSV: {filename}", "success", page_key=SETTINGS_PAGE_KEY)
                 else:
+                    st.session_state.export_cert_csv = None
                     notify(f"Failed to export certificates to CSV: {result}", "error", page_key=SETTINGS_PAGE_KEY)
-            if st.button("Export Certificates to PDF"):
-                clear_page_notifications(SETTINGS_PAGE_KEY)
-                success, result = SettingsService.export_certificates_to_pdf(engine)
-                if success:
-                    notify(f"Certificates exported to PDF: {result}", "success", page_key=SETTINGS_PAGE_KEY)
-                else:
-                    notify(f"Failed to export certificates to PDF: {result}", "error", page_key=SETTINGS_PAGE_KEY)
+            
+            # Show download button if file is available
+            if st.session_state.export_cert_csv is not None:
+                file_data, filename = st.session_state.export_cert_csv
+                st.download_button(
+                    label="📥 Download Certificates CSV",
+                    data=file_data,
+                    file_name=filename,
+                    mime="text/csv",
+                    key="download_cert_csv"
+                )
         with col2:
             st.write("Host Reports")
             if st.button("Export Hosts to CSV"):
                 clear_page_notifications(SETTINGS_PAGE_KEY)
                 success, result = SettingsService.export_hosts_to_csv(engine)
                 if success:
-                    notify(f"Hosts exported to CSV: {result}", "success", page_key=SETTINGS_PAGE_KEY)
+                    file_data, filename = result
+                    st.session_state.export_host_csv = (file_data, filename)
+                    notify(f"Hosts exported to CSV: {filename}", "success", page_key=SETTINGS_PAGE_KEY)
                 else:
+                    st.session_state.export_host_csv = None
                     notify(f"Failed to export hosts to CSV: {result}", "error", page_key=SETTINGS_PAGE_KEY)
-            if st.button("Export Hosts to PDF"):
-                clear_page_notifications(SETTINGS_PAGE_KEY)
-                success, result = SettingsService.export_hosts_to_pdf(engine)
-                if success:
-                    notify(f"Hosts exported to PDF: {result}", "success", page_key=SETTINGS_PAGE_KEY)
-                else:
-                    notify(f"Failed to export hosts to PDF: {result}", "error", page_key=SETTINGS_PAGE_KEY)
+            
+            # Show download button if file is available
+            if st.session_state.export_host_csv is not None:
+                file_data, filename = st.session_state.export_host_csv
+                st.download_button(
+                    label="📥 Download Hosts CSV",
+                    data=file_data,
+                    file_name=filename,
+                    mime="text/csv",
+                    key="download_host_csv"
+                )
 
     # Ignore Lists Tab
     with tabs[4]:
@@ -573,9 +594,10 @@ def render_settings_view(engine) -> None:
     with tabs[5]:
         st.header("Proxy Detection Settings")
         try:
-            current_fingerprints = settings.get("proxy_detection.fingerprints", [])
-            current_subjects = settings.get("proxy_detection.subjects", [])
-            current_serials = settings.get("proxy_detection.serials", [])
+            # Use correct keys with "ca_" prefix
+            current_fingerprints = settings.get("proxy_detection.ca_fingerprints", [])
+            current_subjects = settings.get("proxy_detection.ca_subjects", [])
+            current_serials = settings.get("proxy_detection.ca_serials", [])
             proxy_enabled = settings.get("proxy_detection.enabled", True)
             summary_md = f"""
 **Proxy Detection Enabled:** {proxy_enabled}
@@ -597,29 +619,50 @@ def render_settings_view(engine) -> None:
         )
         ca_fingerprints = st.text_area(
             "Known Proxy CA Fingerprints (one per line, SHA256)",
-            value="\n".join(current_fingerprints),
+            value="\n".join(current_fingerprints) if current_fingerprints else "",
             help="Add SHA256 fingerprints of known proxy CA certificates. One per line."
         )
         ca_subjects = st.text_area(
             "Known Proxy CA Subjects (one per line)",
-            value="\n".join(current_subjects),
+            value="\n".join(current_subjects) if current_subjects else "",
             help="Add subject strings of known proxy CA certificates. One per line."
         )
         ca_serials = st.text_area(
             "Known Proxy CA Serial Numbers (one per line)",
-            value="\n".join(current_serials),
+            value="\n".join(current_serials) if current_serials else "",
             help="Add serial numbers of known proxy CA certificates. One per line."
         )
         if st.button("Save Proxy Detection Settings"):
             clear_page_notifications(SETTINGS_PAGE_KEY)
-            SettingsService.save_proxy_detection_settings(
-                settings,
-                proxy_enabled,
-                [f.strip() for f in ca_fingerprints.split("\n") if f.strip()],
-                [s.strip() for s in ca_subjects.split("\n") if s.strip()],
-                [sn.strip() for sn in ca_serials.split("\n") if sn.strip()]
-            )
-            notify("Proxy detection settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
+            try:
+                # Get other proxy detection settings to preserve them
+                bypass_external = settings.get("proxy_detection.bypass_external", False)
+                bypass_patterns = settings.get("proxy_detection.bypass_patterns", [])
+                proxy_hostnames = settings.get("proxy_detection.proxy_hostnames", [])
+                enable_hostname_validation = settings.get("proxy_detection.enable_hostname_validation", True)
+                enable_authenticity_validation = settings.get("proxy_detection.enable_authenticity_validation", True)
+                warn_on_proxy_detection = settings.get("proxy_detection.warn_on_proxy_detection", True)
+                
+                success = SettingsService.save_proxy_detection_settings(
+                    settings,
+                    proxy_enabled,
+                    [f.strip() for f in ca_fingerprints.split("\n") if f.strip()],
+                    [s.strip() for s in ca_subjects.split("\n") if s.strip()],
+                    [sn.strip() for sn in ca_serials.split("\n") if sn.strip()],
+                    bypass_external=bypass_external,
+                    bypass_patterns=bypass_patterns,
+                    proxy_hostnames=proxy_hostnames,
+                    enable_hostname_validation=enable_hostname_validation,
+                    enable_authenticity_validation=enable_authenticity_validation,
+                    warn_on_proxy_detection=warn_on_proxy_detection
+                )
+                if success:
+                    notify("Proxy detection settings updated successfully!", "success", page_key=SETTINGS_PAGE_KEY)
+                    st.rerun()  # Refresh the page to show updated values
+                else:
+                    notify("Failed to save proxy detection settings", "error", page_key=SETTINGS_PAGE_KEY)
+            except Exception as e:
+                notify(f"Error saving proxy detection settings: {str(e)}", "error", page_key=SETTINGS_PAGE_KEY)
 
     # Cache Management Tab
     with tabs[6]:

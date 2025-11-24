@@ -585,10 +585,13 @@ class CertificateScanner:
                                 )
                                 warnings.append(f"Certificate is REVOKED (checked via {revocation_result.get('check_method')})")
                             elif revocation_result.get('status') == 'error':
-                                self.logger.debug(f"Revocation check error for {address}:{port}: {revocation_result.get('error')}")
+                                # Log as debug to reduce noise - revocation check errors are expected in some cases
+                                error_msg = revocation_result.get('error', 'Unknown error')
+                                self.logger.debug(f"Revocation check error for {address}:{port}: {error_msg}")
                     except Exception as e:
-                        self.logger.warning(f"Error during revocation check for {address}:{port}: {e}")
-                        # Don't fail the scan if revocation check fails
+                        # Log as debug to reduce noise - don't fail the scan if revocation check fails
+                        self.logger.debug(f"Error during revocation check for {address}:{port}: {e}")
+                        # Don't fail the scan if revocation check fails - revocation is optional
                 
                 # Create result with warnings if any
                 if warnings:

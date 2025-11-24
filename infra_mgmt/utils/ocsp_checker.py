@@ -293,18 +293,25 @@ class OCSPChecker:
             # OCSPResponse -> responses -> SingleResponse -> cert_status
             try:
                 # Try newer API structure
-                if hasattr(response, 'responses') and len(response.responses) > 0:
-                    single_response = response.responses[0]
-                    cert_status = single_response.certificate_status
-                    
-                    if hasattr(single_response, 'revocation_time'):
-                        revocation_time = single_response.revocation_time
-                    if hasattr(single_response, 'revocation_reason'):
-                        revocation_reason = single_response.revocation_reason
-                    if hasattr(single_response, 'this_update'):
-                        this_update = single_response.this_update
-                    if hasattr(single_response, 'next_update'):
-                        next_update = single_response.next_update
+                # Note: response.responses is an iterator, not a list
+                if hasattr(response, 'responses'):
+                    # Convert iterator to list to check length and access first element
+                    responses_list = list(response.responses)
+                    if len(responses_list) > 0:
+                        single_response = responses_list[0]
+                        cert_status = single_response.certificate_status
+                        
+                        if hasattr(single_response, 'revocation_time'):
+                            revocation_time = single_response.revocation_time
+                        if hasattr(single_response, 'revocation_reason'):
+                            revocation_reason = single_response.revocation_reason
+                        if hasattr(single_response, 'this_update'):
+                            this_update = single_response.this_update
+                        if hasattr(single_response, 'next_update'):
+                            next_update = single_response.next_update
+                    else:
+                        # No responses in iterator
+                        cert_status = None
                         
             except (AttributeError, IndexError) as e:
                 # Try alternative API structure

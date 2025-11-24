@@ -255,8 +255,35 @@ class CRLChecker:
         cert_serial = cert.serial_number
         
         try:
-            revoked_certs = crl.get_revoked_certificates()
+            # In newer versions of cryptography, get_revoked_certificates() might not exist
+            # or might return an iterator. Try multiple approaches.
+            revoked_certs = None
+            if hasattr(crl, 'get_revoked_certificates'):
+                try:
+                    revoked_certs = crl.get_revoked_certificates()
+                    # If it's an iterator, convert to list
+                    if revoked_certs and not isinstance(revoked_certs, list):
+                        try:
+                            revoked_certs = list(revoked_certs)
+                        except (TypeError, AttributeError):
+                            # If conversion fails, try iterating directly
+                            pass
+                except AttributeError:
+                    # Method doesn't exist or has different signature
+                    pass
+            elif hasattr(crl, 'revoked_certificates'):
+                # Direct attribute access (some versions)
+                revoked_certs = crl.revoked_certificates
+            
             if revoked_certs:
+                # Handle both list and iterator cases
+                if not isinstance(revoked_certs, list):
+                    try:
+                        revoked_certs = list(revoked_certs)
+                    except (TypeError, AttributeError):
+                        # If we can't convert, try iterating
+                        pass
+                
                 for revoked_cert in revoked_certs:
                     if revoked_cert.serial_number == cert_serial:
                         # Certificate is revoked

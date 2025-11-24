@@ -66,7 +66,7 @@ ignore_lists:
     skip_scanning: true
 paths:
   backups: \\unraid\upload\data\certificates.db
-  database: \\unraid\upload\data\certificates.db
+  database: data\certificates.db
 proxy_detection:
   bypass_external: false
   bypass_patterns:
@@ -75,9 +75,12 @@ proxy_detection:
   - '*.microsoft.com'
   - '*.amazon.com'
   - '*.cloudflare.com'
-  ca_fingerprints: []
-  ca_serials: []
-  ca_subjects: []
+  ca_fingerprints:
+  - '123'
+  ca_serials:
+  - asd
+  ca_subjects:
+  - '7856337457453'
   enable_authenticity_validation: true
   enable_hostname_validation: true
   enabled: true

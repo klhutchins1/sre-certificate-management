@@ -438,9 +438,25 @@ class ScanManager:
                 if target_key not in self.scan_results["success"]:
                     self.scan_results["success"].append(target_key)
             else:
-                # Patch: If scan_certificate fails, record as error (not just warning)
+                # No certificate found - still process DNS/WHOIS and save domain info
+                error_msg = None
+                if cert_result and cert_result.error:
+                    error_msg = cert_result.error
+                else:
+                    error_msg = "No certificate found"
+                
+                self.logger.info(f"[SCAN] No certificate found for {domain}:{port} - {error_msg}")
                 self.scan_results["warning"].append(f"{domain}:{port} - No certificate found")
-                self.scan_results["error"].append(f"{domain}:{port} - Certificate scan failed or no certificate info")
+                self.scan_results["no_cert"].append(f"{domain}:{port}")
+                
+                # Ensure domain object is saved even without certificate
+                try:
+                    domain_obj.updated_at = datetime.now()
+                    session.commit()
+                except Exception as e:
+                    self.logger.error(f"Error committing domain without certificate for {domain}: {str(e)}")
+                    session.rollback()
+            
             # 2. getDNSRecords
             dns_records = []
             if kwargs.get('check_dns', True):  # Default to True for backward compatibility
@@ -561,6 +577,17 @@ class ScanManager:
                 self.logger.info(f"[SCAN] Subdomain scanning disabled for {domain}:{port}")
             # 6. detect platform (if implemented)
             # ...
+            
+            # Final commit to ensure all domain info is saved, even if no certificate was found
+            try:
+                domain_obj.updated_at = datetime.now()
+                session.commit()
+                self.logger.debug(f"[SCAN] Successfully saved domain info for {domain}:{port}")
+            except Exception as e:
+                self.logger.error(f"Error in final commit for {domain}:{port}: {str(e)}")
+                session.rollback()
+                self.scan_results["error"].append(f"{domain}:{port} - Final commit error: {str(e)}")
+            
             self.infra_mgmt.tracker.add_scanned_endpoint(domain, port)
             return True
         except Exception as e:

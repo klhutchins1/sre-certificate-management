@@ -228,7 +228,18 @@ class DomainService:
             return {'success': False, 'error': str(e)}
 
     @staticmethod
-    def get_filtered_domain_hierarchy(engine, search):
+    def get_filtered_domains_for_ui(engine, search):
+        """
+        Get domains organized for clean UI display.
+        Returns a flat list of domains with hierarchy information.
+
+        Args:
+            engine: SQLAlchemy engine
+            search: Search filter string
+
+        Returns:
+            dict: {'success': bool, 'data': {...}, 'error': str}
+        """
         try:
             with SessionManager(engine) as session:
                 domains = session.query(Domain)\
@@ -238,8 +249,10 @@ class DomainService:
                         joinedload(Domain.subdomains)
                     )\
                     .order_by(Domain.domain_name).all()
+
                 ignored_domains = session.query(IgnoredDomain).all()
                 ignored_patterns = [d.pattern for d in ignored_domains]
+
                 # Filter out ignored domains
                 visible_domains = []
                 for domain in domains:
@@ -260,36 +273,149 @@ class DomainService:
                             break
                     if should_show:
                         visible_domains.append(domain)
+
                 # Apply search filter
                 if search:
                     filtered_domains = [d for d in visible_domains if search.lower() in d.domain_name.lower()]
                 else:
                     filtered_domains = visible_domains
-                # Organize domains into hierarchy
-                root_domains, domain_hierarchy = DomainService.get_domain_hierarchy(filtered_domains)
+
+                # Create organized domain list for UI
+                organized_domains = DomainService._organize_domains_for_ui(filtered_domains)
+
                 # Metrics
                 total_domains = len(visible_domains)
                 active_domains = sum(1 for d in visible_domains if d.is_active)
-                expiring_soon = sum(1 for d in visible_domains 
+                expiring_soon = sum(1 for d in visible_domains
                                   if d.expiration_date and d.expiration_date <= datetime.now() + timedelta(days=30)
                                   and d.expiration_date > datetime.now())
-                expired = sum(1 for d in visible_domains 
+                expired = sum(1 for d in visible_domains
                              if d.expiration_date and d.expiration_date <= datetime.now())
+
                 metrics = {
                     "total_domains": total_domains,
                     "active_domains": active_domains,
                     "expiring_soon": expiring_soon,
                     "expired": expired
                 }
+
                 return {
                     'success': True,
                     'data': {
-                        'root_domains': root_domains,
-                        'domain_hierarchy': domain_hierarchy,
+                        'domains': organized_domains,
                         'visible_domains': visible_domains,
+                        'filtered_domains': filtered_domains,
                         'metrics': metrics,
                         'ignored_patterns': ignored_patterns
                     }
                 }
         except Exception as e:
             return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def _organize_domains_for_ui(domains):
+        """
+        Organize domains into a flat structure suitable for UI display.
+        Groups domains by root domain without creating virtual domains.
+
+        Args:
+            domains: List of Domain objects
+
+        Returns:
+            list: List of domain info dicts with hierarchy metadata
+        """
+        from collections import defaultdict
+
+        # Group domains by root domain
+        root_groups = defaultdict(list)
+
+        for domain in domains:
+            parts = domain.domain_name.split('.')
+            if len(parts) >= 2:
+                # Get root domain (last 2 parts, e.g., example.com)
+                root_domain = '.'.join(parts[-2:])
+            else:
+                root_domain = domain.domain_name
+
+            root_groups[root_domain].append(domain)
+
+        # Sort root domains
+        sorted_roots = sorted(root_groups.keys())
+
+        organized_domains = []
+
+        for root_name in sorted_roots:
+            root_domains = root_groups[root_name]
+            root_domains.sort(key=lambda d: d.domain_name)
+
+            # Add root domain first
+            root_domain_obj = next((d for d in root_domains if d.domain_name == root_name), None)
+            if root_domain_obj:
+                organized_domains.append({
+                    'domain': root_domain_obj,
+                    'is_root': True,
+                    'root_group': root_name,
+                    'indent_level': 0,
+                    'has_subdomains': len(root_domains) > 1
+                })
+
+                # Add subdomains
+                subdomains = [d for d in root_domains if d.domain_name != root_name]
+                for subdomain in subdomains:
+                    organized_domains.append({
+                        'domain': subdomain,
+                        'is_root': False,
+                        'root_group': root_name,
+                        'indent_level': 1,
+                        'has_subdomains': False
+                    })
+            else:
+                # Handle case where root domain doesn't exist (only subdomains)
+                for domain in root_domains:
+                    organized_domains.append({
+                        'domain': domain,
+                        'is_root': True,  # Treat as root since actual root doesn't exist
+                        'root_group': root_name,
+                        'indent_level': 0,
+                        'has_subdomains': len(root_domains) > 1
+                    })
+
+        return organized_domains
+
+    # Keep the old method for backward compatibility during transition
+    @staticmethod
+    def get_filtered_domain_hierarchy(engine, search):
+        """
+        Legacy method - redirects to new implementation.
+        """
+        result = DomainService.get_filtered_domains_for_ui(engine, search)
+        if not result['success']:
+            return result
+
+        # Convert new format to old format for backward compatibility
+        data = result['data']
+        organized_domains = data['domains']
+
+        # Reconstruct old format
+        root_domains = []
+        domain_hierarchy = defaultdict(list)
+
+        current_root = None
+        for item in organized_domains:
+            if item['is_root']:
+                current_root = item['domain']
+                root_domains.append(current_root)
+            else:
+                if current_root:
+                    domain_hierarchy[current_root.domain_name].append(item['domain'])
+
+        return {
+            'success': True,
+            'data': {
+                'root_domains': root_domains,
+                'domain_hierarchy': dict(domain_hierarchy),
+                'visible_domains': data['visible_domains'],
+                'metrics': data['metrics'],
+                'ignored_patterns': data['ignored_patterns']
+            }
+        }

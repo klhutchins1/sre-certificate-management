@@ -114,6 +114,8 @@ def mock_streamlit(mocker):
         mock_st.markdown = mocker.MagicMock()
         mock_st.divider = mocker.MagicMock()
         mock_st.write = mocker.MagicMock()
+        mock_st.rerun = mocker.MagicMock()
+        mock_st.checkbox = mocker.MagicMock()
         
         # Default button always returns False unless overridden in a test
         def default_mock_button(*args, **kwargs):
@@ -138,6 +140,8 @@ def mock_streamlit(mocker):
         mocker.patch('streamlit.columns', mock_st.columns)
         mocker.patch('streamlit.tabs', mock_st.tabs)
         mocker.patch('streamlit.session_state', mock_st.session_state)
+        mocker.patch('streamlit.rerun', mock_st.rerun)
+        mocker.patch('streamlit.checkbox', mock_st.checkbox)
         
         yield (mock_st, mock_header_st)
 
@@ -704,4 +708,312 @@ def test_invalid_settings_validation(mock_streamlit, mock_settings, engine):
         if call.args and call.args[0] == "<h1 style='margin-bottom:0.5rem'>Settings</h1>" and call.kwargs.get('unsafe_allow_html'):
             found = True
             break
-    assert found, "Expected header markdown call not found" 
+    assert found, "Expected header markdown call not found"
+
+def test_render_settings_view_proxy_detection(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
+    """Test rendering proxy detection settings view with form save functionality"""
+    # Set initial proxy detection settings
+    initial_fingerprints = ["abc123", "def456"]
+    initial_subjects = ["CorpProxy Root CA", "Test Proxy CA"]
+    initial_serials = ["9999", "8888"]
+    initial_enabled = True
+    
+    mock_settings.update("proxy_detection.enabled", initial_enabled)
+    mock_settings.update("proxy_detection.ca_fingerprints", initial_fingerprints)
+    mock_settings.update("proxy_detection.ca_subjects", initial_subjects)
+    mock_settings.update("proxy_detection.ca_serials", initial_serials)
+    mock_settings.update("proxy_detection.bypass_external", False)
+    mock_settings.update("proxy_detection.bypass_patterns", ["*.test.com"])
+    mock_settings.update("proxy_detection.proxy_hostnames", ["proxy"])
+    mock_settings.update("proxy_detection.enable_hostname_validation", True)
+    mock_settings.update("proxy_detection.enable_authenticity_validation", True)
+    mock_settings.update("proxy_detection.warn_on_proxy_detection", True)
+    
+    # Mock get to return appropriate values
+    def get_side_effect(key, default=None):
+        if key == "proxy_detection.enabled":
+            return initial_enabled
+        elif key == "proxy_detection.ca_fingerprints":
+            return initial_fingerprints
+        elif key == "proxy_detection.ca_subjects":
+            return initial_subjects
+        elif key == "proxy_detection.ca_serials":
+            return initial_serials
+        elif key == "proxy_detection.bypass_external":
+            return False
+        elif key == "proxy_detection.bypass_patterns":
+            return ["*.test.com"]
+        elif key == "proxy_detection.proxy_hostnames":
+            return ["proxy"]
+        elif key == "proxy_detection.enable_hostname_validation":
+            return True
+        elif key == "proxy_detection.enable_authenticity_validation":
+            return True
+        elif key == "proxy_detection.warn_on_proxy_detection":
+            return True
+        return default
+    
+    mock_settings.get.side_effect = get_side_effect
+    
+    # Mock checkbox to return new value
+    new_enabled = False
+    mock_st.checkbox.return_value = new_enabled
+    
+    # Mock text_area to return new values
+    new_fingerprints_text = "new_fp1\nnew_fp2\nnew_fp3"
+    new_subjects_text = "New Proxy CA 1\nNew Proxy CA 2"
+    new_serials_text = "1111\n2222\n3333"
+    
+    def mock_text_area(*args, **kwargs):
+        if "Fingerprints" in str(args[0]):
+            return new_fingerprints_text
+        elif "Subjects" in str(args[0]):
+            return new_subjects_text
+        elif "Serial Numbers" in str(args[0]):
+            return new_serials_text
+        return kwargs.get("value", "")
+    
+    mock_st.text_area.side_effect = mock_text_area
+    
+    # Mock button clicks - only proxy detection save button should be True
+    def mock_button(*args, **kwargs):
+        return "Save Proxy Detection Settings" in str(args)
+    
+    mock_st.button.side_effect = mock_button
+    
+    # Mock notify function
+    def mock_notify(message, level, page_key=None):
+        if level == "success":
+            mock_st.success(message)
+        elif level == "error":
+            mock_st.error(message)
+        elif level == "warning":
+            mock_st.warning(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify), \
+         patch('infra_mgmt.views.settingsView.SettingsService') as MockSettingsService:
+        # Mock the save method to return True
+        MockSettingsService.save_proxy_detection_settings.return_value = True
+        
+        # Render settings view
+        render_settings_view(engine)
+        
+        # Verify save_proxy_detection_settings was called with correct parameters
+        MockSettingsService.save_proxy_detection_settings.assert_called_once()
+        call_args = MockSettingsService.save_proxy_detection_settings.call_args
+        
+        # Check the arguments
+        assert call_args[0][0] == mock_settings  # settings object
+        assert call_args[0][1] == new_enabled  # enabled
+        assert call_args[0][2] == ["new_fp1", "new_fp2", "new_fp3"]  # fingerprints
+        assert call_args[0][3] == ["New Proxy CA 1", "New Proxy CA 2"]  # subjects
+        assert call_args[0][4] == ["1111", "2222", "3333"]  # serials
+        assert call_args[1]["bypass_external"] is False
+        assert call_args[1]["bypass_patterns"] == ["*.test.com"]
+        assert call_args[1]["proxy_hostnames"] == ["proxy"]
+        assert call_args[1]["enable_hostname_validation"] is True
+        assert call_args[1]["enable_authenticity_validation"] is True
+        assert call_args[1]["warn_on_proxy_detection"] is True
+        
+        # Verify success message
+        mock_st.success.assert_called_with("Proxy detection settings updated successfully!")
+
+def test_render_settings_view_proxy_detection_empty_values(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
+    """Test proxy detection settings with empty text areas"""
+    # Set initial settings
+    mock_settings.update("proxy_detection.enabled", True)
+    mock_settings.update("proxy_detection.ca_fingerprints", ["abc123"])
+    mock_settings.update("proxy_detection.ca_subjects", ["Test CA"])
+    mock_settings.update("proxy_detection.ca_serials", ["9999"])
+    
+    # Mock get to return values
+    def get_side_effect(key, default=None):
+        if key == "proxy_detection.enabled":
+            return True
+        elif key == "proxy_detection.ca_fingerprints":
+            return ["abc123"]
+        elif key == "proxy_detection.ca_subjects":
+            return ["Test CA"]
+        elif key == "proxy_detection.ca_serials":
+            return ["9999"]
+        elif key.startswith("proxy_detection."):
+            return default
+        return default
+    
+    mock_settings.get.side_effect = get_side_effect
+    
+    # Mock checkbox
+    mock_st.checkbox.return_value = True
+    
+    # Mock text_area to return empty strings
+    mock_st.text_area.return_value = ""
+    
+    # Mock button
+    def mock_button(*args, **kwargs):
+        return "Save Proxy Detection Settings" in str(args)
+    
+    mock_st.button.side_effect = mock_button
+    
+    # Mock notify
+    def mock_notify(message, level, page_key=None):
+        if level == "success":
+            mock_st.success(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify), \
+         patch('infra_mgmt.views.settingsView.SettingsService') as MockSettingsService:
+        MockSettingsService.save_proxy_detection_settings.return_value = True
+        
+        render_settings_view(engine)
+        
+        # Verify save was called with empty lists
+        call_args = MockSettingsService.save_proxy_detection_settings.call_args
+        assert call_args[0][2] == []  # fingerprints should be empty list
+        assert call_args[0][3] == []  # subjects should be empty list
+        assert call_args[0][4] == []  # serials should be empty list
+
+def test_render_settings_view_proxy_detection_multiline_with_whitespace(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
+    """Test proxy detection settings with multiline input containing whitespace"""
+    # Mock get
+    def get_side_effect(key, default=None):
+        if key == "proxy_detection.enabled":
+            return True
+        elif key.startswith("proxy_detection."):
+            return default
+        return default
+    
+    mock_settings.get.side_effect = get_side_effect
+    
+    # Mock checkbox
+    mock_st.checkbox.return_value = True
+    
+    # Mock text_area with values that have leading/trailing whitespace and empty lines
+    fingerprints_text = "  fp1  \n\n  fp2  \n  fp3  \n"
+    subjects_text = "  Subject 1  \n  Subject 2  "
+    serials_text = "  1234  \n\n  5678  "
+    
+    def mock_text_area(*args, **kwargs):
+        if "Fingerprints" in str(args[0]):
+            return fingerprints_text
+        elif "Subjects" in str(args[0]):
+            return subjects_text
+        elif "Serial Numbers" in str(args[0]):
+            return serials_text
+        return ""
+    
+    mock_st.text_area.side_effect = mock_text_area
+    
+    # Mock button
+    def mock_button(*args, **kwargs):
+        return "Save Proxy Detection Settings" in str(args)
+    
+    mock_st.button.side_effect = mock_button
+    
+    # Mock notify
+    def mock_notify(message, level, page_key=None):
+        if level == "success":
+            mock_st.success(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify), \
+         patch('infra_mgmt.views.settingsView.SettingsService') as MockSettingsService:
+        MockSettingsService.save_proxy_detection_settings.return_value = True
+        
+        render_settings_view(engine)
+        
+        # Verify save was called with trimmed values (empty lines filtered out)
+        call_args = MockSettingsService.save_proxy_detection_settings.call_args
+        assert call_args[0][2] == ["fp1", "fp2", "fp3"]  # whitespace trimmed, empty lines removed
+        assert call_args[0][3] == ["Subject 1", "Subject 2"]  # whitespace trimmed
+        assert call_args[0][4] == ["1234", "5678"]  # whitespace trimmed, empty lines removed
+
+def test_render_settings_view_proxy_detection_save_failure(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
+    """Test proxy detection settings when save fails"""
+    # Mock get
+    def get_side_effect(key, default=None):
+        if key == "proxy_detection.enabled":
+            return True
+        elif key.startswith("proxy_detection."):
+            return default
+        return default
+    
+    mock_settings.get.side_effect = get_side_effect
+    
+    # Mock checkbox
+    mock_st.checkbox.return_value = True
+    
+    # Mock text_area
+    mock_st.text_area.return_value = "test_value"
+    
+    # Mock button
+    def mock_button(*args, **kwargs):
+        return "Save Proxy Detection Settings" in str(args)
+    
+    mock_st.button.side_effect = mock_button
+    
+    # Mock notify
+    error_called = False
+    def mock_notify(message, level, page_key=None):
+        nonlocal error_called
+        if level == "error":
+            error_called = True
+            mock_st.error(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify), \
+         patch('infra_mgmt.views.settingsView.SettingsService') as MockSettingsService:
+        # Mock save to return False (failure)
+        MockSettingsService.save_proxy_detection_settings.return_value = False
+        
+        render_settings_view(engine)
+        
+        # Verify error message was shown
+        assert error_called, "Error notification should have been called"
+        mock_st.error.assert_called_with("Failed to save proxy detection settings")
+
+def test_render_settings_view_proxy_detection_exception_handling(mock_streamlit, mock_settings, engine):
+    mock_st, mock_header_st = mock_streamlit
+    """Test proxy detection settings when an exception occurs during save"""
+    # Mock get
+    def get_side_effect(key, default=None):
+        if key == "proxy_detection.enabled":
+            return True
+        elif key.startswith("proxy_detection."):
+            return default
+        return default
+    
+    mock_settings.get.side_effect = get_side_effect
+    
+    # Mock checkbox
+    mock_st.checkbox.return_value = True
+    
+    # Mock text_area
+    mock_st.text_area.return_value = "test_value"
+    
+    # Mock button
+    def mock_button(*args, **kwargs):
+        return "Save Proxy Detection Settings" in str(args)
+    
+    mock_st.button.side_effect = mock_button
+    
+    # Mock notify
+    error_called = False
+    error_message = None
+    def mock_notify(message, level, page_key=None):
+        nonlocal error_called, error_message
+        if level == "error":
+            error_called = True
+            error_message = message
+            mock_st.error(message)
+    
+    with patch('infra_mgmt.views.settingsView.notify', side_effect=mock_notify), \
+         patch('infra_mgmt.views.settingsView.SettingsService') as MockSettingsService:
+        # Mock save to raise an exception
+        MockSettingsService.save_proxy_detection_settings.side_effect = Exception("Test error")
+        
+        render_settings_view(engine)
+        
+        # Verify error message was shown with exception details
+        assert error_called, "Error notification should have been called"
+        assert "Test error" in error_message, f"Error message should contain exception: {error_message}" 

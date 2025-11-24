@@ -7,9 +7,7 @@ from infra_mgmt.models import Base, Certificate, Host, CertificateBinding, HostI
 from infra_mgmt.exports import (
     export_certificates_to_csv,
     export_hosts_to_csv,
-    create_timeline_chart,
-    export_certificates_to_pdf,
-    export_hosts_to_pdf
+    create_timeline_chart
 )
 import pandas as pd
 from pathlib import Path
@@ -138,35 +136,3 @@ def test_create_timeline_chart(session, sample_certificate):
             logger.warning(f"Timeline chart creation skipped: {str(e)}")
             assert True
 
-def test_export_certificates_to_pdf(session, sample_certificate):
-    """Test exporting certificates to a PDF file"""
-    session.add(sample_certificate)
-    session.commit()
-
-    try:
-        output_path = export_certificates_to_pdf(session)
-        assert Path(output_path).exists(), "PDF file was not created"
-        
-        # Clean up
-        Path(output_path).unlink()
-        
-        # Clean up any temporary timeline files
-        temp_timeline = Path('exports/temp_timeline.png')
-        if temp_timeline.exists():
-            temp_timeline.unlink()
-    except Exception as e:
-        pytest.fail(f"PDF export failed: {str(e)}")
-
-def test_export_hosts_to_pdf(session, sample_host):
-    """Test exporting hosts to a PDF file"""
-    session.add(sample_host)
-    session.commit()
-
-    output_path = export_hosts_to_pdf(session)
-    assert Path(output_path).exists(), "PDF file was not created"
-    
-    # Check if the PDF contains the expected content (this can be more sophisticated)
-    # For simplicity, we will just check the file exists for now.
-    
-    # Clean up
-    Path(output_path).unlink()

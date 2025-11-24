@@ -167,21 +167,6 @@ def render_certificate_list(engine):
         """)
     )
     gb.configure_column(
-        "Revocation",
-        minWidth=130,
-        headerTooltip="Certificate revocation status",
-        filter=True,
-        sortable=True,
-        cellClass=JsCode("""
-        function(params) {
-            if (!params.data || !params.value) return [];
-            if (params.value.includes('Revoked')) return ['ag-revocation-revoked'];
-            if (params.value.includes('Good')) return ['ag-revocation-good'];
-            return [];
-        }
-        """)
-    )
-    gb.configure_column(
         "Bindings",
         type=["numericColumn"],
         minWidth=100,
@@ -455,83 +440,6 @@ def render_certificate_overview(cert: Certificate, session) -> None:
         # Add platforms
         platforms = sorted(set(b.platform for b in cert.certificate_bindings if b.platform))
         st.markdown(f"**Platforms:** {', '.join(platforms) if platforms else '*None*'}")
-        
-        # Revocation Status
-        revocation_status = cert.revocation_status or 'not_checked'
-        revocation_icon = {
-            'good': '✅',
-            'revoked': '🚫',
-            'unknown': '❓',
-            'error': '⚠️',
-            'not_checked': '⏳'
-        }.get(revocation_status, '❓')
-        revocation_label = {
-            'good': 'Valid (Not Revoked)',
-            'revoked': 'Revoked',
-            'unknown': 'Unknown Status',
-            'error': 'Check Error',
-            'not_checked': 'Not Checked'
-        }.get(revocation_status, 'Unknown')
-        st.markdown(f"**Revocation Status:** {revocation_icon} {revocation_label}")
-        if cert.revocation_last_checked:
-            st.markdown(f"**Last Checked:** {cert.revocation_last_checked.strftime('%Y-%m-%d %H:%M')}")
-        if cert.revocation_check_method:
-            st.markdown(f"**Check Method:** {cert.revocation_check_method}")
-    
-    # Revocation Status Section
-    with st.expander("🔒 Revocation Status", expanded=bool(cert.revocation_status)):
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            revocation_status = cert.revocation_status or 'not_checked'
-            if revocation_status == 'revoked':
-                st.error(f"⚠️ **Certificate is REVOKED**")
-                if cert.revocation_date:
-                    st.markdown(f"**Revoked On:** {cert.revocation_date.strftime('%Y-%m-%d %H:%M')}")
-                if cert.revocation_reason:
-                    st.markdown(f"**Reason:** {cert.revocation_reason}")
-            elif revocation_status == 'good':
-                st.success("✅ Certificate is valid (not revoked)")
-            elif revocation_status == 'unknown':
-                st.warning("❓ Revocation status could not be determined")
-            elif revocation_status == 'error':
-                st.error("⚠️ Error checking revocation status")
-            else:
-                st.info("⏳ Revocation status has not been checked")
-            
-            if cert.revocation_last_checked:
-                st.markdown(f"**Last Checked:** {cert.revocation_last_checked.strftime('%Y-%m-%d %H:%M')}")
-            if cert.revocation_check_method:
-                st.markdown(f"**Check Method:** {cert.revocation_check_method}")
-            if cert.ocsp_response_cached_until:
-                if cert.ocsp_response_cached_until > datetime.now():
-                    st.markdown(f"**Cache Valid Until:** {cert.ocsp_response_cached_until.strftime('%Y-%m-%d %H:%M')}")
-                else:
-                    st.markdown(f"**Cache Expired:** {cert.ocsp_response_cached_until.strftime('%Y-%m-%d %H:%M')}")
-        
-        with col2:
-            try:
-                if st.button("🔄 Check Revocation", key=f"check_revocation_{cert.id}", use_container_width=True):
-                    with st.spinner("Checking revocation status..."):
-                        service = CertificateService()
-                        result = service.check_revocation_status(cert.id, session)
-                        if result['success']:
-                            status_icon = {
-                                'good': '✅',
-                                'revoked': '🚫',
-                                'unknown': '❓',
-                                'error': '⚠️'
-                            }.get(result.get('revocation_status', 'unknown'), '❓')
-                            notify(
-                                f"{status_icon} Revocation check completed: {result.get('revocation_status', 'unknown')}",
-                                "success",
-                                page_key=CERTIFICATES_PAGE_KEY
-                            )
-                            st.rerun()
-                        else:
-                            notify(f"Error checking revocation: {result.get('error', 'Unknown error')}", "error", page_key=CERTIFICATES_PAGE_KEY)
-            except Exception as e:
-                st.error(f"Revocation checking not available: {str(e)}")
-                st.info("💡 Tip: Ensure all dependencies are installed (dnspython, pyOpenSSL, etc.)")
     
     # Add SAN section with expander and scan button
     with st.expander("Subject Alternative Names", expanded=True):
@@ -819,21 +727,6 @@ def render_certificate_details(cert):
     #print(f"DEBUG: Signature Algorithm: {cert.signature_algorithm}")
     #print(f"DEBUG: Raw certificate data: {cert.__dict__}")
     
-    # Prepare revocation details
-    revocation_details = {}
-    if cert.revocation_status:
-        revocation_details["Revocation Status"] = cert.revocation_status
-    if cert.revocation_date:
-        revocation_details["Revocation Date"] = cert.revocation_date.isoformat()
-    if cert.revocation_reason:
-        revocation_details["Revocation Reason"] = cert.revocation_reason
-    if cert.revocation_check_method:
-        revocation_details["Check Method"] = cert.revocation_check_method
-    if cert.revocation_last_checked:
-        revocation_details["Last Checked"] = cert.revocation_last_checked.isoformat()
-    if cert.ocsp_response_cached_until:
-        revocation_details["OCSP Cache Valid Until"] = cert.ocsp_response_cached_until.isoformat()
-    
     # Prepare details with proper handling of None values
     details = {
         "Serial Number": cert.serial_number or "Not Available",
@@ -843,10 +736,6 @@ def render_certificate_details(cert):
         "Key Usage": cert.key_usage or "Not Specified",
         "Signature Algorithm": cert.signature_algorithm or "Not Available"
     }
-    
-    # Add revocation details if available
-    if revocation_details:
-        details["Revocation Information"] = revocation_details
     
     #print(f"DEBUG: Details to display: {details}")
     st.json(details)

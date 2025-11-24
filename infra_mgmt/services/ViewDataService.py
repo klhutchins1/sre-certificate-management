@@ -30,23 +30,12 @@ class ViewDataService(BaseService):
                 table_data = []
                 certificates = session.query(Certificate).all()
                 for cert in certificates:
-                    # Revocation status with icon
-                    revocation_status = cert.revocation_status or 'not_checked'
-                    revocation_display = {
-                        'good': '✅ Good',
-                        'revoked': '🚫 Revoked',
-                        'unknown': '❓ Unknown',
-                        'error': '⚠️ Error',
-                        'not_checked': '⏳ Not Checked'
-                    }.get(revocation_status, '❓ Unknown')
-                    
                     table_data.append({
                         "Common Name": str(cert.common_name),
                         "Serial Number": str(cert.serial_number),
                         "Valid From": cert.valid_from.strftime("%Y-%m-%d"),
                         "Valid Until": cert.valid_until.strftime("%Y-%m-%d"),
                         "Status": "Valid" if cert.valid_until > datetime.now() else "Expired",
-                        "Revocation": revocation_display,
                         "Bindings": int(len(cert.certificate_bindings)),
                         "_id": int(cert.id)
                     })
@@ -67,14 +56,6 @@ class ViewDataService(BaseService):
                             if (!params.data) return [];
                             if (params.value === 'Expired') return ['ag-status-expired'];
                             if (params.value === 'Valid') return ['ag-status-valid'];
-                            return [];
-                        }
-                    """)},
-                    "Revocation": {"minWidth": 130, "headerTooltip": "Certificate revocation status", "filter": True, "sortable": True, "cellClass": JsCode("""
-                        function(params) {
-                            if (!params.data || !params.value) return [];
-                            if (params.value.includes('Revoked')) return ['ag-revocation-revoked'];
-                            if (params.value.includes('Good')) return ['ag-revocation-good'];
                             return [];
                         }
                     """)},

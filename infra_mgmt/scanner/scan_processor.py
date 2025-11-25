@@ -145,14 +145,19 @@ class ScanProcessor:
             >>> processor.process_certificate('example.com', 443, cert_info, domain_obj)
         """
         try:
-            # Proxy detection
+            # Proxy detection - ONLY mark as proxied if it matches known proxy CAs
+            # This ensures we only flag certificates that are definitively proxy certificates
+            # (matching fingerprints, subjects, or serials in the proxy list)
             is_proxy, proxy_reason = detect_proxy_certificate(cert_info, settings)
             if is_proxy:
                 cert_info.proxied = True
                 cert_info.proxy_info = proxy_reason
             else:
-                cert_info.proxied = False
-                cert_info.proxy_info = None
+                # Only set to False if not already set - preserve any existing proxy status
+                # The certificate scanner handles more detailed proxy detection
+                if not hasattr(cert_info, 'proxied') or cert_info.proxied is None:
+                    cert_info.proxied = False
+                    cert_info.proxy_info = None
             # Replace the certificate/host/binding update logic with:
             CertificateDBUtil.upsert_certificate_and_binding(self.session, domain, port, cert_info, domain_obj, detect_platform=kwargs.get('detect_platform', False), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True), status_callback=self.set_status)
             self.session.flush()

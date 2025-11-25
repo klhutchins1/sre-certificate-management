@@ -407,6 +407,145 @@ class CertificateService:
             logging.getLogger(__name__).exception(f"Error clearing proxy override: {str(e)}")
             return {'success': False, 'error': str(e)}
     
+    def promote_real_values_to_primary(self, cert_id, session):
+        """
+        Promote real certificate values to be the primary values, replacing proxy values.
+        This moves real_serial_number -> serial_number, real_thumbprint -> thumbprint, etc.
+        The proxy values are preserved in the real_* fields for reference.
+        
+        Args:
+            cert_id (int): Certificate ID
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            cert = session.get(Certificate, cert_id)
+            if not cert:
+                return {'success': False, 'error': 'Certificate not found'}
+            
+            if not cert.real_serial_number or not cert.real_thumbprint:
+                return {'success': False, 'error': 'Real certificate values not set. Please provide real serial number and thumbprint first.'}
+            
+            # Validate that real date fields are set (required for non-nullable columns)
+            if cert.real_valid_from is None or cert.real_valid_until is None:
+                return {'success': False, 'error': 'Real certificate date values not set. Please provide real valid_from and valid_until dates first.'}
+            
+            # Validate that real issuer and subject are set (to prevent None assignment to primary fields)
+            if cert.real_issuer is None or cert.real_subject is None:
+                return {'success': False, 'error': 'Real certificate issuer and subject values not set. Please provide real issuer and subject information first.'}
+            
+            # Check for uniqueness of real serial number and thumbprint before promoting
+            existing_by_serial = session.query(Certificate).filter(
+                Certificate.serial_number == cert.real_serial_number,
+                Certificate.id != cert_id
+            ).first()
+            if existing_by_serial:
+                return {'success': False, 'error': f'Serial number {cert.real_serial_number} already exists for another certificate'}
+            
+            existing_by_thumbprint = session.query(Certificate).filter(
+                Certificate.thumbprint == cert.real_thumbprint,
+                Certificate.id != cert_id
+            ).first()
+            if existing_by_thumbprint:
+                return {'success': False, 'error': f'Thumbprint {cert.real_thumbprint} already exists for another certificate'}
+            
+            # Store current proxy values in real_* fields (swap them)
+            # This preserves the proxy values for reference
+            proxy_serial = cert.serial_number
+            proxy_thumbprint = cert.thumbprint
+            proxy_issuer = cert._issuer
+            proxy_subject = cert._subject
+            proxy_valid_from = cert.valid_from
+            proxy_valid_until = cert.valid_until
+            
+            # Promote real values to primary
+            cert.serial_number = cert.real_serial_number
+            cert.thumbprint = cert.real_thumbprint
+            cert._issuer = cert.real_issuer
+            cert._subject = cert.real_subject
+            cert.valid_from = cert.real_valid_from
+            cert.valid_until = cert.real_valid_until
+            
+            # Store old proxy values in real_* fields (for reference/history)
+            cert.real_serial_number = proxy_serial
+            cert.real_thumbprint = proxy_thumbprint
+            cert.real_issuer = proxy_issuer
+            cert.real_subject = proxy_subject
+            cert.real_valid_from = proxy_valid_from
+            cert.real_valid_until = proxy_valid_until
+            
+            # Update notes to indicate the promotion
+            if cert.override_notes:
+                cert.override_notes += f"\n[Promoted to primary on {datetime.now().strftime('%Y-%m-%d %H:%M')}]"
+            else:
+                cert.override_notes = f"Real values promoted to primary on {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            # Keep proxied flag as True since it was detected as proxy
+            # But now the primary values are the real ones
+            
+            session.commit()
+            return {'success': True}
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error promoting real values: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def update_certificate_serial_thumbprint(self, cert_id, serial_number, thumbprint, session):
+        """
+        Update the primary serial number and thumbprint for a certificate.
+        Useful for directly correcting proxy certificate values.
+        
+        Args:
+            cert_id (int): Certificate ID
+            serial_number (str): New serial number
+            thumbprint (str): New thumbprint
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            cert = session.get(Certificate, cert_id)
+            if not cert:
+                return {'success': False, 'error': 'Certificate not found'}
+            
+            if not serial_number or not serial_number.strip():
+                return {'success': False, 'error': 'Serial number is required'}
+            if not thumbprint or not thumbprint.strip():
+                return {'success': False, 'error': 'Thumbprint is required'}
+            
+            # Check for uniqueness
+            existing_by_serial = session.query(Certificate).filter(
+                Certificate.serial_number == serial_number,
+                Certificate.id != cert_id
+            ).first()
+            if existing_by_serial:
+                return {'success': False, 'error': f'Serial number {serial_number} already exists for another certificate'}
+            
+            existing_by_thumbprint = session.query(Certificate).filter(
+                Certificate.thumbprint == thumbprint,
+                Certificate.id != cert_id
+            ).first()
+            if existing_by_thumbprint:
+                return {'success': False, 'error': f'Thumbprint {thumbprint} already exists for another certificate'}
+            
+            # Update values
+            cert.serial_number = serial_number.strip()
+            cert.thumbprint = thumbprint.strip()
+            
+            session.commit()
+            return {'success': True}
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error updating certificate serial/thumbprint: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
     def update_tracking_entry(self, tracking_id, change_number, planned_date, status, notes, session):
         """
         Update a certificate tracking entry.
@@ -469,4 +608,33 @@ class CertificateService:
             session.rollback()
             import logging
             logging.getLogger(__name__).exception(f"Error deleting tracking entry: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def clear_proxy_flag(self, cert_id, session):
+        """
+        Clear the proxy flag from a certificate if it was incorrectly marked as a proxy.
+        
+        Args:
+            cert_id (int): Certificate ID
+            session: SQLAlchemy session
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            cert = session.get(Certificate, cert_id)
+            if not cert:
+                return {'success': False, 'error': 'Certificate not found'}
+            
+            # Clear proxy flag and info
+            cert.proxied = False
+            cert.proxy_info = None
+            
+            session.commit()
+            return {'success': True}
+            
+        except Exception as e:
+            session.rollback()
+            import logging
+            logging.getLogger(__name__).exception(f"Error clearing proxy flag: {str(e)}")
             return {'success': False, 'error': str(e)}

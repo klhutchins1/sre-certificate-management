@@ -13,6 +13,7 @@ from ..exports import (
     export_hosts_to_csv
 )
 from ..backup import create_backup
+from ..db.engine import normalize_path
 from sqlalchemy.orm import Session
 
 class SettingsService:
@@ -29,7 +30,7 @@ class SettingsService:
         """
         if settings is None:
             settings = Settings()
-        backup_dir = Path(settings.get("paths.backups", "data/backups"))
+        backup_dir = normalize_path(settings.get("paths.backups", "data/backups"))
         if not backup_dir.exists():
             backup_dir.mkdir(parents=True, exist_ok=True)
         backups = []

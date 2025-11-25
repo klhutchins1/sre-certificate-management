@@ -138,6 +138,9 @@ def render_scan_interface(engine) -> None:
     # Initialize notifications for this page
     initialize_page_notifications(SCANNER_PAGE_KEY)
     
+    # Note: Scan results and notifications are now cleared when leaving the Scanner page (in app.py)
+    # This ensures results are cleared immediately when navigating away, not when returning
+    
     # Create a placeholder for notifications at the top
     notification_placeholder = st.empty()
     
@@ -150,11 +153,14 @@ def render_scan_interface(engine) -> None:
     if 'scan_in_progress' not in st.session_state:
         st.session_state.scan_in_progress = False
     if 'scan_results' not in st.session_state:
+        # Initialize all categories that ScanService might populate
         st.session_state.scan_results = {
             "success": [],
             "error": [],
             "warning": [],
-            "no_cert": []
+            "no_cert": [],
+            "db_only": [],
+            "info_only": []
         }
     if 'scan_input' not in st.session_state:
         st.session_state.scan_input = ""
@@ -252,24 +258,15 @@ internal.server.local:444"""
             validate_chain = st.checkbox("Validate Certificate Chain", value=True,
                 help="Validate the complete certificate chain")
         
-        # Scan control buttons below both columns
-        button_cols = st.columns(3)
+        # Scan control button
+        # Note: Pause/Stop buttons removed due to Streamlit's single-threaded architecture.
+        # The scan runs in a blocking loop, so button clicks cannot be processed during execution.
+        # To stop a scan, refresh the page or wait for it to complete.
+        scan_button_clicked = st.button("Start Scan", type="primary", disabled=st.session_state.scan_in_progress)
         
-        # Handle cases where st.columns might return fewer columns than requested
-        if len(button_cols) >= 3:
-            with button_cols[0]:
-                scan_button_clicked = st.button("Start Scan", type="primary", disabled=st.session_state.scan_in_progress)
-            
-            with button_cols[1]:
-                pause_button_clicked = st.button("Pause", disabled=not st.session_state.scan_in_progress or getattr(scan_service, 'scan_paused', False))
-            
-            with button_cols[2]:
-                stop_button_clicked = st.button("Stop", disabled=not st.session_state.scan_in_progress)
-        else:
-            # Fallback for test environments or older Streamlit versions
-            scan_button_clicked = st.button("Start Scan", type="primary", disabled=st.session_state.scan_in_progress)
-            pause_button_clicked = st.button("Pause", disabled=not st.session_state.scan_in_progress or getattr(scan_service, 'scan_paused', False))
-            stop_button_clicked = st.button("Stop", disabled=not st.session_state.scan_in_progress)
+        # Show info about scan control limitations
+        if st.session_state.scan_in_progress:
+            st.info("ℹ️ Scan in progress. To stop the scan, refresh the page or wait for it to complete.")
         
         # Input format help section
         with st.expander("ℹ️ Input Format Help"):
@@ -283,33 +280,6 @@ internal.server.local:444"""
             ```
             """)
         
-        # Handle pause button
-        if pause_button_clicked and st.session_state.scan_in_progress:
-            if getattr(scan_service, 'scan_paused', False):
-                scan_service.resume_scan()
-                notify("Scan resumed", "info", page_key=SCANNER_PAGE_KEY)
-            else:
-                scan_service.pause_scan()
-                notify("Scan paused", "info", page_key=SCANNER_PAGE_KEY)
-            # Show notifications immediately after pause/resume actions
-            with notification_placeholder.container():
-                show_notifications(SCANNER_PAGE_KEY)
-            # Only call st.rerun() in actual Streamlit environment, not in tests
-            if hasattr(st, 'rerun'):
-                st.rerun()
-        
-        # Handle stop button
-        if stop_button_clicked and st.session_state.scan_in_progress:
-            scan_service.stop_scan()
-            st.session_state.scan_in_progress = False
-            notify("Scan stopped by user", "warning", page_key=SCANNER_PAGE_KEY)
-            # Show notifications immediately after stop action
-            with notification_placeholder.container():
-                show_notifications(SCANNER_PAGE_KEY)
-            # Only call st.rerun() in actual Streamlit environment, not in tests
-            if hasattr(st, 'rerun'):
-                st.rerun()
-        
         # Handle scan initiation
         if scan_button_clicked and not st.session_state.scan_in_progress:
             # Clear notifications ONLY when a new scan is initiated by this page's button
@@ -320,11 +290,14 @@ internal.server.local:444"""
             scan_service.reset_scan_control()  # Reset pause/stop state
             logger.debug("[SCAN_VIEW] Called reset_scan_state on scan_manager at scan start.")
             st.session_state.scan_in_progress = True
+            # Initialize all categories that ScanService might populate
             st.session_state.scan_results = {
                 "success": [],
                 "error": [],
                 "warning": [],
-                "no_cert": []
+                "no_cert": [],
+                "db_only": [],
+                "info_only": []
             }
             # Only store domain names, not ORM objects
             st.session_state.scanned_domains.clear()
@@ -423,8 +396,9 @@ internal.server.local:444"""
         st.session_state.scan_results["success"] or
         st.session_state.scan_results["error"] or
         st.session_state.scan_results["warning"] or
-        st.session_state.scan_results["no_cert"]
-        or st.session_state.scan_results.get("db_only", [])  # Include db_only
+        st.session_state.scan_results["no_cert"] or
+        st.session_state.scan_results.get("db_only", []) or  # Include db_only
+        st.session_state.scan_results.get("info_only", [])  # Include info_only
     )
 
     if has_results:

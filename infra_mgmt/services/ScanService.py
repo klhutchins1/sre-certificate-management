@@ -38,15 +38,24 @@ class ScanService:
     def pause_scan(self):
         """Pause the current scan."""
         self.scan_paused = True
+        # Also pause the scan manager
+        if hasattr(self.scan_manager, 'pause_scan'):
+            self.scan_manager.pause_scan()
     
     def resume_scan(self):
         """Resume a paused scan."""
         self.scan_paused = False
+        # Also resume the scan manager
+        if hasattr(self.scan_manager, 'resume_scan'):
+            self.scan_manager.resume_scan()
     
     def stop_scan(self):
         """Stop the current scan."""
         self.scan_stopped = True
         self.scan_paused = False
+        # Also stop the scan manager
+        if hasattr(self.scan_manager, 'stop_scan'):
+            self.scan_manager.stop_scan()
     
     def reset_scan_control(self):
         """Reset scan control state."""
@@ -127,17 +136,40 @@ class ScanService:
                 self.scan_manager.add_to_queue(root, port, session)
             # Main scan loop: process the queue until empty
             # This ensures that any new targets (e.g., discovered hostnames) are also scanned
-            while self.scan_manager.has_pending_targets() and not self.scan_stopped:
-                # Check for pause condition
-                if self.scan_paused:
+            # Check both ScanService and ScanManager stop flags
+            while self.scan_manager.has_pending_targets() and not self.scan_stopped and not getattr(self.scan_manager, 'scan_stopped', False):
+                # Check for stop condition first (before pause check)
+                if self.scan_stopped or getattr(self.scan_manager, 'scan_stopped', False):
+                    if options.get("status_container"):
+                        options["status_container"].text("Scan stopped by user")
+                    if options.get("progress_container"):
+                        options["progress_container"].text("Scan stopped by user")
+                    break
+                
+                # Check for pause condition - check both ScanService and ScanManager
+                is_paused = self.scan_paused or getattr(self.scan_manager, 'scan_paused', False)
+                if is_paused:
                     if options.get("status_container"):
                         options["status_container"].text("Scan paused. Click Resume to continue.")
-                    # Wait in a loop while paused
+                    if options.get("progress_container"):
+                        options["progress_container"].text("Scan paused. Click Resume to continue.")
+                    # Wait in a loop while paused, checking for stop frequently
                     import time
-                    while self.scan_paused and not self.scan_stopped:
+                    while (self.scan_paused or getattr(self.scan_manager, 'scan_paused', False)) and not self.scan_stopped and not getattr(self.scan_manager, 'scan_stopped', False):
                         time.sleep(0.1)  # Small delay to prevent busy waiting
-                    if self.scan_stopped:
+                        # Update UI periodically while paused
+                        if options.get("status_container"):
+                            options["status_container"].text("Scan paused. Click Resume to continue.")
+                    if self.scan_stopped or getattr(self.scan_manager, 'scan_stopped', False):
+                        if options.get("status_container"):
+                            options["status_container"].text("Scan stopped by user")
+                        if options.get("progress_container"):
+                            options["progress_container"].text("Scan stopped by user")
                         break
+                
+                # Check for stop again before processing next target
+                if self.scan_stopped or getattr(self.scan_manager, 'scan_stopped', False):
+                    break
                 
                 target = self.scan_manager.get_next_target()
                 if not target:
@@ -161,22 +193,37 @@ class ScanService:
                 except Exception as e:
                     self.scan_results["error"].append(f"{target[0]}:{target[1]} - {str(e)}")
                     session.rollback()
+                # Check for stop after each target (before updating progress)
+                if self.scan_stopped or getattr(self.scan_manager, 'scan_stopped', False):
+                    if options.get("status_container"):
+                        options["status_container"].text("Scan stopped by user")
+                    if options.get("progress_container"):
+                        options["progress_container"].text("Scan stopped by user")
+                    break
+                
                 completed = len(self.scan_manager.infra_mgmt.tracker.scanned_endpoints)
                 remaining = len(self.scan_manager.infra_mgmt.tracker.scan_queue)
                 total = completed + remaining
                 progress = completed / total if total > 0 else 1.0
                 if options.get("progress_container"):
                     options["progress_container"].progress(progress)
-                    if self.scan_stopped:
+                    if self.scan_stopped or getattr(self.scan_manager, 'scan_stopped', False):
                         options["progress_container"].text("Scan stopped by user")
+                    elif self.scan_paused or getattr(self.scan_manager, 'scan_paused', False):
+                        options["progress_container"].text("Scan paused. Click Resume to continue.")
                     else:
                         options["progress_container"].text(
                             f"Scanning target {completed} of {total} (Remaining in queue: {remaining})"
                         )
                 if options.get("status_container"):
-                    options["status_container"].text(
-                        f"Scanning {target[0]}:{target[1]}"
-                    )
+                    if self.scan_stopped or getattr(self.scan_manager, 'scan_stopped', False):
+                        options["status_container"].text("Scan stopped by user")
+                    elif self.scan_paused or getattr(self.scan_manager, 'scan_paused', False):
+                        options["status_container"].text("Scan paused. Click Resume to continue.")
+                    else:
+                        options["status_container"].text(
+                            f"Scanning {target[0]}:{target[1]}"
+                        )
             session.commit()
             if options.get("progress_container"):
                 options["progress_container"].progress(1.0)

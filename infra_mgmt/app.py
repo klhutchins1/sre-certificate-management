@@ -167,6 +167,8 @@ def render_sidebar():
         # Update the current view based on selection
         new_view = reverse_mapping[selected]
         if new_view != st.session_state.current_view:
+            # Store the old view before updating (for clearing logic in main())
+            st.session_state._previous_view_before_change = st.session_state.current_view
             st.session_state.current_view = new_view
             st.rerun()
         
@@ -202,8 +204,55 @@ def main():
     # Initialize notifications for the main app
     initialize_page_notifications("main_app")
     
-    # Get current view from sidebar
+    # Capture the old current_view before sidebar potentially updates it
+    old_current_view = st.session_state.get('current_view', 'Dashboard')
+    
+    # Get current view from sidebar (this may update st.session_state.current_view and call st.rerun())
     current_view = render_sidebar()
+    
+    # Check if we're leaving Scanner - use _previous_view_before_change if available (set by render_sidebar)
+    # This handles the case where render_sidebar() calls st.rerun() and restarts the script
+    previous_view_before_change = st.session_state.get('_previous_view_before_change', old_current_view)
+    is_leaving_scanner = (previous_view_before_change == "Scanner" and current_view != "Scanner")
+    
+    # Clear the temporary tracking variable
+    if '_previous_view_before_change' in st.session_state:
+        del st.session_state._previous_view_before_change
+    
+    # If we're leaving Scanner, clear results immediately
+    if is_leaving_scanner:
+        from infra_mgmt.notifications import clear_page_notifications
+        # Use the same page key as defined in scannerView.py
+        clear_page_notifications("scanner")
+        # Clear scan results (but preserve scan_input for user convenience)
+        # Initialize all categories that ScanService might populate
+        if 'scan_results' in st.session_state:
+            st.session_state.scan_results = {
+                "success": [],
+                "error": [],
+                "warning": [],
+                "no_cert": [],
+                "db_only": [],
+                "info_only": []
+            }
+        if 'scanned_domains' in st.session_state:
+            st.session_state.scanned_domains = set()
+        import logging
+        logging.getLogger(__name__).info(f"[SCANNER] Cleared scan results and notifications when leaving Scanner page (navigating to: {current_view})")
+    
+    # Update previous_view tracking for navigation detection
+    # This allows views to detect when they're being entered from another page
+    view_changed = False
+    if 'previous_view' not in st.session_state:
+        # First time: initialize previous_view to current view
+        st.session_state.previous_view = current_view
+    elif old_current_view != current_view:
+        # View changed: update previous_view to the old view
+        st.session_state.previous_view = old_current_view
+        view_changed = True
+    
+    # Store view_changed flag so views can detect actual navigation vs rerun
+    st.session_state.view_changed = view_changed
     
     # Route to the appropriate view based on selection
     if current_view == "Dashboard":

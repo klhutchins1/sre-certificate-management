@@ -350,14 +350,47 @@ def render_certificate_overview(cert: Certificate, session) -> None:
                 if cert.override_created_at:
                     st.markdown(f"**Override Created:** {cert.override_created_at.strftime('%Y-%m-%d %H:%M')}")
                 
-                if st.button("🗑️ Clear Override", type="secondary", key=f"clear_override_{cert.id}"):
-                    service = CertificateService()
-                    result = service.clear_proxy_override(cert.id, session)
-                    if result['success']:
-                        notify("Override information cleared", "success", page_key=CERTIFICATES_PAGE_KEY)
-                        st.rerun()
+                # Show "Promote Real Values" button only when all required fields are set
+                # Backend requires: real_serial_number, real_thumbprint, real_valid_from, real_valid_until
+                can_promote = (
+                    cert.real_serial_number and 
+                    cert.real_thumbprint and 
+                    cert.real_valid_from is not None and 
+                    cert.real_valid_until is not None
+                )
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if can_promote:
+                        if st.button("⬆️ Promote Real Values", type="primary", key=f"promote_real_{cert.id}"):
+                            service = CertificateService()
+                            result = service.promote_real_values_to_primary(cert.id, session)
+                            if result['success']:
+                                notify("Real values promoted to primary successfully", "success", page_key=CERTIFICATES_PAGE_KEY)
+                                st.rerun()
+                            else:
+                                notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
                     else:
-                        notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
+                        missing_fields = []
+                        if not cert.real_serial_number:
+                            missing_fields.append("serial number")
+                        if not cert.real_thumbprint:
+                            missing_fields.append("thumbprint")
+                        if cert.real_valid_from is None:
+                            missing_fields.append("valid from date")
+                        if cert.real_valid_until is None:
+                            missing_fields.append("valid until date")
+                        st.info(f"⚠️ Cannot promote: Missing {', '.join(missing_fields)}")
+                
+                with col2:
+                    if st.button("🗑️ Clear Override", type="secondary", key=f"clear_override_{cert.id}"):
+                        service = CertificateService()
+                        result = service.clear_proxy_override(cert.id, session)
+                        if result['success']:
+                            notify("Override information cleared", "success", page_key=CERTIFICATES_PAGE_KEY)
+                            st.rerun()
+                        else:
+                            notify(result['error'], "error", page_key=CERTIFICATES_PAGE_KEY)
             else:
                 st.info("This certificate was detected behind a proxy. You can provide the real certificate information below.")
                 
@@ -1059,4 +1092,3 @@ def execute_scan(scan_targets, session):
     
     # Commit all changes
     session.commit()
-

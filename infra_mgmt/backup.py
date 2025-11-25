@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from infra_mgmt.settings import Settings
 from infra_mgmt.models import Base
-from infra_mgmt.db.engine import normalize_path
+from infra_mgmt.db.engine import normalize_path, is_network_path
 from infra_mgmt.exceptions import BackupError, DatabaseError
 import random
 import sqlite3
@@ -50,17 +50,18 @@ def create_backup(engine=None):
         db_path = Path(settings.get("paths.database"))
         backup_dir = Path(settings.get("paths.backups"))
         
-        # Ensure backup directory exists
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Resolve paths to absolute
+        # Normalize paths (handles network paths properly)
         try:
-            backup_dir = backup_dir.resolve()
+            backup_dir = normalize_path(str(backup_dir))
+            db_path = normalize_path(str(db_path))
+            
+            # Ensure backup directory exists
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            
             if not db_path.exists():
                 return False, "Database file does not exist"
-            db_path = db_path.resolve()
         except Exception as e:
-            return False, f"Failed to resolve paths: {str(e)}"
+            return False, f"Failed to normalize paths: {str(e)}"
         
         # Generate timestamp for backup files
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -212,8 +213,8 @@ def list_backups():
     
     backups = []
     try:
-        # Use absolute paths for consistency
-        backup_dir = backup_dir.resolve()
+        # Normalize path (handles network paths properly)
+        backup_dir = normalize_path(str(backup_dir))
         
         # Find all manifest files
         manifest_files = list(backup_dir.glob("backup_*.json"))
@@ -223,14 +224,14 @@ def list_backups():
                 with open(manifest_path) as f:
                     backup_info = json.load(f)
                     
-                    # Ensure all paths are absolute
+                    # Normalize paths (handles network paths properly)
                     if 'database' in backup_info:
-                        db_path = Path(backup_info['database'])
-                        backup_info['database'] = str(db_path.resolve() if db_path.exists() else db_path)
+                        db_path = normalize_path(backup_info['database'])
+                        backup_info['database'] = str(db_path)
                     
                     if 'config' in backup_info:
-                        config_path = Path(backup_info['config'])
-                        backup_info['config'] = str(config_path.resolve() if config_path.exists() else config_path)
+                        config_path = normalize_path(backup_info['config'])
+                        backup_info['config'] = str(config_path)
                     
                     # Store manifest path relative to backup directory
                     backup_info['manifest_file'] = str(manifest_path)
@@ -269,7 +270,10 @@ def _backup_database_file(engine, backup_dir):
         source_path = engine.url.database
         if not os.path.exists(source_path):
             raise BackupError(f"Source database does not exist: {source_path}")
-        backup_path = normalize_path(str(backup_dir)).resolve()
+        backup_path = normalize_path(str(backup_dir))
+        # Don't call resolve() on network paths as it can fail with UNC paths
+        if not is_network_path(backup_path):
+            backup_path = backup_path.resolve()
         if backup_path.exists():
             if not backup_path.is_dir():
                 raise BackupError(f"Backup path exists but is not a directory: {backup_path}")

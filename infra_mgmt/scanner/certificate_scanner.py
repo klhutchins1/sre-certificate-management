@@ -532,7 +532,8 @@ class CertificateScanner:
                 
                 warnings = []
                 
-                # Basic proxy detection
+                # Basic proxy detection - ONLY mark as proxied if it matches known proxy CAs
+                # This is the definitive check - if it matches fingerprints, subjects, or serials in the proxy list
                 is_proxy, proxy_reason = detect_proxy_certificate(cert_info, settings)
                 if is_proxy:
                     cert_info.proxied = True
@@ -540,26 +541,33 @@ class CertificateScanner:
                     # Single warning entry for proxy detection to avoid duplicate logs downstream
                     self.logger.warning(f"Proxy certificate detected for {address}:{port}: {proxy_reason}")
                 
-                # Enhanced hostname mismatch detection
-                is_mismatch, mismatch_reason = detect_certificate_hostname_mismatch(cert_info, address, settings)
-                if is_mismatch:
-                    if not cert_info.proxied:
-                        cert_info.proxied = True
-                        cert_info.proxy_info = mismatch_reason
-                    else:
-                        cert_info.proxy_info += f"; {mismatch_reason}"
-                    warnings.append(mismatch_reason)
-                    self.logger.warning(f"Certificate hostname mismatch for {address}:{port}: {mismatch_reason}")
+                # Enhanced hostname mismatch detection - only mark as proxy if enabled in settings
+                # and if it's not already marked as proxy from known CA matching
+                if settings.get("proxy_detection.enable_hostname_validation", True):
+                    is_mismatch, mismatch_reason = detect_certificate_hostname_mismatch(cert_info, address, settings)
+                    if is_mismatch:
+                        # Only mark as proxied from hostname mismatch if explicitly enabled
+                        # and if it hasn't already been marked from known proxy CA matching
+                        if settings.get("proxy_detection.mark_hostname_mismatch_as_proxy", False):
+                            if not cert_info.proxied:
+                                cert_info.proxied = True
+                                cert_info.proxy_info = mismatch_reason
+                            else:
+                                cert_info.proxy_info += f"; {mismatch_reason}"
+                        warnings.append(mismatch_reason)
+                        self.logger.warning(f"Certificate hostname mismatch for {address}:{port}: {mismatch_reason}")
                 
-                # Comprehensive authenticity validation
+                # Comprehensive authenticity validation - DO NOT mark as proxied from this
+                # This is for warnings only, not for definitive proxy detection
                 if settings.get("proxy_detection.enable_authenticity_validation", True):
                     is_authentic, auth_warnings = validate_certificate_authenticity(cert_info, address, settings)
                     if not is_authentic:
+                        # Add warnings but DO NOT mark as proxied - these are just warnings
                         warnings.extend(auth_warnings)
-                        if not cert_info.proxied:
-                            cert_info.proxied = True
-                            cert_info.proxy_info = "; ".join(auth_warnings)
-                        self.logger.warning(f"Certificate authenticity issues for {address}:{port}: {'; '.join(auth_warnings)}")
+                        # Only log warnings, don't mark as proxied unless it matched known proxy CA
+                        self.logger.debug(f"Certificate authenticity warnings for {address}:{port}: {'; '.join(auth_warnings)}")
+                        # Note: We intentionally do NOT set cert_info.proxied = True here
+                        # Only known proxy CA matches should mark certificates as proxied
                 
                 # Check revocation status if enabled
                 if settings.get("scanning.revocation.check_on_scan", True):

@@ -676,20 +676,44 @@ def render_cache_management_section(engine, settings):
     """Render the cache management section."""
     st.subheader("Database Cache Management")
     
+    # Always show explanation about what cache is
+    with st.expander("ℹ️ What is Database Caching?", expanded=False):
+        st.markdown("""
+        **Database Caching** is a performance optimization feature that creates a local copy of your database 
+        when it's stored on a network share (UNC path).
+        
+        **How it works:**
+        - When your database is on a network drive (e.g., `\\\\server\\share\\database.db`), operations can be slow
+        - The cache manager creates a local copy of the database for fast read/write operations
+        - Changes are automatically synced to the network database in the background
+        - This provides near-local performance while maintaining data consistency
+        
+        **Benefits:**
+        - ⚡ Faster database operations (especially for large databases)
+        - 🔄 Automatic background synchronization
+        - 📦 Works offline when network is unavailable
+        - 🔒 Conflict resolution for concurrent access
+        
+        **When is caching enabled?**
+        - Caching is **automatically enabled** when:
+          - Your database path is a network (UNC) path (e.g., `\\\\server\\share\\...`)
+          - Cache initialization succeeds
+        - Caching is **disabled** for local database paths (e.g., `C:\\...` or `E:\\...`)
+        """)
+    
     # Check if cache is enabled
     if not is_cache_enabled():
-        notify("⚠️ Database caching is not enabled", "warning", page_key=SETTINGS_PAGE_KEY)
-        notify(
-            """
-Caching is only enabled when:
-- The database path is a network (UNC) path
-- Cache initialization was successful
-
-To enable caching, ensure your database is located on a network share.
-            """,
-            "info",
-            page_key=SETTINGS_PAGE_KEY
-        )
+        st.info("""
+        **⚠️ Database caching is not currently enabled.**
+        
+        Caching is only enabled when:
+        - The database path is a network (UNC) path (e.g., `\\\\server\\share\\certificates.db`)
+        - Cache initialization was successful
+        
+        **Current database path:** `{}`
+        
+        To enable caching, move your database to a network share or update the database path in the Path Settings tab.
+        """.format(settings.get("paths.database", "Not configured")))
         return
     
     # Get cache manager

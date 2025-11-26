@@ -80,7 +80,6 @@ def render_hosts_view(engine) -> None:
         st.session_state['show_add_host_form'] = not st.session_state.get('show_add_host_form', False)
         # Optionally clear notifications when toggling form if it causes old messages to persist
         # clear_page_notifications(HOSTS_PAGE_KEY)
-        st.rerun()
         
     with notification_placeholder.container(): # Show notifications for this page
         show_notifications(HOSTS_PAGE_KEY)
@@ -254,7 +253,12 @@ def render_hosts_view(engine) -> None:
             selected_host_id = selected_row.get('_id')
         if selected_host_id is not None:
             with SessionManager(engine) as session:
-                host_obj = session.get(Host, selected_host_id)
+                # Eagerly load relationships for certificate bindings and IP addresses
+                host_obj = session.query(Host).options(
+                    joinedload(Host.certificate_bindings).joinedload(CertificateBinding.host_ip),
+                    joinedload(Host.certificate_bindings).joinedload(CertificateBinding.certificate),
+                    joinedload(Host.ip_addresses)
+                ).filter(Host.id == selected_host_id).first()
                 if host_obj:
                     render_details(host_obj)
     except Exception as e:
@@ -286,6 +290,17 @@ def render_details(selected_host: Host, binding: CertificateBinding = None) -> N
             if selected_host.description:
                 st.markdown(f"**Description:** {selected_host.description}")
             st.markdown(f"**Last Seen:** {selected_host.last_seen.strftime('%Y-%m-%d %H:%M')}")
+            
+            # Show port information from bindings
+            if selected_host.certificate_bindings:
+                ports = sorted(set(b.port for b in selected_host.certificate_bindings if b.port))
+                if ports:
+                    ports_str = ", ".join(str(p) for p in ports)
+                    st.markdown(f"**Ports:** {ports_str}")
+                else:
+                    st.markdown("**Ports:** N/A")
+            else:
+                st.markdown("**Ports:** N/A")
         
         # If we're showing a specific binding, show its details
         if binding:
@@ -298,6 +313,48 @@ def render_details(selected_host: Host, binding: CertificateBinding = None) -> N
                 st.markdown(f"**Valid Until:** {binding.certificate.valid_until.strftime('%Y-%m-%d')}")
                 st.markdown(f"**Port:** {binding.port if binding.port else 'N/A'}")
                 st.markdown(f"**Platform:** {binding.platform or 'Not Set'}")
+        
+        # Scan button section - collect all scan targets from host
+        st.divider()
+        scan_targets = []
+        
+        # Collect targets from certificate bindings (IP-based bindings)
+        for b in selected_host.certificate_bindings:
+            if b.binding_type == 'IP' and b.port:
+                # Prefer IP from binding if available, otherwise use hostname
+                if b.host_ip and b.host_ip.ip_address:
+                    target = f"{b.host_ip.ip_address}:{b.port}"
+                elif selected_host.name:
+                    target = f"{selected_host.name}:{b.port}"
+                else:
+                    continue
+                if target not in scan_targets:
+                    scan_targets.append(target)
+        
+        # Also add hostname with default port 443 if no bindings found
+        if not scan_targets and selected_host.name:
+            # Check if we have IPs to scan
+            if selected_host.ip_addresses:
+                for ip in selected_host.ip_addresses:
+                    target = f"{ip.ip_address}:443"
+                    if target not in scan_targets:
+                        scan_targets.append(target)
+            # Also add hostname with default port
+            target = f"{selected_host.name}:443"
+            if target not in scan_targets:
+                scan_targets.append(target)
+        
+        if scan_targets:
+            st.markdown("### Scan Host")
+            st.markdown(f"**Scan Targets:** {', '.join(scan_targets)}")
+            if st.button("🔍 Scan Host", type="primary", key=f"scan_host_{selected_host.id}"):
+                # Store scan targets in session state for Scanner page
+                st.session_state.scan_targets = scan_targets
+                # Navigate to Scanner page
+                st.session_state.current_view = "Scanner"
+                st.rerun()
+        else:
+            st.info("ℹ️ No scannable targets found. Add IP-based certificate bindings to enable scanning.")
     
     with tab2:
         # Certificates tab

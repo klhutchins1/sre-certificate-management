@@ -350,6 +350,36 @@ def load_css():
             background-color: rgba(255, 255, 255, 0.05) !important;
         }
         
+        /* Certificate multiselect in application form - make it full width for long names */
+        .certificate-multiselect-wrapper {
+            width: 100% !important;
+        }
+        .certificate-multiselect-wrapper div[data-testid="stMultiSelect"] {
+            width: 100% !important;
+            max-width: 100% !important;
+            display: block !important;
+        }
+        .certificate-multiselect-wrapper div[data-testid="stMultiSelect"] > div {
+            width: 100% !important;
+        }
+        .certificate-multiselect-wrapper div[data-testid="stMultiSelect"] div[data-baseweb="select"] {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        /* Also target the selectbox variant if used */
+        .certificate-multiselect-wrapper div[data-testid="stSelectbox"] {
+            width: 100% !important;
+            max-width: 100% !important;
+            display: block !important;
+        }
+        .certificate-multiselect-wrapper div[data-testid="stSelectbox"] > div {
+            width: 100% !important;
+        }
+        .certificate-multiselect-wrapper div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        
         /* Success notification styles */
         div[data-testid="stMarkdown"] + div[data-testid="element-container"] {
             display: inline-flex !important;

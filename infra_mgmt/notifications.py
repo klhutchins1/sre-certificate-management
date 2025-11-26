@@ -42,15 +42,22 @@ def notify(message: str, level: str = 'info', page_key: Optional[str] = None) ->
     })
 
 def show_notifications(page_key: str) -> None:
-    """Display all pending notifications for a specific page."""
+    """Display all pending notifications for a specific page.
+    
+    This function should only be called once per render cycle to prevent duplicate notifications.
+    Notifications are cleared immediately upon retrieval to prevent duplicates on reruns.
+    """
     if 'page_notifications' not in st.session_state or page_key not in st.session_state.page_notifications:
         return
     
     page_specific_notifications = st.session_state.page_notifications[page_key]
-    st.session_state.page_notifications[page_key] = [] # Clear after retrieving for display
     
     if not page_specific_notifications:
         return
+    
+    # Clear notifications IMMEDIATELY to prevent duplicates if function is called multiple times
+    # or if page reruns before display completes
+    st.session_state.page_notifications[page_key] = []
     
     grouped: Dict[str, List[str]] = {
         'error': [],
@@ -65,12 +72,14 @@ def show_notifications(page_key: str) -> None:
             level = 'info' # Default to info if level is somehow unrecognized
         grouped[level].append(notif['message'])
     
+    # Display all notifications in a single container, one per level
     with st.container():
         for level in ['error', 'warning', 'info', 'success']:
             messages = grouped[level]
             if not messages:
                 continue
             
+            # Combine all messages of the same level into one notification
             message_str = "\n\n".join(messages) # Use double newline for better separation of multiple messages
             
             if level == 'error':

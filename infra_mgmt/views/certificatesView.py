@@ -787,8 +787,11 @@ def render_certificate_tracking(cert, session):
                     with col1:
                         if st.form_submit_button("💾 Save", type="primary"):
                             service = CertificateService()
+                            # Get current certificate_id (can't change it from certificate view, so use existing)
+                            tracking_entry = next((e for e in cert.tracking_entries if e.id == tracking_id), None)
+                            current_cert_id = tracking_entry.certificate_id if tracking_entry else cert.id
                             result = service.update_tracking_entry(
-                                tracking_id, change_number, 
+                                tracking_id, current_cert_id, change_number, 
                                 datetime.combine(planned_date, datetime.min.time()) if planned_date else None,
                                 status, notes, session
                             )

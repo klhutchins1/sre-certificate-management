@@ -304,7 +304,14 @@ class ScanManager:
                         for warning in cert_result.warnings:
                             self.logger.warning(f"Certificate scan warning for {domain}:{port}: {warning}")
 
-                    CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info_from_scan, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
+                    CertificateDBUtil.upsert_certificate_and_binding(
+                    session, domain, port, cert_info_from_scan, host, 
+                    detect_platform=kwargs.get('detect_platform', True), 
+                    check_sans=kwargs.get('check_sans', False), 
+                    validate_chain=kwargs.get('validate_chain', True),
+                    change_id=kwargs.get('change_id'),
+                    scan_type=kwargs.get('scan_type')
+                )
                     # --- PATCH: Associate cert with SAN domains if present ---
                     if hasattr(cert_info_from_scan, 'san') and cert_info_from_scan.san:
                         from infra_mgmt.utils.certificate_db import is_valid_domain
@@ -406,7 +413,14 @@ class ScanManager:
                     for warning in cert_result.warnings:
                         self.logger.warning(f"Certificate scan warning for {domain}:{port}: {warning}")
 
-                CertificateDBUtil.upsert_certificate_and_binding(session, domain, port, cert_info_from_scan, host, detect_platform=kwargs.get('detect_platform', True), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True))
+                CertificateDBUtil.upsert_certificate_and_binding(
+                    session, domain, port, cert_info_from_scan, host, 
+                    detect_platform=kwargs.get('detect_platform', True), 
+                    check_sans=kwargs.get('check_sans', False), 
+                    validate_chain=kwargs.get('validate_chain', True),
+                    change_id=kwargs.get('change_id'),
+                    scan_type=kwargs.get('scan_type')
+                )
                 # --- PATCH: Associate cert with SAN domains if present ---
                 if hasattr(cert_info_from_scan, 'san') and cert_info_from_scan.san:
                     from infra_mgmt.utils.certificate_db import is_valid_domain

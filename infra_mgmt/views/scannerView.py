@@ -27,6 +27,7 @@ from ..settings import settings  # Import settings for database configuration
 from urllib.parse import urlparse
 from ..services.ScanService import ScanService
 from infra_mgmt.components.page_header import render_page_header
+from infra_mgmt.utils.SessionManager import SessionManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -168,6 +169,25 @@ def render_scan_interface(engine) -> None:
         st.session_state.scanned_domains = set()
     
     render_page_header(title="Domain & Certificate Scanner")
+    
+    # Check if this scan is for a change (before/after)
+    change_context = None
+    if 'scan_change_id' in st.session_state and 'scan_type' in st.session_state:
+        change_id = st.session_state.get('scan_change_id')
+        scan_type = st.session_state.get('scan_type')
+        if change_id and scan_type:
+            with SessionManager(engine) as session:
+                from ..models import CertificateTracking
+                change_entry = session.get(CertificateTracking, change_id)
+                if change_entry:
+                    change_context = {
+                        'id': change_id,
+                        'change_number': change_entry.change_number,
+                        'type': scan_type  # 'before' or 'after'
+                    }
+                    # Show context banner
+                    scan_type_label = "Before Change" if scan_type == 'before' else "After Change"
+                    st.info(f"📊 **Scanning for Change:** {change_entry.change_number or 'Unnamed'} ({scan_type_label})")
     
     # Display Offline Mode indicator
     from ..utils.network_detection import check_offline_mode, is_offline
@@ -368,6 +388,11 @@ internal.server.local:444"""
                     "current_step": None,
                     "total_steps": None
                 }
+                # Add change context if present
+                if change_context:
+                    options["change_id"] = change_context['id']
+                    options["scan_type"] = change_context['type']
+                
                 # Run the scan
                 scan_results = scan_service.run_scan(valid_targets, options)
                 st.session_state.scan_results = scan_results
@@ -378,6 +403,11 @@ internal.server.local:444"""
                     domain = entry.split(':')[0]
                     scanned_domains_set.add(domain)
                 st.session_state.scanned_domains = scanned_domains_set
+                # Clear change context after scan completes (so it doesn't persist for future scans)
+                if 'scan_change_id' in st.session_state:
+                    del st.session_state.scan_change_id
+                if 'scan_type' in st.session_state:
+                    del st.session_state.scan_type
                 # Set progress to complete
                 progress_container.progress(1.0)
                 progress_container.text("Scan completed!")

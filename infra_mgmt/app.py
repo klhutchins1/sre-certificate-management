@@ -52,6 +52,7 @@ from .views.certificatesView import render_certificate_list
 from .views.hostsView import render_hosts_view
 from .views.applicationsView import render_applications_view
 from .views.scannerView import render_scan_interface
+from .views.changesView import render_changes_view
 from .views.historyView import render_history_view
 from .views.searchView import render_search_view
 from .views.settingsView import render_settings_view
@@ -145,6 +146,7 @@ def render_sidebar():
             "Applications": "📦 Applications",
             "Scanner": "🔍 Scanner",
             "Search": "🔎 Search",
+            "Changes": "📝 Changes",
             "History": "📋 History",
             "Settings": "⚙️ Settings"
         }
@@ -269,6 +271,8 @@ def main():
         render_scan_interface(st.session_state.engine)
     elif current_view == "Search":
         render_search_view(st.session_state.engine)
+    elif current_view == "Changes":
+        render_changes_view(st.session_state.engine)
     elif current_view == "History":
         render_history_view(st.session_state.engine)
     elif current_view == "Settings":

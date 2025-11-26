@@ -192,8 +192,12 @@ class CertificateScan(Base):
     scan_date = Column(DateTime)
     status = Column(String)
     port = Column(Integer)
+    # Change tracking fields
+    change_id = Column(Integer, ForeignKey('certificate_tracking.id'), nullable=True)  # Associated change entry
+    scan_type = Column(String, nullable=True)  # 'before' or 'after' - indicates if this is a before/after scan for a change
     certificate = relationship("Certificate", back_populates="scans")
     host = relationship("Host", backref="scans")
+    change = relationship("CertificateTracking", backref="scans")
 
 class CertificateTracking(Base):
     """
@@ -201,7 +205,7 @@ class CertificateTracking(Base):
     """
     __tablename__ = 'certificate_tracking'
     id = Column(Integer, primary_key=True)
-    certificate_id = Column(Integer, ForeignKey('certificates.id'))
+    certificate_id = Column(Integer, ForeignKey('certificates.id'), nullable=True)  # Allow None for changes before certificate exists
     change_number = Column(String)
     planned_change_date = Column(DateTime, nullable=True)
     notes = Column(Text, nullable=True)

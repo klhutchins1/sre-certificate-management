@@ -69,17 +69,70 @@ class HistoryService:
 
     @staticmethod
     def add_certificate_tracking_entry(session, cert_id, change_number, planned_date, status, notes):
+        """
+        Add a new certificate tracking entry.
+        
+        Args:
+            session: SQLAlchemy session
+            cert_id: Certificate ID (can be None if certificate doesn't exist yet)
+            change_number: Change/ticket number
+            planned_date: Planned change date
+            status: Change status
+            notes: Optional notes
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
         try:
             new_entry = CertificateTracking(
-                certificate_id=cert_id,
+                certificate_id=cert_id,  # Can be None
                 change_number=change_number,
-                planned_change_date=datetime.combine(planned_date, datetime.min.time()),
+                planned_change_date=datetime.combine(planned_date, datetime.min.time()) if planned_date else None,
                 notes=notes,
                 status=status,
                 created_at=datetime.now(),
                 updated_at=datetime.now()
             )
             session.add(new_entry)
+            session.commit()
+            return {'success': True}
+        except SQLAlchemyError as e:
+            session.rollback()
+            return {'success': False, 'error': str(e)}
+    
+    @staticmethod
+    def update_tracking_entry(session, tracking_id, cert_id, change_number, planned_date, status, notes):
+        """
+        Update a certificate tracking entry.
+        
+        Args:
+            session: SQLAlchemy session
+            tracking_id: Tracking entry ID
+            cert_id: Certificate ID (can be None, can be changed if status is Pending)
+            change_number: Change/ticket number
+            planned_date: Planned change date
+            status: Change status
+            notes: Optional notes
+            
+        Returns:
+            dict: { 'success': bool, 'error': str (if any) }
+        """
+        try:
+            tracking = session.get(CertificateTracking, tracking_id)
+            if not tracking:
+                return {'success': False, 'error': 'Tracking entry not found'}
+            
+            # Allow updating certificate_id only if status is Pending
+            if tracking.status == 'Pending' and cert_id != tracking.certificate_id:
+                tracking.certificate_id = cert_id
+            
+            # Update other fields
+            tracking.change_number = change_number
+            tracking.planned_change_date = datetime.combine(planned_date, datetime.min.time()) if planned_date else None
+            tracking.status = status
+            tracking.notes = notes
+            tracking.updated_at = datetime.now()
+            
             session.commit()
             return {'success': True}
         except SQLAlchemyError as e:

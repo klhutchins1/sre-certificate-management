@@ -546,12 +546,13 @@ class CertificateService:
             logging.getLogger(__name__).exception(f"Error updating certificate serial/thumbprint: {str(e)}")
             return {'success': False, 'error': str(e)}
     
-    def update_tracking_entry(self, tracking_id, change_number, planned_date, status, notes, session):
+    def update_tracking_entry(self, tracking_id, cert_id, change_number, planned_date, status, notes, session):
         """
         Update a certificate tracking entry.
         
         Args:
             tracking_id (int): Tracking entry ID
+            cert_id (int or None): Certificate ID (can be changed if status is Pending)
             change_number (str): Change/ticket number
             planned_date (datetime): Planned change date
             status (str): Change status
@@ -566,6 +567,10 @@ class CertificateService:
             tracking = session.get(CertificateTracking, tracking_id)
             if not tracking:
                 return {'success': False, 'error': 'Tracking entry not found'}
+            
+            # Allow updating certificate_id only if status is Pending
+            if tracking.status == 'Pending' and cert_id != tracking.certificate_id:
+                tracking.certificate_id = cert_id
             
             # Update fields
             tracking.change_number = change_number

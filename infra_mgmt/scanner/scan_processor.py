@@ -159,7 +159,15 @@ class ScanProcessor:
                     cert_info.proxied = False
                     cert_info.proxy_info = None
             # Replace the certificate/host/binding update logic with:
-            CertificateDBUtil.upsert_certificate_and_binding(self.session, domain, port, cert_info, domain_obj, detect_platform=kwargs.get('detect_platform', False), check_sans=kwargs.get('check_sans', False), validate_chain=kwargs.get('validate_chain', True), status_callback=self.set_status)
+            CertificateDBUtil.upsert_certificate_and_binding(
+                self.session, domain, port, cert_info, domain_obj, 
+                detect_platform=kwargs.get('detect_platform', False), 
+                check_sans=kwargs.get('check_sans', False), 
+                validate_chain=kwargs.get('validate_chain', True), 
+                status_callback=self.set_status,
+                change_id=kwargs.get('change_id'),
+                scan_type=kwargs.get('scan_type')
+            )
             self.session.flush()
         except ValueError as e:
             self.logger.error(f"Value error processing certificate for {domain}: {str(e)}")

@@ -25,7 +25,9 @@ class CertificateDBUtil:
         detect_platform: bool = False,
         check_sans: bool = False,
         validate_chain: bool = True,
-        status_callback: Optional[callable] = None
+        status_callback: Optional[callable] = None,
+        change_id: Optional[int] = None,
+        scan_type: Optional[str] = None
     ) -> Certificate:
         """
         Create or update certificate, host, host IP, binding, and scan records for a given domain and cert_info.
@@ -57,8 +59,12 @@ class CertificateDBUtil:
             set_status(f'Certificate deduplicated: {dedup_reason}')
             logger.info(f"Certificate deduplicated for {domain}:{port}: {dedup_reason}")
             
-            # Still process bindings for the existing certificate
-            cert = existing_cert_to_update
+            # Ensure the certificate is in the current session (merge if needed)
+            # This prevents session identity issues when adding to collections
+            if existing_cert_to_update.id:
+                cert = session.merge(existing_cert_to_update)
+            else:
+                cert = existing_cert_to_update
             
             # Update the existing certificate's updated_at timestamp to track last scan
             cert.updated_at = datetime.now()
@@ -163,27 +169,85 @@ class CertificateDBUtil:
             if not cert.id: # If cert.id is None, it means it's a new instance not yet flushed (or created_at not set)
                 cert.created_at = datetime.now()
 
+        # Flush certificate if it's new (doesn't have an ID yet) to ensure it has an ID for many-to-many relationships
+        if cert.id is None:
+            session.flush()
+            # Refresh to ensure the certificate is properly in the session
+            session.refresh(cert)
+        
+        # Ensure cert is properly in the session before associating with domains
+        # Re-query to ensure it's in the current session context
+        if cert.id:
+            cert_in_session = session.query(Certificate).filter_by(id=cert.id).first()
+            if not cert_in_session:
+                # If not found, merge it into the session
+                cert_in_session = session.merge(cert)
+            else:
+                cert_in_session = cert
+        else:
+            cert_in_session = cert
+        
         # Associate certificate with domain (if domain_obj is a Domain)
-        if domain_obj and hasattr(domain_obj, 'certificates') and cert not in domain_obj.certificates:
-            domain_obj.certificates.append(cert)
+        if domain_obj and hasattr(domain_obj, 'certificates'):
+            try:
+                if cert_in_session.id and cert_in_session not in domain_obj.certificates:
+                    domain_obj.certificates.append(cert_in_session)
+            except Exception as e:
+                logger.warning(f"Error associating certificate with domain_obj: {e}")
+                # Refresh the domain object and try again
+                session.expire(domain_obj, ['certificates'])
+                # Re-query cert to ensure it's in session
+                cert_in_session = session.query(Certificate).filter_by(id=cert.id).first() if cert.id else cert
+                if cert_in_session and cert_in_session.id and cert_in_session not in domain_obj.certificates:
+                    domain_obj.certificates.append(cert_in_session)
         # If domain_obj is a Host, try to find a Domain with the same name and associate
         elif domain_obj and isinstance(domain_obj, Host):
             domain_name = domain_obj.name
             domain_rec = session.query(Domain).filter_by(domain_name=domain_name).first()
-            if domain_rec and cert not in domain_rec.certificates:
-                domain_rec.certificates.append(cert)
+            if domain_rec and cert_in_session.id:
+                try:
+                    if cert_in_session not in domain_rec.certificates:
+                        domain_rec.certificates.append(cert_in_session)
+                except Exception as e:
+                    logger.warning(f"Error associating certificate with domain {domain_name}: {e}")
+                    session.expire(domain_rec, ['certificates'])
+                    # Re-query cert to ensure it's in session
+                    cert_in_session = session.query(Certificate).filter_by(id=cert.id).first() if cert.id else cert
+                    if cert_in_session and cert_in_session.id and cert_in_session not in domain_rec.certificates:
+                        domain_rec.certificates.append(cert_in_session)
         # For each SAN in the certificate, associate with Domain if valid
-        if hasattr(cert_info, 'san') and cert_info.san:
+        if hasattr(cert_info, 'san') and cert_info.san and cert.id:
+            # Ensure cert is properly in the session before associating with domains
+            # Re-query to ensure it's in the current session context
+            cert_in_session = session.query(Certificate).filter_by(id=cert.id).first()
+            if not cert_in_session:
+                # If not found, merge it into the session
+                cert_in_session = session.merge(cert)
+            else:
+                cert_in_session = cert
+            
             for san in cert_info.san:
                 if is_valid_domain(san):
-                    # Use no_autoflush to prevent premature flush during query
-                    with session.no_autoflush:
-                        san_domain = session.query(Domain).filter_by(domain_name=san).first()
-                        if not san_domain:
-                            san_domain = Domain(domain_name=san, created_at=datetime.now(), updated_at=datetime.now())
-                            session.add(san_domain)
-                    if cert not in san_domain.certificates:
-                        san_domain.certificates.append(cert)
+                    # Query for domain first (outside no_autoflush to allow proper session tracking)
+                    san_domain = session.query(Domain).filter_by(domain_name=san).first()
+                    if not san_domain:
+                        san_domain = Domain(domain_name=san, created_at=datetime.now(), updated_at=datetime.now())
+                        session.add(san_domain)
+                        # Flush the new domain to get its ID before appending certificate
+                        session.flush()
+                    # Check if certificate is already associated before appending
+                    # Use cert_in_session which is guaranteed to be in the current session
+                    try:
+                        if cert_in_session not in san_domain.certificates:
+                            san_domain.certificates.append(cert_in_session)
+                    except Exception as e:
+                        # If there's an issue with the relationship, refresh and try again
+                        logger.warning(f"Error checking certificate association for {san}, refreshing domain: {e}")
+                        session.expire(san_domain, ['certificates'])
+                        # Re-query cert to ensure it's in session
+                        cert_in_session = session.query(Certificate).filter_by(id=cert.id).first()
+                        if cert_in_session and cert_in_session not in san_domain.certificates:
+                            san_domain.certificates.append(cert_in_session)
         # Upsert Host
         host = session.query(Host).filter_by(name=domain).first()
         if not host:
@@ -262,7 +326,9 @@ class CertificateDBUtil:
             host=host,
             scan_date=datetime.now(),
             status="Success",
-            port=port
+            port=port,
+            change_id=change_id,  # Associate with change if provided
+            scan_type=scan_type  # 'before' or 'after' if provided
         )
         session.add(scan_record)
         try:

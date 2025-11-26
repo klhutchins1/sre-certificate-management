@@ -80,6 +80,7 @@ def render_hosts_view(engine) -> None:
         st.session_state['show_add_host_form'] = not st.session_state.get('show_add_host_form', False)
         # Optionally clear notifications when toggling form if it causes old messages to persist
         # clear_page_notifications(HOSTS_PAGE_KEY)
+        st.rerun()  # Refresh to show/hide the form
         
     with notification_placeholder.container(): # Show notifications for this page
         show_notifications(HOSTS_PAGE_KEY)

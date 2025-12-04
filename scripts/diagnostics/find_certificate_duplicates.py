@@ -19,31 +19,46 @@ from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 
-def load_config():
-    """Load configuration from config.yaml file."""
-    config_path = 'config.yaml'
-    if not os.path.exists(config_path):
-        print(f"⚠️  Warning: config.yaml not found at {config_path}")
-        return None
+# Add scripts directory to path to import common utilities
+# _common.py is in scripts/, so we need to add scripts/ directory to path
+scripts_dir = Path(__file__).parent.parent  # scripts/ directory
+sys.path.insert(0, str(scripts_dir))
+try:
+    from _common import find_project_root, load_config, get_database_path_from_config
+except ImportError:
+    # Fallback if _common.py not available
+    def find_project_root():
+        """Find the project root directory (where config.yaml is located)."""
+        current = Path(__file__).resolve()
+        # Script is in scripts/diagnostics/, so go up 3 levels to reach project root
+        project_root = current.parent.parent.parent
+        return project_root
     
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        return config
-    except Exception as e:
-        print(f"⚠️  Warning: Could not load config.yaml: {e}")
+    def load_config():
+        """Load configuration from config.yaml file."""
+        project_root = find_project_root()
+        config_path = project_root / 'config.yaml'
+        if not config_path.exists():
+            print(f"⚠️  Warning: config.yaml not found at {config_path}")
+            return None
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            return config
+        except Exception as e:
+            print(f"⚠️  Warning: Could not load config.yaml: {e}")
+            return None
+    
+    def get_database_path_from_config():
+        """Get database path from config.yaml file."""
+        config = load_config()
+        if config and 'paths' in config and 'database' in config['paths']:
+            db_path = config['paths']['database']
+            if not os.path.isabs(db_path):
+                project_root = find_project_root()
+                db_path = os.path.join(project_root, db_path)
+            return db_path
         return None
-
-def get_database_path_from_config():
-    """Get database path from config.yaml file."""
-    config = load_config()
-    if config and 'paths' in config and 'database' in config['paths']:
-        db_path = config['paths']['database']
-        # Handle relative paths
-        if not os.path.isabs(db_path):
-            db_path = os.path.join(os.getcwd(), db_path)
-        return db_path
-    return None
 
 def parse_issuer_json(issuer_str):
     """Parse issuer JSON string and extract common name."""

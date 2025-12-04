@@ -24,7 +24,7 @@ This will automatically check if migration is needed and run it before starting 
 Run the migration script directly:
 
 ```bash
-python migrate_proxy_detection.py
+python scripts/migrations/migrate_proxy_detection.py
 ```
 
 ### Option 3: Verify Migration Only
@@ -32,7 +32,7 @@ python migrate_proxy_detection.py
 Check if migration has already been applied:
 
 ```bash
-python migrate_proxy_detection.py --verify-only
+python scripts/migrations/migrate_proxy_detection.py --verify-only
 ```
 
 ## Migration Scripts
@@ -51,16 +51,16 @@ The main migration script with the following features:
 
 ```bash
 # Basic migration (uses default database path)
-python migrate_proxy_detection.py
+python scripts/migrations/migrate_proxy_detection.py
 
 # Specify custom database path
-python migrate_proxy_detection.py --db-path /path/to/your/certificates.db
+python scripts/migrations/migrate_proxy_detection.py --db-path /path/to/your/certificates.db
 
 # Verify migration without making changes
-python migrate_proxy_detection.py --verify-only
+python scripts/migrations/migrate_proxy_detection.py --verify-only
 
 # Skip backup (not recommended)
-python migrate_proxy_detection.py --no-backup
+python scripts/migrations/migrate_proxy_detection.py --no-backup
 ```
 
 ### 2. `run_with_migration.py`
@@ -337,10 +337,10 @@ If you encounter issues with the migration:
 
 ## Files Created
 
-- `migrate_proxy_detection.py` - Main migration script
+- `scripts/migrations/migrate_proxy_detection.py` - Main migration script
 - `run_with_migration.py` - Application launcher with migration
-- `test_migration.py` - Migration test script
-- `MIGRATION_GUIDE.md` - This documentation
+- `tests/scripts/test_migration.py` - Migration test script
+- `docs/MIGRATION_GUIDE.md` - This documentation
 
 ## Summary
 

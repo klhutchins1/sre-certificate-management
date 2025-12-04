@@ -5,11 +5,27 @@ Examine certificates in detail to find duplicates
 
 import sqlite3
 import json
+import sys
+import os
+from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
 
+# Add scripts directory to path to import common utilities
+# _common.py is in scripts/, so we need to add scripts/ directory to path
+scripts_dir = Path(__file__).parent.parent  # scripts/ directory
+sys.path.insert(0, str(scripts_dir))
+try:
+    from _common import get_database_path_from_config
+except ImportError:
+    def get_database_path_from_config():
+        """Get database path from config.yaml file."""
+        return None
+
 def main():
-    conn = sqlite3.connect('./data/certificates.db')
+    # Try to get database path from config, fallback to default
+    db_path = get_database_path_from_config() or './data/certificates.db'
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     # Get all certificates

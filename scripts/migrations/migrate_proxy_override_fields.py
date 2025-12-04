@@ -21,8 +21,10 @@ import os
 from sqlalchemy import create_engine, text
 from datetime import datetime
 
-# Add the project root to the path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add the project root to the path (3 levels up from scripts/migrations/)
+# Script is in scripts/migrations/, so go up 3 levels to reach project root
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, project_root)
 
 from infra_mgmt.db.engine import get_engine
 from infra_mgmt.settings import settings

@@ -40,7 +40,7 @@ def get_database_path_from_config():
 def run_migration():
     """Run the database migration if needed."""
     try:
-        from migrate_proxy_detection import migrate_proxy_detection_columns, verify_migration
+        from scripts.migrations.migrate_proxy_detection import migrate_proxy_detection_columns, verify_migration
         
         # Get database path from config
         db_path = get_database_path_from_config()
@@ -99,7 +99,7 @@ def main():
     
     if not migration_success:
         print("❌ Failed to migrate database. Please run migration manually:")
-        print("   python migrate_proxy_detection.py")
+        print("   python scripts/migrations/migrate_proxy_detection.py")
         sys.exit(1)
     
     # Start the main application

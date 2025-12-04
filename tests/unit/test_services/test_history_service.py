@@ -204,3 +204,96 @@ class TestHistoryService:
         assert 'error' in result
         mock_session.rollback.assert_called_once()
 
+    def test_add_certificate_tracking_entry_without_certificate(self, mock_session):
+        """Test adding certificate tracking entry without certificate (cert_id=None)."""
+        planned_date = datetime.now().date()
+        
+        result = HistoryService.add_certificate_tracking_entry(
+            mock_session, None, "CHG002", planned_date, "Pending", "No certificate yet"
+        )
+        
+        assert result['success'] is True
+        mock_session.add.assert_called_once()
+        # Verify that the added entry has certificate_id=None
+        call_args = mock_session.add.call_args[0][0]
+        assert call_args.certificate_id is None
+        assert call_args.change_number == "CHG002"
+        mock_session.commit.assert_called_once()
+
+    def test_update_tracking_entry_success(self, mock_session):
+        """Test successful update of certificate tracking entry."""
+        from unittest.mock import Mock
+        
+        # Mock the tracking entry
+        tracking_entry = Mock(spec=CertificateTracking)
+        tracking_entry.id = 1
+        tracking_entry.status = "Pending"
+        tracking_entry.certificate_id = 1
+        
+        mock_session.get.return_value = tracking_entry
+        planned_date = datetime.now().date()
+        
+        result = HistoryService.update_tracking_entry(
+            mock_session, 1, 2, "CHG_UPDATED", planned_date, "In Progress", "Updated notes"
+        )
+        
+        assert result['success'] is True
+        assert tracking_entry.change_number == "CHG_UPDATED"
+        assert tracking_entry.status == "In Progress"
+        assert tracking_entry.notes == "Updated notes"
+        # Since status is Pending, certificate_id should be updated
+        assert tracking_entry.certificate_id == 2
+        mock_session.commit.assert_called_once()
+
+    def test_update_tracking_entry_not_found(self, mock_session):
+        """Test update_tracking_entry when entry doesn't exist."""
+        mock_session.get.return_value = None
+        
+        result = HistoryService.update_tracking_entry(
+            mock_session, 99999, 1, "CHG001", datetime.now().date(), "Pending", "Test"
+        )
+        
+        assert result['success'] is False
+        assert 'error' in result
+        assert 'not found' in result['error'].lower()
+
+    def test_update_tracking_entry_certificate_not_changed_when_completed(self, mock_session):
+        """Test that certificate_id cannot be changed when status is not Pending."""
+        from unittest.mock import Mock
+        
+        tracking_entry = Mock(spec=CertificateTracking)
+        tracking_entry.id = 1
+        tracking_entry.status = "Completed"
+        tracking_entry.certificate_id = 1
+        
+        mock_session.get.return_value = tracking_entry
+        planned_date = datetime.now().date()
+        
+        result = HistoryService.update_tracking_entry(
+            mock_session, 1, 2, "CHG_UPDATED", planned_date, "Completed", "Updated notes"
+        )
+        
+        assert result['success'] is True
+        # Certificate ID should not change because status is not Pending
+        assert tracking_entry.certificate_id == 1  # Original value, not 2
+
+    def test_update_tracking_entry_error(self, mock_session):
+        """Test error handling in update_tracking_entry."""
+        from sqlalchemy.exc import SQLAlchemyError
+        from unittest.mock import Mock
+        
+        tracking_entry = Mock(spec=CertificateTracking)
+        tracking_entry.id = 1
+        tracking_entry.status = "Pending"
+        
+        mock_session.get.return_value = tracking_entry
+        mock_session.commit.side_effect = SQLAlchemyError("Database error")
+        
+        result = HistoryService.update_tracking_entry(
+            mock_session, 1, 1, "CHG001", datetime.now().date(), "Pending", "Test"
+        )
+        
+        assert result['success'] is False
+        assert 'error' in result
+        mock_session.rollback.assert_called_once()
+

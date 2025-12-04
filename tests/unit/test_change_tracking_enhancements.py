@@ -67,7 +67,7 @@ class TestChangeTrackingService:
         new_notes = "Updated renewal plan - extended timeline"
         
         result = service.update_tracking_entry(
-            tracking_entry.id, new_change_number, new_planned_date,
+            tracking_entry.id, tracking_entry.certificate_id, new_change_number, new_planned_date,
             new_status, new_notes, session
         )
         
@@ -86,7 +86,7 @@ class TestChangeTrackingService:
         service = CertificateService()
         
         result = service.update_tracking_entry(
-            99999, "CHG001", datetime.now(), "Pending", "Test notes", session
+            99999, None, "CHG001", datetime.now(), "Pending", "Test notes", session
         )
         
         assert result['success'] is False
@@ -97,7 +97,7 @@ class TestChangeTrackingService:
         service = CertificateService()
         
         result = service.update_tracking_entry(
-            tracking_entry.id, "CHG009999", None, "Completed", None, session
+            tracking_entry.id, tracking_entry.certificate_id, "CHG009999", None, "Completed", None, session
         )
         
         assert result['success'] is True
@@ -155,7 +155,7 @@ class TestChangeTrackingService:
         
         # Update first entry
         result1 = service.update_tracking_entry(
-            entry1.id, "CHG001_UPDATED", datetime.now() + timedelta(days=35),
+            entry1.id, entry1.certificate_id, "CHG001_UPDATED", datetime.now() + timedelta(days=35),
             "In Progress", "Updated first attempt", session
         )
         assert result1['success'] is True
@@ -181,7 +181,7 @@ class TestChangeTrackingDataIntegrity:
         
         # Update the tracking entry
         result = service.update_tracking_entry(
-            tracking_entry.id, "CHG_UPDATED", datetime.now(), "Completed", "Done", session
+            tracking_entry.id, tracking_entry.certificate_id, "CHG_UPDATED", datetime.now(), "Completed", "Done", session
         )
         
         assert result['success'] is True
@@ -216,7 +216,7 @@ class TestChangeTrackingDataIntegrity:
         
         # Update the entry
         result = service.update_tracking_entry(
-            tracking_entry.id, "CHG_AUDIT_TEST", datetime.now(), "Updated", "Audit test", session
+            tracking_entry.id, tracking_entry.certificate_id, "CHG_AUDIT_TEST", datetime.now(), "Updated", "Audit test", session
         )
         
         assert result['success'] is True
@@ -237,7 +237,7 @@ class TestChangeTrackingEdgeCases:
         valid_statuses = ["Pending", "In Progress", "Completed", "Cancelled", "On Hold"]
         for status in valid_statuses:
             result = service.update_tracking_entry(
-                tracking_entry.id, f"CHG_{status}", datetime.now(), status, f"Status: {status}", session
+                tracking_entry.id, tracking_entry.certificate_id, f"CHG_{status}", datetime.now(), status, f"Status: {status}", session
             )
             assert result['success'] is True
             
@@ -252,7 +252,7 @@ class TestChangeTrackingEdgeCases:
         long_notes = "This is a very long note. " * 100  # Very long notes
         
         result = service.update_tracking_entry(
-            tracking_entry.id, long_change_number, datetime.now(), "Pending", long_notes, session
+            tracking_entry.id, tracking_entry.certificate_id, long_change_number, datetime.now(), "Pending", long_notes, session
         )
         
         # Should succeed (assuming database can handle the length)
@@ -279,13 +279,13 @@ class TestChangeTrackingEdgeCases:
         
         # Simulate concurrent updates (in real scenario, this would be different sessions)
         result1 = service.update_tracking_entry(
-            entry.id, "CHG_UPDATE1", datetime.now(), "In Progress", "Update 1", session
+            entry.id, entry.certificate_id, "CHG_UPDATE1", datetime.now(), "In Progress", "Update 1", session
         )
         assert result1['success'] is True
         
         # Second update should also succeed (last one wins)
         result2 = service.update_tracking_entry(
-            entry.id, "CHG_UPDATE2", datetime.now(), "Completed", "Update 2", session
+            entry.id, entry.certificate_id, "CHG_UPDATE2", datetime.now(), "Completed", "Update 2", session
         )
         assert result2['success'] is True
         

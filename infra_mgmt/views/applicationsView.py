@@ -835,6 +835,7 @@ def render_application_details(application: Application, engine) -> None:
             with st.form(f"add_binding_form_{application.id}"):
                 # Get available certificates
                 available_certs = []
+                selected_certs = []  # Initialize to avoid UnboundLocalError
                 try:
                     result = ApplicationService.get_available_certificates(engine, application.id)
                     if result['success']:

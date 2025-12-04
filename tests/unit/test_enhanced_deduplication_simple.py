@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from infra_mgmt.models import Base, Certificate
+from infra_mgmt.models import Base, Certificate, Domain
 from infra_mgmt.utils.certificate_db import CertificateDBUtil
 import json
 
@@ -138,6 +138,73 @@ class TestEnhancedDeduplicationIntegration:
             # Verify the existing certificate was returned
             assert result.id == existing_certificate.id
             mock_enhanced.assert_called_once()
+    
+    def test_deduplicated_certificate_session_merge(self, test_session, existing_certificate, mock_cert_info):
+        """Test that deduplicated certificates are properly merged into session."""
+        from infra_mgmt.models import Domain
+        
+        # Create a domain to test association
+        domain = Domain(domain_name="example.com", created_at=datetime.now(), updated_at=datetime.now())
+        test_session.add(domain)
+        test_session.commit()
+        
+        # Mock the enhanced deduplication to return existing certificate
+        with patch('infra_mgmt.utils.certificate_db.enhanced_deduplicate_certificate') as mock_enhanced:
+            mock_enhanced.return_value = (False, existing_certificate, "Certificate deduplicated")
+            
+            # Mock session.merge to verify it's called
+            original_merge = test_session.merge
+            merge_called = []
+            def mock_merge(obj):
+                merge_called.append(obj)
+                return original_merge(obj)
+            test_session.merge = mock_merge
+            
+            result = CertificateDBUtil.upsert_certificate_and_binding(
+                test_session,
+                "example.com",
+                443,
+                mock_cert_info,
+                domain_obj=domain
+            )
+            
+            # Verify merge was called for the deduplicated certificate
+            assert len(merge_called) > 0
+            assert result.id == existing_certificate.id
+            
+            # Verify certificate can be associated with domain without FlushError
+            test_session.refresh(domain)
+            # The certificate should be in the session and can be added to domain
+            assert result in test_session or result.id in [c.id for c in test_session.query(Certificate).all()]
+    
+    def test_deduplicated_certificate_domain_association(self, test_session, existing_certificate, mock_cert_info):
+        """Test that deduplicated certificates can be associated with domains without session errors."""
+        from infra_mgmt.models import Domain
+        
+        # Create a domain
+        domain = Domain(domain_name="example.com", created_at=datetime.now(), updated_at=datetime.now())
+        test_session.add(domain)
+        test_session.flush()
+        
+        # Mock the enhanced deduplication to return existing certificate
+        with patch('infra_mgmt.utils.certificate_db.enhanced_deduplicate_certificate') as mock_enhanced:
+            mock_enhanced.return_value = (False, existing_certificate, "Certificate deduplicated")
+            
+            result = CertificateDBUtil.upsert_certificate_and_binding(
+                test_session,
+                "example.com",
+                443,
+                mock_cert_info,
+                domain_obj=domain
+            )
+            
+            # Verify no FlushError occurs when associating with domain
+            test_session.flush()
+            test_session.refresh(domain)
+            
+            # Certificate should be properly in session
+            assert result.id is not None
+            assert result in test_session or test_session.query(Certificate).filter_by(id=result.id).first() is not None
     
     def test_enhanced_deduplication_proxy_certificate(self, test_session, proxy_cert_info):
         """Test enhanced deduplication with a proxy certificate."""
